@@ -1,6 +1,7 @@
 module TimeIntegration
 
 using LinearAlgebra
+using IPlotPDESols
 using ..ParticleGrids
 using ..SimSettings
 using ..ScalarHyperbolicEquations
@@ -67,6 +68,72 @@ function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquat
     saveGrid(settings, particleGrid, t)
     saveSettings(settings)
     return time
+end
+
+"""
+    mainTimeIntegrator!
+
+This method performs that actual time integration. Provided with a timeStepper, equation, an initialized grid and simulation settings, it will perform
+time integration.
+This version uses the format required for the IPlotPDESols package. It will save the particleGrids as stats for compatibility issues.
+Note that the usage differs from the function above: It does not save the grid! Instead the complete simulation data is returned.
+This allows us to use the mainTimeIntegrator inside of the defining function for the simulationConfig!
+"""
+function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, params::ParamDictType)
+
+    # Create SimSettings object
+    settings = SimSetting(  tmax=params["tmax"],
+                            dt=params["dt"],
+                            interpRange=params["interp_range"],
+                            interpAlpha= params["interp_alpha"],
+                            saveDir="", 
+                            saveFreq=params["save_frequency"])
+    
+    if !particleGrid.regular
+        @assert timeStepper isa MeshfreeTimeStepper "Must use a MeshfreeTimeStepper for unstructured grids."
+    end
+
+    # Initialize grid
+    updateNeighbours!(particleGrid, settings.interpRange)
+
+    # Initialize vectors for simulation data
+    xs = [map(particle -> particle.pos, particleGrid.grid)]
+    us = [map(particle -> particle.rho, particleGrid.grid)]
+    ts = [0.0]
+    grids = [deepcopy(particleGrid.grid)]
+
+    #saveGrid(settings, particleGrid, 0.0)
+    setCurvatures!(particleGrid, settings)
+
+    # Initialize interpolation routine
+    initTimeStepper(timeStepper, particleGrid, settings)
+    t = 0.0
+    k = 1
+    time = @elapsed while t < settings.tmax
+        dt = min(settings.dt, settings.tmax-t)
+
+        timeStepper(eq, particleGrid, settings, t, dt)
+        t += dt
+
+        # Save data every savefreq steps
+        if mod(k, settings.saveFreq) == 0
+            #saveGrid(settings, particleGrid, t)
+            push!(xs, map(particle -> particle.pos, particleGrid.grid))
+            push!(us, map(particle -> particle.rho, particleGrid.grid))
+            push!(ts, t)
+            push!(grids, deepcopy(particleGrid.grid))
+        end
+        
+        k += 1
+    end
+    #saveGrid(settings, particleGrid, t)
+    # push!(xs, map(particle -> particle.pos, particleGrid.grid))
+    # push!(us, map(particle -> particle.rho, particleGrid.grid))
+    # push!(ts, t)
+    # push!(grids, deepcopy(particleGrid.grid))
+    #saveSettings(settings)
+    sim_data = createSimData(xs, us, ts, params, ParamDict("saved_grids" => grids))
+    return time, sim_data
 end
 
 end  # module TimeIntegration
