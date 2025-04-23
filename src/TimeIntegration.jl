@@ -86,8 +86,9 @@ function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquat
                             dt=params["dt"],
                             interpRange=params["interp_range"],
                             interpAlpha= params["interp_alpha"],
-                            saveDir="", 
-                            saveFreq=params["save_frequency"])
+                            saveDir="/", 
+                            saveFreq=params["save_frequency"],
+                            organiseFiles = false)
     
     if !particleGrid.regular
         @assert timeStepper isa MeshfreeTimeStepper "Must use a MeshfreeTimeStepper for unstructured grids."

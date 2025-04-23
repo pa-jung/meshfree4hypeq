@@ -1,0 +1,30 @@
+Parameter,Value
+# Context Info,====================
+Animation Duration (s),10.0
+Animation FPS,30
+Animation Time Range,"(0.0, 10.0)"
+Save Trigger Time (t),8.0706
+Save Type,Animation GIF
+Timestamp,2025-04-23T17:25:34.606
+# Shared Parameters,====================
+CFL,0.4
+N,50
+advection_velocity,1.0
+initFunc,shockInit
+interpAlpha,6.0
+interpRangeFactor,3.5
+randomness_factor,0.5
+regular,true
+saveFreq,1
+tmax,10.0
+xmax,5.0
+xmin,-5.0
+# Method-Specific Parameters,==========================
+# Method: EulerUpwind,--------------------
+SEED,10
+regular,false
+# Method: RK3WENO2,--------------------
+SEED,10
+regular,false
+# Method: Upwind,--------------------
+(No specific parameters defined),
