@@ -29,9 +29,9 @@ shared and method-specific parameters from SimulationConfig). Calculates `dt` ba
 
 # Arguments
 - `params::ParamDictType`: Dictionary containing ALL necessary simulation parameters.
-                           Expected keys: "method" (String), "initFunc" (String),
+                           Expected keys: "method" (String), "init_func" (String),
                            "N", "xmin", "xmax", "regular", "tmax", "CFL", "saveFreq",
-                           "interpAlpha", "interpRangeFactor", "advection_velocity" (optional).
+                           "interp_alpha", "interp_range", "advection_velocity" (optional).
 
 # Returns
 - `AbstractSimData`: The simulation result object (e.g., SimData1D), or `nothing` on error.
@@ -50,13 +50,13 @@ function runSimulation_for_IPlotPDESols(params::ParamDictType)::Union{AbstractSi
         N::Int = run_params["N"]
         xmin::Float64 = run_params["xmin"]
         xmax::Float64 = run_params["xmax"]
-        regular::Bool = run_params["regular"]
-        initFunc_name::String = run_params["initFunc"]
+        regular::Bool = run_params["randomness_factor"] == 0.0
+        initFunc_name::String = run_params["init_func"]
         method_name::String = run_params["method"] # Expect the name used for selection
         cfl::Float64 = run_params["CFL"]
-        interp_alpha::Float64 = run_params["interpAlpha"]
+        interp_alpha::Float64 = run_params["interp_alpha"]
         save_freq::Int = run_params["saveFreq"] # For internal integrator steps
-        interp_range_factor::Float64 = run_params["interpRangeFactor"]
+        interp_range_factor::Float64 = run_params["interp_range"]
         a::Float64 = get(run_params, "advection_velocity", 1.0) # Optional: Keep get only for truly optional params
 
         # Print essential params for debugging/tracking
@@ -94,16 +94,12 @@ function runSimulation_for_IPlotPDESols(params::ParamDictType)::Union{AbstractSi
 
         # --- Grid Creation ---
         dx_nominal = (xmax - xmin) / N
-        local particleGrid::ParticleGrid1D
-        if regular
-            particleGrid = ParticleGrid1D(xmin, xmax, N)
-        else
-            # Require randomness factor if irregular
-            randomness_factor = run_params["randomness_factor"]::Float64 # Assume required if irregular=false
-            randomness = randomness_factor * dx_nominal
-            particleGrid = ParticleGrid1D(xmin, xmax, N; randomness = randomness)
-        end
-        run_params["dx_nominal"] = dx_nominal # Store nominal dx
+        local particleGrid#::ParticleGrid1D
+        # Require randomness factor if irregular
+        randomness_factor = run_params["randomness_factor"]::Float64 # Assume required if irregular=false
+        randomness = randomness_factor * dx_nominal
+        particleGrid = ParticleGrid1D(xmin, xmax, N; randomness = randomness)
+        #run_params["dx_nominal"] = dx_nominal # Store nominal dx
 
         # --- Calculate Dependent Parameters ---
         interp_range = interp_range_factor * particleGrid.dx # Use grid's actual dx
@@ -121,7 +117,7 @@ function runSimulation_for_IPlotPDESols(params::ParamDictType)::Union{AbstractSi
         elseif initFunc_name == "shockInit"; init_func_handle = shockInit
         else; error("Unknown initFunc name: $initFunc_name"); end
         setInitialConditions!(particleGrid, init_func_handle)
-        # run_params["initFunc"] already contains the name
+        # run_params["init_func"] already contains the name
 
         # --- Add SimSetting equivalents needed by mainTimeIntegrator! ---
         # Ensure these keys match exactly what mainTimeIntegrator! expects internally
@@ -158,36 +154,35 @@ function runSimulation_for_IPlotPDESols(params::ParamDictType)::Union{AbstractSi
 end
 
 # --- Example SimulationConfig Usage ---
+SEED_value = (:const, Meshfree4ScalarEq.SEED)
 
 shared_params =     ParamDict( # Define ALL common defaults needed by runner
 "tmax" => 1.0, "N" => 50, "xmin" => -5.0, "xmax" => 5.0,
-"CFL" => 0.4, "saveFreq" => 5, "interpAlpha" => 6.0,
-"interpRangeFactor" => 3.5, "advection_velocity" => 1.0,
-"regular" => true, 
-"initFunc" => "smoothInit1", #Ensure ALL keys expected by runSimulation... are here or overridden below
+"CFL" => 0.4, "saveFreq" => 5, "interp_alpha" => 6.0,
+"interp_range" => 3.5, "advection_velocity" => 1.0,
+"init_func" => "smoothInit1", #Ensure ALL keys expected by runSimulation... are here or overridden below
 # If regular=false requires randomness_factor, provide a default here if desired
-"randomness_factor" => 0.5 # Example default
+"randomness_factor" => 0.5, # Example default
+"SEED" => SEED_value
 )
 
-SEED_value = (:const, Meshfree4ScalarEq.SEED)
+
 methods_dict =     MethodDict(
     # Keys are the method name strings used in the if/elseif block of the runner
     # Values dictionary contains ONLY parameters DIFFERENT from shared_params
     # OR parameters specific only to this method type.
    "EulerUpwind" => ParamDict( # Key is the actual method name
        # Overrides shared_params:
-       "regular" => false,
-       "SEED" => SEED_value
        # Specific param needed because regular=false (assuming no default in shared):
    ),
    "RK3WENO2" => ParamDict(
        # Overrides shared_params:
-       "regular" => false,
-       "SEED" => SEED_value
        # Inherits regular=true, N, tmax, CFL etc. from shared_params
    ),
     "Upwind" => ParamDict(
        # Inherits all defaults from shared_params
+       "SEED_value" => nothing,
+       "randomness_factor" => 0.0
     )
    # Add other methods, using their string name as the key
 )
