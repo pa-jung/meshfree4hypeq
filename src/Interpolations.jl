@@ -7,7 +7,7 @@ using ..Meshfree4ScalarEq.SimSettings
 using ..Meshfree4ScalarEq.ScalarHyperbolicEquations
 using ..Meshfree4ScalarEq.FluxFunctions
 
-export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil
+export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil, LaxFriedrichsGradient
 
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
@@ -244,6 +244,7 @@ abstract type TiwariAlgorithm <: UpwindAlgorithm end  # Split domain in left and
 abstract type PraveenAlgorithm <: UpwindAlgorithm end  # Praveen C. postive upwind scheme.
 abstract type NonLinearPraveenAlgorithm <: UpwindAlgorithm end  # Praveen C. postive upwind scheme.
 abstract type ClassicAlgorithm <: UpwindAlgorithm end  # Take all points 'behind' center point. 
+abstract type RusanovAlgorithm <: UpwindAlgorithm end # This is no upwinding of course but easy implementation in this framework (numerical Flux given does not have to be upwind)
 struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: UpwindAlgorithm}
     order::Int64
     res::Vector{Float64}
@@ -257,7 +258,7 @@ struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: Upw
     """
     function UpwindGradient(order::Int64 = 1; algType::String = "Classic", weightFunction::MLSWeightFunction = exponentialWeightFunction())
         @assert order >= 1 "Order must be larger or equal to one."
-        @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen"]
+        @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen", "Rusanov", "LaxWendroff"]
         if order == 1
             size = 2  # In 2D res has length 2, in 1D res has length 1
         elseif order == 2
@@ -273,6 +274,13 @@ struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: Upw
             new{NonLinearPraveenAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, UpwindFlux())
         elseif algType == "Tiwari"
             new{TiwariAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, UpwindFlux())
+        elseif algType == "Rusanov"
+            if order == 1
+                new{RusanovAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, RusanovFlux())
+            elseif order == 2
+                new{RusanovAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, LaxWendroffFlux())
+            end
+            
         end
     end
 end
@@ -296,6 +304,38 @@ function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::I
         particleGrid.grid[particleIndex].curvature = 0.0
     end
     return 2*upwind.res[1]/settings.interpRange
+end
+
+struct LaxFriedrichsGradient <: GradientInterpolator
+    res::Vector{Float64}
+    weightFunction::MLSWeightFunction
+    numericalFlux::NumericalFluxFunction
+
+    function LaxFriedrichsGradient(; weightFunction::MLSWeightFunction = exponentialWeightFunction())
+        new(Vector{Float64}(undef, 2), weightFunction, LaxFriedrichsFlux())
+    end
+end
+
+function (laxFriedrichs::LaxFriedrichsGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
+    nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
+    dxVec = Vector{Float64}(undef, nbNeighbours)
+    dfVec = Vector{Float64}(undef, nbNeighbours)
+    maxFlux = maximum(map(particle -> velocity(eq, particle.rho), particleGrid.grid))
+    for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
+        deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
+        dxVec[index] = deltaPos/settings.interpRange
+        dfVec[index] = laxFriedrichs.numericalFlux(fm, fp, eq, maxFlux) - flux(eq, fVec[particleIndex])
+    end
+    wVec = laxFriedrichs.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
+    @assert !any(isnan, wVec) && !any(isinf, wVec) "Infs or Nan's in wVec: $(wVec)"
+
+    gradInterpolation!(dxVec, wVec, dfVec, laxFriedrichs.res; order=1)
+
+    if setCurvature
+        particleGrid.grid[particleIndex].curvature = 0.0
+    end
+    return 2*laxFriedrichs.res[1]/settings.interpRange
 end
 
 function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
@@ -465,7 +505,6 @@ function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(particleGrid::Parti
     end
     return 2*div
 end
-
 
 # ------------------------------- CentralGradient -------------------------------
 struct CentralGradient <: GradientInterpolator

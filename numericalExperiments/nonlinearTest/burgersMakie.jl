@@ -13,8 +13,9 @@ using Meshfree4ScalarEq
 # --- Keep initial condition function definitions ---
 function smoothInit1(x::Real) return exp(-x^2) end
 function smoothInit2(x::Real) return sin(2*pi*x/5) + 1.0 end # Adjusted from burgers.txt
-function shockInit1(x::Real) return x > 0.0 ? 1.0 : -1.0 end  # Adjusted from burgers.txt
-function shockInit2(x::Real) return ((x < -1.) | (x > 1.)) ? 0. : 1. end
+function shockInit1(x::Real) return x > 0.5 ? 1.0 : -1.0 end  # Adjusted from burgers.txt
+function shockInit2(x::Real) return x > 0.5 ? 0 : 1.0 end  # Adjusted from burgers.txt
+function shockInit3(x::Real) return ((x < -1.) | (x > 1.)) ? 0. : 1. end
 # -------------------------------------------------
 
 """
@@ -85,6 +86,14 @@ function runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)::Union{Abs
             method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu1(deltaRelax = true))
         elseif method_name == "muscl2RusanovFluxMoodu2"
             method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu2(deltaRelax = true))
+        elseif method_name == "muscl2RusanovFluxMoodu2RusanovFallback"
+            method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = UpwindGradient(1; algType = "Rusanov"))
+        elseif method_name == "muscl2RusanovFluxMoodu2LFFallback"
+            method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = LaxFriedrichsGradient())
+        elseif method_name == "MeshLFMoodu2"
+            method = RalstonRK2(LaxFriedrichsGradient(), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = LaxFriedrichsGradient())         
+        elseif method_name == "MeshLWMoodu2LFFallback"
+            method = RalstonRK2(UpwindGradient(2; algType = "Rusanov"), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = LaxFriedrichsGradient())            
         # Add other methods from burgers.txt if needed...
         else
             error("Unknown method name provided in params for Burgers: '$method_name'")
@@ -200,8 +209,20 @@ sim_config_burgers = SimulationConfig(
         "muscl2RusanovFluxMoodu1" => ParamDict(
             
         ),
+        "muscl2RusanovFluxMoodu2RusanovFallback" => ParamDict(
+
+        ),
         "muscl2RusanovFluxMoodu2" => ParamDict(
             
+        ),
+        "muscl2RusanovFluxMoodu2LFFallback" => ParamDict(
+
+        ),
+        "MeshLFMoodu2" => ParamDict(
+
+        ),
+        "MeshLWMoodu2LFFallback" => ParamDict(
+
         )
     ),
     "lf"

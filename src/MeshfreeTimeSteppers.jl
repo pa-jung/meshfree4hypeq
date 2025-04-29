@@ -317,6 +317,39 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::Parti
     end
 end
 
+# first try for fixing
+# function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+#     # First stage
+#     map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
+#     copyCurvatures!(particleGrid)
+#     for (particleIndex, particle) in enumerate(particleGrid.grid)
+#         ralston.div1[particleIndex] = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings)
+#         tmp = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
+#         #particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
+#         if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, tmp; firstStage=true)
+#             ralston.div1[particleIndex] = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=false)
+#             particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
+#         else
+#             particle.rho = tmp
+#         end
+#     end
+
+#     # Final stage
+#     map!(particle -> particle.rho, ralston.rhos, particleGrid.grid)
+#     copyCurvatures!(particleGrid)
+#     for (particleIndex, particle) in enumerate(particleGrid.grid)
+#         div = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings)
+#         #particle.rho = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
+#         tmp = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
+#         if ralston.mood(particleGrid, particleIndex, ralston.rhos, tmp)
+#             div = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings; setCurvature=false)
+#             particle.rho = ralston.rhos[particleIndex] - dt*div/3
+#         else
+#             particle.rho = tmp
+#         end
+#     end
+# end
+
 struct RK4{G1 <: GradientInterpolator, G2 <: GradientInterpolator, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
     gradientInterpolator::G1
     fallbackInterpolator::G2
