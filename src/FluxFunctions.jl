@@ -42,14 +42,15 @@ function (upwind::UpwindFlux)(leftState::Real, rightState::Real, eq::ScalarHyper
     return 0.5*(leftFlux[ind] + rightFlux[ind] - abs(a)*(rightState - leftState))
 end
 
-#--------------- LaxFriedrichFlux
-struct LaxFriedrichsFlux <: NumericalFluxFunction end
+# not necessary
+# #--------------- LaxFriedrichFlux
+# struct LaxFriedrichsFlux <: NumericalFluxFunction end
 
-function (lf::LaxFriedrichsFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation, alpha::Real)::Real
-    leftFlux = flux(eq, leftState)
-    rightFlux = flux(eq, rightState)
-    return 0.5*(leftFlux + rightFlux - alpha*(rightState - leftState))
-end
+# function (lf::LaxFriedrichsFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation, alpha::Real)::Real
+#     leftFlux = flux(eq, leftState)
+#     rightFlux = flux(eq, rightState)
+#     return 0.5*(leftFlux + rightFlux - alpha*(rightState - leftState))
+# end
 
 #--------------- LaxWendroffFlux
 struct LaxWendroffFlux <: NumericalFluxFunction end
@@ -57,8 +58,12 @@ struct LaxWendroffFlux <: NumericalFluxFunction end
 function (lw::LaxWendroffFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation)::Real
     leftFlux = flux(eq, leftState)
     rightFlux = flux(eq, rightState)
-    s = max(abs(velocity(eq, leftState)), abs(velocity(eq, rightState)))
-    return 0.5*(leftFlux + rightFlux - s^2*(rightState - leftState))
+    diffState = rightState -leftState
+    if !(diffState == 0)
+        return 0.5*(leftFlux + rightFlux - (leftFlux - rightFlux)^2/(rightState - leftState))
+    else
+        return 0.5 * (leftFlux + rightFlux)
+    end
 end
 
 end

@@ -256,31 +256,24 @@ struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: Upw
 
     Constructor for Upwind Object. algType only has impact in 2D upwinding.
     """
-    function UpwindGradient(order::Int64 = 1; algType::String = "Classic", weightFunction::MLSWeightFunction = exponentialWeightFunction())
+    function UpwindGradient(order::Int64 = 1; numericalFlux::NumericalFluxFunction = UpwindFlux(), algType::String = "Classic", weightFunction::MLSWeightFunction = exponentialWeightFunction())
         @assert order >= 1 "Order must be larger or equal to one."
-        @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen", "Rusanov", "LaxWendroff"]
+        @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen"]
         if order == 1
             size = 2  # In 2D res has length 2, in 1D res has length 1
         elseif order == 2
             size = 5  # In 2D res had length 5, in 1D res has length 2
         end
         if algType == "Classic"
-            new{ClassicAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, UpwindFlux())
+            new{ClassicAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
         elseif algType == "Praveen"
             @assert order == 1
-            new{PraveenAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, UpwindFlux())
+            new{PraveenAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
         elseif algType == "NonLinearPraveen"
             @assert order == 1
-            new{NonLinearPraveenAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, UpwindFlux())
+            new{NonLinearPraveenAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
         elseif algType == "Tiwari"
-            new{TiwariAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, UpwindFlux())
-        elseif algType == "Rusanov"
-            if order == 1
-                new{RusanovAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, RusanovFlux())
-            elseif order == 2
-                new{RusanovAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, LaxWendroffFlux())
-            end
-            
+            new{TiwariAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
         end
     end
 end
@@ -306,37 +299,38 @@ function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::I
     return 2*upwind.res[1]/settings.interpRange
 end
 
-struct LaxFriedrichsGradient <: GradientInterpolator
-    res::Vector{Float64}
-    weightFunction::MLSWeightFunction
-    numericalFlux::NumericalFluxFunction
+# deprecated
+# struct LaxFriedrichsGradient <: GradientInterpolator
+#     res::Vector{Float64}
+#     weightFunction::MLSWeightFunction
+#     numericalFlux::NumericalFluxFunction
 
-    function LaxFriedrichsGradient(; weightFunction::MLSWeightFunction = exponentialWeightFunction())
-        new(Vector{Float64}(undef, 2), weightFunction, LaxFriedrichsFlux())
-    end
-end
+#     function LaxFriedrichsGradient(; weightFunction::MLSWeightFunction = exponentialWeightFunction())
+#         new(Vector{Float64}(undef, 2), weightFunction, LaxFriedrichsFlux())
+#     end
+# end
 
-function (laxFriedrichs::LaxFriedrichsGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
-    nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
-    dxVec = Vector{Float64}(undef, nbNeighbours)
-    dfVec = Vector{Float64}(undef, nbNeighbours)
-    maxFlux = maximum(map(particle -> velocity(eq, particle.rho), particleGrid.grid))
-    for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-        deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
-        fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
-        dxVec[index] = deltaPos/settings.interpRange
-        dfVec[index] = laxFriedrichs.numericalFlux(fm, fp, eq, maxFlux) - flux(eq, fVec[particleIndex])
-    end
-    wVec = laxFriedrichs.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
-    @assert !any(isnan, wVec) && !any(isinf, wVec) "Infs or Nan's in wVec: $(wVec)"
+# function (laxFriedrichs::LaxFriedrichsGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
+#     nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
+#     dxVec = Vector{Float64}(undef, nbNeighbours)
+#     dfVec = Vector{Float64}(undef, nbNeighbours)
+#     maxFlux = maximum(map(particle -> velocity(eq, particle.rho), particleGrid.grid))
+#     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
+#         deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+#         fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
+#         dxVec[index] = deltaPos/settings.interpRange
+#         dfVec[index] = laxFriedrichs.numericalFlux(fm, fp, eq, maxFlux) - flux(eq, fVec[particleIndex])
+#     end
+#     wVec = laxFriedrichs.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
+#     @assert !any(isnan, wVec) && !any(isinf, wVec) "Infs or Nan's in wVec: $(wVec)"
 
-    gradInterpolation!(dxVec, wVec, dfVec, laxFriedrichs.res; order=1)
+#     gradInterpolation!(dxVec, wVec, dfVec, laxFriedrichs.res; order=1)
 
-    if setCurvature
-        particleGrid.grid[particleIndex].curvature = 0.0
-    end
-    return 2*laxFriedrichs.res[1]/settings.interpRange
-end
+#     if setCurvature
+#         particleGrid.grid[particleIndex].curvature = 0.0
+#     end
+#     return 2*laxFriedrichs.res[1]/settings.interpRange
+# end
 
 function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
     vel = eq.vel

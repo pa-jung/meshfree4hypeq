@@ -36,7 +36,7 @@ Calculates `dt` based on `CFL` and the Burgers equation properties.
 # Returns
 - `AbstractSimData`: The simulation result object (e.g., SimData1D), or `nothing` on error.
 """
-function runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)::Union{AbstractSimData, Nothing}
+function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
     println("\n--- Running Burgers Simulation via IPlotPDESols Interface ---")
     run_params = copy(params) # Work on a copy to store derived values
 
@@ -49,56 +49,79 @@ function runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)::Union{Abs
     local sim_data_result = nothing # Ensure defined outside try
 
     try
-        # --- Extract Parameters (Direct Access - throws KeyError if missing) ---
+        # --- Extract REQUIRED Parameters (Direct Access) ---
+        # --- Extract REQUIRED Parameters (Direct Access) ---
         tmax::Float64 = run_params["tmax"]
         N::Int = run_params["N"]
         xmin::Float64 = run_params["xmin"]
         xmax::Float64 = run_params["xmax"]
         initFunc_name::String = run_params["init_func"]
-        method_name::String = run_params["method"] # Name like "muscl2RusanovFlux"
         cfl::Float64 = run_params["CFL"]
+        save_freq::Int = run_params["save_frequency"]
         interp_alpha::Float64 = run_params["interp_alpha"]
-        save_freq::Int = run_params["save_frequency"] # For internal integrator steps
         interp_range_factor::Float64 = run_params["interp_range"]
-        # Randomness factor required only if regular=false
-        randomness_factor::Float64 = run_params["randomness_factor"]
-        regular = run_params["randomness_factor"] == 0.0
-        println("  Method Name = $method_name")
-        println("  Initial Condition = $initFunc_name")
-        println("  N = $N, Regular Grid = $regular")
+        randomness_factor::Float64 = run_params["randomness_factor"] # Required
+        order::Int = run_params["order"] # <<< Treat order as required
+        timestepper_name = run_params["timestepper"] # Timestepper needed
+
+        # --- Extract METHOD Parameters (Use `get` with sensible defaults) ---
+        mood_name = get(run_params, "MOOD", nothing)
+        delta_relax = get(run_params, "delta_relax", nothing)
+        main_grad_name = get(run_params, "main_gradient", nothing)
+        fallback_grad_name = get(run_params, "fallback_gradient", nothing) # Default fallback = 1st order Upwind
+        main_flux_name = get(run_params, "main_flux", nothing)
+        fallback_flux_name = get(run_params, "fallback_flux", nothing)
+
+        # --- Derive regularity ---
+        regular::Bool = (randomness_factor == 0.0)
+
+        println("  TimeStepper = $timestepper_name, Main Gradient = $main_grad_name ($order), Main Flux = $main_flux_name")
+        println("  Fallback = $fallback_grad_name / $fallback_flux_name, MOOD = $mood_name (deltaRelax=$delta_relax)")
+        println("  IC = $initFunc_name, N = $N, Regular = $regular (randFactor=$randomness_factor), Order = $order")
         println("  tmax = $tmax, CFL = $cfl")
         println("----------------------------------------")
 
-        # --- Method Selection (Based on Name String from burgers.txt) ---
+        # --- Build Method Components (Ensure types/constructors are accessible) ---
+        local mood_fun
+        if mood_name == "U1"; mood_fun = MOODu1(deltaRelax = delta_relax)
+        elseif mood_name == "U2"; mood_fun = MOODu2(deltaRelax = delta_relax)
+        elseif mood_name == "LoubertU2"; mood_fun = MOODLoubertU2(deltaRelax = delta_relax)
+        elseif mood_name == "none"; mood_fun = NoMOOD()
+        elseif !isnothing(mood_name); error("MOOD '$mood_name' not recognized") end
+
+        local MainFlux
+        if main_flux_name == "LW"; MainFlux = LaxWendroffFlux()
+        elseif main_flux_name == "Rusanov"; MainFlux = RusanovFlux()
+        elseif main_flux_name == "Upwind"; MainFlux = UpwindFlux()
+        elseif !isnothing(main_flux_name); error("Requested Main Flux is not implemented!") end
+
+        local FallbackFlux
+        if fallback_flux_name == "LW"; FallbackFlux = LaxWendroffFlux()
+        elseif fallback_flux_name == "Rusanov"; FallbackFlux = RusanovFlux()
+        elseif fallback_flux_name == "Upwind"; FallbackFlux = UpwindFlux()
+        elseif !isnothing(fallback_flux_name); error("Requested Fallback Flux is not implemented!") end
+
+        local MainGrad
+        if main_grad_name == "MUSCL"; MainGrad = MUSCL(order; numericalFlux = MainFlux)
+        elseif main_grad_name == "Upwind"; MainGrad = UpwindGradient(order; numericalFlux = MainFlux)
+        elseif main_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
+        elseif !isnothing(main_grad_name); error("Requested Main GradientInterpolator not implemented!") end
+
+        local FallbackGrad 
+        if fallback_grad_name == "MUSCL"; FallbackGrad = MUSCL(1; numericalFlux = FallbackFlux)
+        elseif fallback_grad_name == "Upwind"; FallbackGrad = UpwindGradient(1; numericalFlux = FallbackFlux)
+        elseif fallback_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
+        elseif !isnothing(fallback_grad_name); error("Requested Fallback GradientInterpolator not implemented!") end
+        println(run_params)
+        # --- Time Stepper Selection ---
         local method
-        # Map method names from params["method"] to specific constructors
-        if method_name == "muscl2RusanovFlux"
-            method = RalstonRK2(MUSCL(2; numericalFlux=RusanovFlux()), N)
-        elseif method_name == "lf"
-             method = LaxFriedrich(N) # Assumes LaxFriedrich defined in TimeIntegration
-        elseif method_name == "muscl2UpwindFlux"
-             method = RalstonRK2(MUSCL(2; numericalFlux=UpwindFlux()), N)
-        elseif method_name == "EulerUpwind"
-            method = EulerUpwind(N)
-        elseif method_name == "EulerMUSCL1"
-            method = EulerUpwind(N; gradientInterpolator=MUSCL(1; numericalFlux=UpwindFlux()))
-        elseif method_name == "muscl2RusanovFluxMoodu1"
-            method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu1(deltaRelax = true))
-        elseif method_name == "muscl2RusanovFluxMoodu2"
-            method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu2(deltaRelax = true))
-        elseif method_name == "muscl2RusanovFluxMoodu2RusanovFallback"
-            method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = UpwindGradient(1; algType = "Rusanov"))
-        elseif method_name == "muscl2RusanovFluxMoodu2LFFallback"
-            method = RalstonRK2(MUSCL(2; numericalFlux = RusanovFlux()), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = LaxFriedrichsGradient())
-        elseif method_name == "MeshLFMoodu2"
-            method = RalstonRK2(LaxFriedrichsGradient(), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = LaxFriedrichsGradient())         
-        elseif method_name == "MeshLWMoodu2LFFallback"
-            method = RalstonRK2(UpwindGradient(2; algType = "Rusanov"), N; mood = MOODu2(deltaRelax = true), fallbackInterpolator = LaxFriedrichsGradient())            
-        # Add other methods from burgers.txt if needed...
-        else
-            error("Unknown method name provided in params for Burgers: '$method_name'")
-        end
-        run_params["method_type"] = string(typeof(method)) # Store descriptive name
+        if timestepper_name == "RalstonRK2"; method = RalstonRK2(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+        elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(N; gradientInterpolator = MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
+        elseif timestepper_name == "RK3"; method = RK3(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+        elseif timestepper_name == "RK4"; method = RK4(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+        elseif timestepper_name == "LF"; method = LaxFriedrich(N)
+        elseif timestepper_name == "Upwind"; method = Upwind(N)
+        else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
         # --- Equation ---
         eq = BurgersEquation() # Instantiate Burgers' equation object
@@ -110,7 +133,6 @@ function runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)::Union{Abs
 
         randomness = randomness_factor * dx_nominal
         particleGrid = ParticleGrid1D(xmin, xmax, N; randomness = randomness)
-        run_params["randomness_factor"] = randomness_factor # Record factor used
 
         # --- Calculate Dependent Parameters ---
         interp_range = interp_range_factor * particleGrid.dx
@@ -119,7 +141,6 @@ function runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)::Union{Abs
         eqLin = LinearAdvection(1.0)
         dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
         # Store actual values used
-        run_params["interpRange"] = interp_range
         run_params["dt"] = dt
 
         # --- Initial Condition ---
@@ -128,23 +149,14 @@ function runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)::Union{Abs
         elseif initFunc_name == "smoothInit2"; init_func_handle = smoothInit2
         elseif initFunc_name == "shockInit1"; init_func_handle = shockInit1
         elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2
+        elseif initFunc_name == "shockInit3"; init_func_handle = shockInit3
         else; error("Unknown initFunc name: $initFunc_name"); end
         setInitialConditions!(particleGrid, init_func_handle)
-
-        # --- Prepare final params for TimeIntegrator ---
-        # Ensure keys match what mainTimeIntegrator! expects for its temp SimSetting
-        run_params_for_integrator = copy(run_params) # Use the already updated run_params
-        run_params_for_integrator["save_frequency"] = save_freq
-        run_params_for_integrator["interp_range"] = interp_range
-        run_params_for_integrator["interp_alpha"] = interp_alpha
-        # Add tmax, dt explicitly if mainTimeIntegrator relies on them directly from dict
-        run_params_for_integrator["tmax"] = tmax
-        run_params_for_integrator["dt"] = dt
 
 
         # --- Call the NEW Time Integrator ---
         println("Starting time integration (Burgers)...")
-        elapsed_time, sim_data_result = mainTimeIntegrator!(method, eq, particleGrid, run_params_for_integrator)
+        elapsed_time, sim_data_result = mainTimeIntegrator!(method, eq, particleGrid, run_params)
         println("Time integration finished in $(round(elapsed_time, digits=2)) seconds.")
 
         # --- Post-processing ---
@@ -178,54 +190,57 @@ end
 SEED_value = (:const, Meshfree4ScalarEq.SEED)
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
-    runBurgersSimulation_for_IPlotPDESols, # Use the new runner
+    RunSimulation, # Use the new runner
 
-    ParamDictType(
+    ParamDict(
         "tmax" => 4.0, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "shockInit2",
         "randomness_factor" => 0.25, # Provide default needed when regular=false
-        "SEED" => SEED_value
+        "SEED" => SEED_value, 
+        "timestepper" => "LF",
+        "order" => 1
     ),
 
-    MethodDictType(
-        "muscl2RusanovFlux" => ParamDictType(
-            # Uses shared params, no overrides needed here maybe?
-        ),
-        "lf" => ParamDictType(
+    MethodDict(
+        "LF" => ParamDict(
             "randomness_factor" => (:const, 0.0)
              # No randomness_factor needed when regular=true
         ),
-        "EulerMUSCL1" => ParamDictType(
-             # Use different IC
+        "Method 1" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Upwind",
+            "MOOD" => "none",
+            "delta_relax" => false,
+            "order" => 2
         ),
-        "muscl2UpwindFlux" => ParamDict(
-
+        "Method 2" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Upwind",
+            "MOOD" => "U2",
+            "delta_relax" => false,
+            "order" => 2
         ),
         "EulerUpwind" => ParamDict(
-
-        ),
-        "muscl2RusanovFluxMoodu1" => ParamDict(
-            
-        ),
-        "muscl2RusanovFluxMoodu2RusanovFallback" => ParamDict(
-
-        ),
-        "muscl2RusanovFluxMoodu2" => ParamDict(
-            
-        ),
-        "muscl2RusanovFluxMoodu2LFFallback" => ParamDict(
-
-        ),
-        "MeshLFMoodu2" => ParamDict(
-
-        ),
-        "MeshLWMoodu2LFFallback" => ParamDict(
-
+            "timestepper" => "EulerUpwind",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Upwind",
+            "MOOD" => "U2",
+            "delta_relax" => false,
+            "order" => 1
         )
+
     ),
-    "lf"
+    "EulerUpwind"
 )
 
 # Pass this config to your IPlotPDESols functions

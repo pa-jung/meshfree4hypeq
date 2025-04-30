@@ -101,7 +101,7 @@ function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquat
     xs = [map(particle -> particle.pos, particleGrid.grid)]
     us = [map(particle -> particle.rho, particleGrid.grid)]
     ts = [0.0]
-    grids = [deepcopy(particleGrid.grid)]
+    #grids = [deepcopy(particleGrid.grid)]
 
     #saveGrid(settings, particleGrid, 0.0)
     setCurvatures!(particleGrid, settings)
@@ -122,7 +122,7 @@ function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquat
             push!(xs, map(particle -> particle.pos, particleGrid.grid))
             push!(us, map(particle -> particle.rho, particleGrid.grid))
             push!(ts, t)
-            push!(grids, deepcopy(particleGrid.grid))
+            #push!(grids, deepcopy(particleGrid.grid))
         end
         
         k += 1
@@ -133,7 +133,7 @@ function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquat
     # push!(ts, t)
     # push!(grids, deepcopy(particleGrid.grid))
     #saveSettings(settings)
-    sim_data = createSimData(xs, us, ts, params, ParamDict("saved_grids" => grids))
+    sim_data = createSimData(xs, us, ts, params)#, ParamDict("saved_grids" => grids))
     return time, sim_data
 end
 
