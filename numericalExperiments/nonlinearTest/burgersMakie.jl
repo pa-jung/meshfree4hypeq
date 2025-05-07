@@ -87,6 +87,9 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif mood_name == "U2"; mood_fun = MOODu2(deltaRelax = delta_relax)
         elseif mood_name == "LoubertU2"; mood_fun = MOODLoubertU2(deltaRelax = delta_relax)
         elseif mood_name == "none"; mood_fun = NoMOOD()
+        elseif mood_name == "only"; mood_fun = OnlyMOOD()
+        elseif mood_name == "firstNone"; mood_fun = FirstStageNoMOOD()
+        elseif mood_name == "alt"; mood_fun = MOODAlt(deltaRelax = delta_relax)
         elseif !isnothing(mood_name); error("MOOD '$mood_name' not recognized") end
 
         local MainFlux
@@ -102,13 +105,13 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif !isnothing(fallback_flux_name); error("Requested Fallback Flux is not implemented!") end
 
         local MainGrad
-        if main_grad_name == "MUSCL"; MainGrad = MUSCL(order; numericalFlux = MainFlux)
+        if main_grad_name == "MUSCL"; MainGrad = MUSCL(order-1; numericalFlux = MainFlux)
         elseif main_grad_name == "Upwind"; MainGrad = UpwindGradient(order; numericalFlux = MainFlux)
         elseif main_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
         elseif !isnothing(main_grad_name); error("Requested Main GradientInterpolator not implemented!") end
 
         local FallbackGrad 
-        if fallback_grad_name == "MUSCL"; FallbackGrad = MUSCL(1; numericalFlux = FallbackFlux)
+        if fallback_grad_name == "MUSCL"; error("No 1st order MUSCL method defined") #FallbackGrad = MUSCL(1; numericalFlux = FallbackFlux)
         elseif fallback_grad_name == "Upwind"; FallbackGrad = UpwindGradient(1; numericalFlux = FallbackFlux)
         elseif fallback_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
         elseif !isnothing(fallback_grad_name); error("Requested Fallback GradientInterpolator not implemented!") end
@@ -140,8 +143,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # This assumes getTimeStep can handle BurgersEquation appropriately
         eqLin = LinearAdvection(1.0)
         dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
-        # Store actual values used
-        run_params["dt"] = dt
 
         # --- Initial Condition ---
         local init_func_handle::Function
@@ -153,12 +154,21 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         else; error("Unknown initFunc name: $initFunc_name"); end
         setInitialConditions!(particleGrid, init_func_handle)
 
+            # Create SimSettings object
+        settings = SimSetting(  tmax=tmax,
+                                dt=dt,
+                                interpRange=interp_range,
+                                interpAlpha= interp_alpha,
+                                saveDir="/", 
+                                saveFreq=save_freq,
+                                organiseFiles = false)
 
         # --- Call the NEW Time Integrator ---
         println("Starting time integration (Burgers)...")
-        elapsed_time, sim_data_result = mainTimeIntegrator!(method, eq, particleGrid, run_params)
+        elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
         println("Time integration finished in $(round(elapsed_time, digits=2)) seconds.")
 
+        sim_data_result = createSimData(xs, us, ts, run_params)
         # --- Post-processing ---
         if !isnothing(sim_data_result)
              # Add metadata to stats dictionary
@@ -204,17 +214,13 @@ sim_config_burgers = SimulationConfig(
     ),
 
     MethodDict(
-        "LF" => ParamDict(
-            "randomness_factor" => (:const, 0.0)
-             # No randomness_factor needed when regular=true
-        ),
         "Method 1" => ParamDict(
             "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Upwind",
-            "MOOD" => "none",
+            "MOOD" => "only",
             "delta_relax" => false,
             "order" => 2
         ),
@@ -224,23 +230,48 @@ sim_config_burgers = SimulationConfig(
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Upwind",
-            "MOOD" => "U2",
+            "MOOD" => "firstNone",
             "delta_relax" => false,
             "order" => 2
         ),
-        "EulerUpwind" => ParamDict(
-            "timestepper" => "EulerUpwind",
+        "Method 3" => ParamDict(
+            "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Upwind",
-            "MOOD" => "U2",
+            "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 1
+            "order" => 2
+        ),
+        "Method 4" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Upwind",
+            "MOOD" => "U1",
+            "delta_relax" => false,
+            "order" => 2
+        ),
+        # "EulerUpwind" => ParamDict(
+        #     "timestepper" => "EulerUpwind",
+        #     "main_gradient" => "Upwind",
+        #     "fallback_gradient" => "Upwind",
+        #     "main_flux" => "Rusanov",
+        #     "fallback_flux" => "Upwind",
+        #     "MOOD" => "none",
+        #     "delta_relax" => false,
+        #     "order" => 1
+        # ),
+        "LF" => ParamDict(
+            "randomness_factor" => (:const, 0.0)
+             # No randomness_factor needed when regular=true
         )
 
     ),
-    "EulerUpwind"
+    "Method 1";
+    ui_options = Dict("animation_duration_s" => 10., "show_scatter" => true)
 )
 
 # Pass this config to your IPlotPDESols functions

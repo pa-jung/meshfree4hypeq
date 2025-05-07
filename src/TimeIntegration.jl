@@ -7,7 +7,7 @@ using ..SimSettings
 using ..ScalarHyperbolicEquations
 using ..Interpolations
 
-export mainTimeIntegrator!
+export mainTimeIntegrator!, mainTimeIntegrator2!
 
 """
     TimeStepper
@@ -79,16 +79,9 @@ This version uses the format required for the IPlotPDESols package. It will save
 Note that the usage differs from the function above: It does not save the grid! Instead the complete simulation data is returned.
 This allows us to use the mainTimeIntegrator inside of the defining function for the simulationConfig!
 """
-function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, params::ParamDictType)
+function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting)
 
-    # Create SimSettings object
-    settings = SimSetting(  tmax=params["tmax"],
-                            dt=params["dt"],
-                            interpRange=params["interp_range"],
-                            interpAlpha= params["interp_alpha"],
-                            saveDir="/", 
-                            saveFreq=params["save_frequency"],
-                            organiseFiles = false)
+
     
     if !particleGrid.regular
         @assert timeStepper isa MeshfreeTimeStepper "Must use a MeshfreeTimeStepper for unstructured grids."
@@ -133,8 +126,8 @@ function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquat
     # push!(ts, t)
     # push!(grids, deepcopy(particleGrid.grid))
     #saveSettings(settings)
-    sim_data = createSimData(xs, us, ts, params)#, ParamDict("saved_grids" => grids))
-    return time, sim_data
+    #sim_data = createSimData(xs, us, ts, params)#, ParamDict("saved_grids" => grids))
+    return time, xs, us, ts
 end
 
 end  # module TimeIntegration

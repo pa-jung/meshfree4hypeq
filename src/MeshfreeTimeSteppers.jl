@@ -1,4 +1,4 @@
-export EulerUpwind, Upwind, RalstonRK2, RK3, RK4, MOODCriterion, MOODu1, MOODu2, NoMOOD, MOODLoubertU2
+export EulerUpwind, Upwind, RalstonRK2, RK3, RK4, MOODCriterion, MOODu1, MOODu2, NoMOOD, MOODLoubertU2, OnlyMOOD, FirstStageNoMOOD, MOODAlt
 
 """
     MOODCriterion
@@ -55,6 +55,31 @@ function (mood::MOODu1)(particleGrid::ParticleGrid, particleIndex::Integer, rhoV
         particleGrid.grid[particleIndex].moodEvent = particleGrid.grid[particleIndex].moodEvent || moodEvent
     end
     return moodEvent
+end
+
+mutable struct MOODAlt <: MOODCriterion
+    count::Int64
+    deltaRelax::Bool
+    function MOODAlt(;deltaRelax::Bool)
+        new(0, deltaRelax)
+    end
+end
+
+function (mood::MOODAlt)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::Vector{<:Real}, newRho::Real; firstStage = false)
+    # Prep
+    minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
+    d = maximum((particle.volume for particle in particleGrid.grid))
+    δ = mood.deltaRelax ? d : 0.0;
+
+    # MOOD
+    moodEvent = (newRho < minU) || (newRho > maxU)
+    moodEvent = moodEvent && (abs(maxU - minU) < δ^3) ? false : moodEvent
+    particleGrid.grid[particleIndex].moodEvent = moodEvent
+    if moodEvent
+        mood.count += 1
+    end
+    return moodEvent
+
 end
 
 """
@@ -185,6 +210,38 @@ function (mood::NoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoV
     particleGrid.grid[particleIndex].moodEvent = false
     return false
 end
+"""
+OnlyMOOD
+
+Test case for always using the fallback Interpolator
+"""
+struct OnlyMOOD <: MOODCriterion
+    count::Int64
+    function OnlyMOOD()
+        new(0)
+    end
+end
+function (mood::OnlyMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::Vector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+    particleGrid.grid[particleIndex].moodEvent = true
+    return true
+end
+
+"""
+FirstStageNoMOOD
+
+Test case for mixing of stages. Returns false only in the first stage.
+"""
+struct FirstStageNoMOOD <: MOODCriterion
+    count::Int64
+    function FirstStageNoMOOD()
+        new(0)
+    end
+end
+function (mood::FirstStageNoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::Vector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+    particleGrid.grid[particleIndex].moodEvent = !firstStage
+    return !firstStage
+end
+
 
 # ------------------------------------------- Time steppers -------------------------------------------
 struct EulerUpwind <: MeshfreeTimeStepper
@@ -210,6 +267,34 @@ end
 function initTimeStepper(euler::EulerUpwind, particleGrid::ParticleGrid, settings::SimSetting)
     initTimeStep(euler.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
 end
+
+# struct EulerUpwindMood{G1 <: GradientInterpolator, G2 <: GradientInterpolator, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
+#     gradientInterpolator::G1
+#     fallbackInterpolator::G2
+#     mood::MOOD
+#     rhoOld::Vector{Float64}
+#     function EulerUpwind(Nx::Integer, gradientInterpolator::GradientInterpolator; fallbackInterpolator::GradientInterpolator = UpwindGradient(1), mood::MOODCriterion = NoMOOD())
+#         new(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx))
+#     end
+#     function EulerUpwind(Nx::Integer, Ny::Integer; algType::String = "Classic", weightFunction = exponentialWeightFunction()) 
+#         error("2D version not implemented with mood yet!")
+#         new(UpwindGradient(1; algType=algType, weightFunction=weightFunction), Vector{Float64}(undef, Nx*Ny))
+#     end
+# end
+
+# function (euler::EulerUpwindMood)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+#     map!(particle -> particle.rho, euler.rhoOld, particleGrid.grid)
+#     initTimeStep(euler.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+#     for (particleIndex, particle) in enumerate(particleGrid.grid)
+#         div = euler.gradientInterpolator(particleGrid, particleIndex, euler.rhoOld, eq, settings)
+#         particle.rho = particle.rho - div*dt
+
+#     end
+# end
+
+# function initTimeStepper(euler::EulerUpwindMood, particleGrid::ParticleGrid, settings::SimSetting)
+#     initTimeStep(euler.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+# end
 
 struct RK3{G1 <: GradientInterpolator, G2 <: GradientInterpolator, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
     gradientInterpolator::G1
@@ -291,46 +376,16 @@ function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid, settin
     initTimeStep(ralston.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)  # In case the fallbackInterpolator also starts populating the particle.alfaij fields, unpredictable things will start to happen.
 end
 
-function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
-    # First stage
-    map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
-    copyCurvatures!(particleGrid)
-    for (particleIndex, particle) in enumerate(particleGrid.grid)
-        ralston.div1[particleIndex] = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings)
-        particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
-        if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, particle.rho; firstStage=true)
-            ralston.div1[particleIndex] = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=false)
-            particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
-        end
-    end
-
-    # Final stage
-    map!(particle -> particle.rho, ralston.rhos, particleGrid.grid)
-    copyCurvatures!(particleGrid)
-    for (particleIndex, particle) in enumerate(particleGrid.grid)
-        div = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings)
-        particle.rho = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
-        if ralston.mood(particleGrid, particleIndex, ralston.rhos, particle.rho)
-            div = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings; setCurvature=false)
-            particle.rho = ralston.rhos[particleIndex] - dt*div/3
-        end
-    end
-end
-
-# first try for fixing
 # function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
 #     # First stage
 #     map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
 #     copyCurvatures!(particleGrid)
 #     for (particleIndex, particle) in enumerate(particleGrid.grid)
 #         ralston.div1[particleIndex] = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings)
-#         tmp = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
-#         #particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
-#         if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, tmp; firstStage=true)
+#         particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
+#         if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, particle.rho; firstStage=true)
 #             ralston.div1[particleIndex] = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=false)
 #             particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
-#         else
-#             particle.rho = tmp
 #         end
 #     end
 
@@ -339,16 +394,120 @@ end
 #     copyCurvatures!(particleGrid)
 #     for (particleIndex, particle) in enumerate(particleGrid.grid)
 #         div = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings)
-#         #particle.rho = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
-#         tmp = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
-#         if ralston.mood(particleGrid, particleIndex, ralston.rhos, tmp)
+#         particle.rho = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
+#         if ralston.mood(particleGrid, particleIndex, ralston.rhos, particle.rho)
 #             div = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings; setCurvature=false)
 #             particle.rho = ralston.rhos[particleIndex] - dt*div/3
-#         else
-#             particle.rho = tmp
+#             #particle.rho = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
 #         end
 #     end
 # end
+
+# Alternative MOOD implementation with full RK1 fallback
+function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+    # First stage
+    map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
+    copyCurvatures!(particleGrid)
+    for (particleIndex, particle) in enumerate(particleGrid.grid)
+        ralston.div1[particleIndex] = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings)
+        particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
+    end
+    map!(particle -> particle.rho, ralston.rhos, particleGrid.grid)
+    copyCurvatures!(particleGrid)
+    for (particleIndex, particle) in enumerate(particleGrid.grid)
+        div = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings)
+        particle.rho = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
+    end
+
+    for (particleIndex, particle) in enumerate(particleGrid.grid)
+        if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, particle.rho; firstStage = true)
+            div = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=false)
+            particle.rho = ralston.rhoInit[particleIndex] - dt*div
+        end
+    end
+end
+
+# Gemini's function:
+function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+    N = length(particleGrid.grid)
+    k1_high = Vector{Float64}(undef, N)
+    k2_high = Vector{Float64}(undef, N)
+    k2_actual = Vector{Float64}(undef, N) # To store the chosen k2 tendency
+
+    # Store initial solution u_n
+    map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
+
+    # --- Stage 1: Calculate k1 ---
+    # Calculate curvatures based on u_n (rhoInit) if MOOD criterion needs them
+    # The gradient interpolator itself should set particle.curvature
+    # Then copyCurvatures! makes them available in particleGrid.temp for MOODu2
+    # This assumes gradientInterpolator computes and sets curvatures.
+    # If not, ensure curvatures are set based on ralston.rhoInit before the loop.
+    # For safety, let's explicitly ensure curvatures are fresh for the first MOOD check.
+    # This might involve calling the high-order gradient just to set curvatures
+    # or having a separate curvature computation.
+    # Assuming gradientInterpolator sets curvatures when called:
+    for particleIndex in 1:N
+        # Dummy call to set curvatures if not done by initTimeStepper or otherwise
+        # This is a bit inefficient if gradientInterpolator is heavy.
+        # A better approach would be a dedicated setCurvatures!(ralston.gradientInterpolator, ...)
+        # or ensure initTimeStep also computes initial curvatures.
+        # For now, assume curvatures are either up-to-date or will be set by the interpolator call.
+        _ = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=true)
+    end
+    copyCurvatures!(particleGrid) # Make curvatures from particle.curvature available in particleGrid.temp for MOOD
+
+    for particleIndex in 1:N
+        k1_high[particleIndex] = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=true) # ensure curvature is set by main interpolator
+
+        # Candidate solution for u* (intermediate stage)
+        # u_star_candidate = u_n - (2/3)*dt*k1_high
+        rho_candidate_stage1 = ralston.rhoInit[particleIndex] - (2.0/3.0)*dt*k1_high[particleIndex]
+
+        if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, rho_candidate_stage1; firstStage=true)
+            ralston.div1[particleIndex] = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=false) # k1_actual
+        else
+            ralston.div1[particleIndex] = k1_high[particleIndex] # k1_actual
+        end
+    end
+
+    # Compute u* using k1_actual (ralston.div1)
+    # u* = u_n - (2/3)*dt*k1_actual
+    for particleIndex in 1:N
+        ralston.rhos[particleIndex] = ralston.rhoInit[particleIndex] - (2.0/3.0)*dt*ralston.div1[particleIndex]
+    end
+
+    # --- Stage 2: Calculate k2 ---
+    # Calculate curvatures based on u* (ralston.rhos)
+    for particleIndex in 1:N # Similar to above, ensure curvatures are set based on ralston.rhos
+        _ = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings; setCurvature=true)
+    end
+    copyCurvatures!(particleGrid) # Make new curvatures available for MOOD
+
+    for particleIndex in 1:N
+        k2_high[particleIndex] = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings; setCurvature=true) # ensure curvature is set
+
+        # Candidate for final solution u_n+1
+        # u_n+1_candidate = u_n - dt * ( (1/4)*k1_actual + (3/4)*k2_high )
+        rho_candidate_final = ralston.rhoInit[particleIndex] - dt * ( (1.0/4.0)*ralston.div1[particleIndex] + (3.0/4.0)*k2_high[particleIndex] )
+
+        # MOOD check using u_n (ralston.rhoInit) as the reference for DMP,
+        # or ralston.rhos (u*) if that's more appropriate for your MOOD criterion's design.
+        # The original code checked final rho against rhoInit.
+        if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, rho_candidate_final; firstStage=false)
+        # Alternative: if ralston.mood(particleGrid, particleIndex, ralston.rhos, rho_candidate_final; firstStage=false)
+            k2_actual[particleIndex] = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings; setCurvature=false)
+        else
+            k2_actual[particleIndex] = k2_high[particleIndex]
+        end
+    end
+
+    # --- Final Update ---
+    # u_n+1 = u_n - dt * ( (1/4)*k1_actual + (3/4)*k2_actual )
+    for particleIndex in 1:N
+        particleGrid.grid[particleIndex].rho = ralston.rhoInit[particleIndex] - dt * ( (1.0/4.0)*ralston.div1[particleIndex] + (3.0/4.0)*k2_actual[particleIndex] )
+    end
+end
 
 struct RK4{G1 <: GradientInterpolator, G2 <: GradientInterpolator, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
     gradientInterpolator::G1
