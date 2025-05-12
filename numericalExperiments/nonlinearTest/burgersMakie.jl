@@ -14,8 +14,60 @@ using Meshfree4ScalarEq
 function smoothInit1(x::Real) return exp(-x^2) end
 function smoothInit2(x::Real) return sin(2*pi*x/5) + 1.0 end # Adjusted from burgers.txt
 function shockInit1(x::Real) return x > 0.5 ? 1.0 : -1.0 end  # Adjusted from burgers.txt
-function shockInit2(x::Real) return x > 0.5 ? 0 : 1.0 end  # Adjusted from burgers.txt
+function shockInit2(x::Real) return x > 0. ? 0. : 1.0 end  # Adjusted from burgers.txt
 function shockInit3(x::Real) return ((x < -1.) | (x > 1.)) ? 0. : 1. end
+function shockInit2Ana(x::Real, t::Real, xmin, xmax) 
+    
+    if t < 10
+        if x-xmin < t; return t == 0. ?  0 : (x-xmin)/t
+        elseif x-xmin>=t && x<= 1/2*t; return 1.
+        else; return 0. end
+    else
+        if x < 1/2 * t
+            return (x-xmin)/t
+        else
+            return 0
+        end
+    end
+end
+# Helper function to map a value back to the periodic domain [xmin, xmax)
+function periodic_map(y::Real, xmin::Real, xmax::Real)
+    L = xmax - xmin
+    # Ensures the result is in [0, L) then shifts by xmin
+    return xmin + mod(y - xmin, L)
+end
+
+# Function to numerically solve the implicit analytical solution for smooth ICs with periodicity
+function solve_implicit_periodic(x::Real, t::Real, xmin::Real, xmax::Real, f::Function; tol::Real = 1e-9, max_iter::Int = 100)
+    if t == 0.0
+        return f(x)
+    end
+
+    u_old = f(x) # Initial guess
+
+    for _ in 1:max_iter
+        # Calculate the characteristic foot at t=0, mapped to the periodic domain
+        xi = periodic_map(x - u_old * t, xmin, xmax)
+        u_new = f(xi)
+        if abs(u_new - u_old) < tol
+            return u_new
+        end
+        u_old = u_new
+    end
+    # If iteration doesn't converge, return the last value and warn
+    @warn "Fixed-point iteration for analytical solution did not converge at x=$x, t=$t. Max iterations reached."
+    return u_old
+end
+
+# Analytical solution for smoothInit1 with periodicity (iterative evaluation)
+function smoothInit1AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real)
+    return solve_implicit_periodic(x, t, xmin, xmax, smoothInit1)
+end
+
+# Analytical solution for smoothInit2 with periodicity (iterative evaluation)
+function smoothInit2AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real)
+    return solve_implicit_periodic(x, t, xmin, xmax, smoothInit2)
+end
 # -------------------------------------------------
 
 """
@@ -71,6 +123,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         fallback_grad_name = get(run_params, "fallback_gradient", nothing) # Default fallback = 1st order Upwind
         main_flux_name = get(run_params, "main_flux", nothing)
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
+        mood_tol = get(run_params, "mood_tol", nothing)
 
         # --- Derive regularity ---
         regular::Bool = (randomness_factor == 0.0)
@@ -89,7 +142,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif mood_name == "none"; mood_fun = NoMOOD()
         elseif mood_name == "only"; mood_fun = OnlyMOOD()
         elseif mood_name == "firstNone"; mood_fun = FirstStageNoMOOD()
-        elseif mood_name == "alt"; mood_fun = MOODAlt(deltaRelax = delta_relax)
+        elseif mood_name == "alt"; mood_fun = MOODAlt(deltaRelax = delta_relax, tol = mood_tol)
         elseif !isnothing(mood_name); error("MOOD '$mood_name' not recognized") end
 
         local MainFlux
@@ -106,6 +159,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         local MainGrad
         if main_grad_name == "MUSCL"; MainGrad = MUSCL(order-1; numericalFlux = MainFlux)
+        elseif main_grad_name == "MUSCLlimit"; MainGrad = MUSCLlimited(1; numericalFlux = MainFlux)
         elseif main_grad_name == "Upwind"; MainGrad = UpwindGradient(order; numericalFlux = MainFlux)
         elseif main_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
         elseif !isnothing(main_grad_name); error("Requested Main GradientInterpolator not implemented!") end
@@ -124,6 +178,9 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif timestepper_name == "RK4"; method = RK4(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
         elseif timestepper_name == "LF"; method = LaxFriedrich(N)
         elseif timestepper_name == "Upwind"; method = Upwind(N)
+        elseif timestepper_name == "Analytic"; method = nothing 
+        elseif timestepper_name == "RalstonRK2Limiter"; method = RalstonRK2Limiter(MainGrad, N)
+        elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
         else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
         # --- Equation ---
@@ -146,14 +203,13 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         # --- Initial Condition ---
         local init_func_handle::Function
-        if initFunc_name == "smoothInit1"; init_func_handle = smoothInit1
+        if initFunc_name == "smoothInit1"; init_func_handle = smoothInit1; analytic_func(x,t) = smoothInit1AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real)
         elseif initFunc_name == "smoothInit2"; init_func_handle = smoothInit2
         elseif initFunc_name == "shockInit1"; init_func_handle = shockInit1
-        elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2
+        elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2; analytic_func = (x,t) -> shockInit2Ana(x,t,xmin,xmax)
         elseif initFunc_name == "shockInit3"; init_func_handle = shockInit3
         else; error("Unknown initFunc name: $initFunc_name"); end
         setInitialConditions!(particleGrid, init_func_handle)
-
             # Create SimSettings object
         settings = SimSetting(  tmax=tmax,
                                 dt=dt,
@@ -165,7 +221,22 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         # --- Call the NEW Time Integrator ---
         println("Starting time integration (Burgers)...")
-        elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
+        if !isnothing(method)
+            elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
+        else
+            elapsed_time = 0.
+            dx = (xmax - xmin) * 10^-3
+            dt = (tmax - 0) * 10^-2
+            ts = collect(0:dt:tmax)
+            xs = [collect(xmin:dx:xmax) for _ = eachindex(ts)]
+            us =  Vector{Vector{Float64}}(undef, 0)
+            for (i,t) in enumerate(ts)
+                u_tmp = map(x -> analytic_func(x,t), xs[i])
+                println(typeof(u_tmp))
+                push!(us, u_tmp)
+            end
+        end
+        println(typeof(xs), typeof(us), typeof(ts))
         println("Time integration finished in $(round(elapsed_time, digits=2)) seconds.")
 
         sim_data_result = createSimData(xs, us, ts, run_params)
@@ -203,8 +274,8 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 4.0, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
+        "tmax" => 20.0, "N" => 100, "xmin" => -5.0, "xmax" => 15.0,
+        "CFL" => 0.2, "save_frequency" => 10, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "shockInit2",
         "randomness_factor" => 0.25, # Provide default needed when regular=false
@@ -214,7 +285,7 @@ sim_config_burgers = SimulationConfig(
     ),
 
     MethodDict(
-        "Method 1" => ParamDict(
+        "OnlyFallback" => ParamDict(
             "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
@@ -224,19 +295,20 @@ sim_config_burgers = SimulationConfig(
             "delta_relax" => false,
             "order" => 2
         ),
-        "Method 2" => ParamDict(
-            "timestepper" => "RalstonRK2",
+        "SmoothSwitching" => ParamDict(
+            "timestepper" => "RalstonRK2SmoothSwitch",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Upwind",
-            "MOOD" => "firstNone",
-            "delta_relax" => false,
+            "MOOD" => "alt",
+            "mood_tol" => 1.025,
+            "delta_relax" => true,
             "order" => 2
         ),
-        "Method 3" => ParamDict(
-            "timestepper" => "RalstonRK2",
-            "main_gradient" => "MUSCL",
+        "NoMOOD" => ParamDict(
+            "timestepper" => "RalstonRK2Limiter",
+            "main_gradient" => "MUSCLlimit",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Upwind",
@@ -244,7 +316,7 @@ sim_config_burgers = SimulationConfig(
             "delta_relax" => false,
             "order" => 2
         ),
-        "Method 4" => ParamDict(
+        "Regular MOOD" => ParamDict(
             "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
@@ -264,13 +336,17 @@ sim_config_burgers = SimulationConfig(
         #     "delta_relax" => false,
         #     "order" => 1
         # ),
-        "LF" => ParamDict(
-            "randomness_factor" => (:const, 0.0)
+        "Analytic" => ParamDict(
+            "timestepper" => "Analytic",
+            "randomness_factor" => 0.
              # No randomness_factor needed when regular=true
+        ),
+        "LF" => ParamDict(
+            "randomness_factor" => 0.
         )
 
     ),
-    "Method 1";
+    "Method 2";
     ui_options = Dict("animation_duration_s" => 10., "show_scatter" => true)
 )
 

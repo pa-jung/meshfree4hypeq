@@ -7,7 +7,7 @@ using ..Meshfree4ScalarEq.SimSettings
 using ..Meshfree4ScalarEq.ScalarHyperbolicEquations
 using ..Meshfree4ScalarEq.FluxFunctions
 
-export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil, LaxFriedrichsGradient
+export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil, LaxFriedrichsGradient, MUSCLlimited
 
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
@@ -1063,4 +1063,216 @@ function setCurvatures!(particleGrid::ParticleGrid2D, settings::SimSetting)
     end
 end
 
-end  # module Interpolations
+# In Interpolations.txt module Interpolations
+
+# (Keep existing code: MLSWeightFunction, sortFlux, functionInterpolation!, gradInterpolation!, GradientInterpolator, UpwindGradient, CentralGradient, WENO, original MUSCL struct and methods, etc.)
+
+
+# --- NEW: MUSCLlimited specific code ---
+
+# --- Add Helper Functions (Place these near the top or within the new section) ---
+
+# Helper function to find closest left and right neighbors and their data
+# Returns: (idx_L, val_L, dist_L, idx_R, val_R, dist_R)
+# dist_L = (xj - xi) < 0, dist_R = (xk - xi) > 0
+function find_closest_lr_neighbors_1D(particleGrid::ParticleGrid1D, p_idx::Integer, fVec::Vector{<:Real})
+    # p_idx is the index of the central particle in particleGrid.grid
+    particle_i = particleGrid.grid[p_idx]
+
+    best_idx_L::Union{Int, Nothing} = nothing
+    val_L::Union{Float64, Nothing} = nothing
+    dist_L::Union{Float64, Nothing} = nothing # Will be < 0
+
+    best_idx_R::Union{Int, Nothing} = nothing
+    val_R::Union{Float64, Nothing} = nothing
+    dist_R::Union{Float64, Nothing} = nothing # Will be > 0
+
+    min_abs_dist_L = Inf
+    min_dist_R = Inf
+
+    # Iterate through the pre-identified neighbors of particle 'p_idx'
+    # neighbourIndices should contain the actual grid indices
+    for nb_actual_idx in particle_i.neighbourIndices
+        dx_ij = getPeriodicDistance(particleGrid, p_idx, nb_actual_idx)
+        if dx_ij > 1e-9 # Potential right neighbor
+            if dx_ij < min_dist_R
+                min_dist_R = dx_ij
+                best_idx_R = nb_actual_idx
+                val_R = fVec[nb_actual_idx]
+                dist_R = dx_ij
+            end
+        elseif dx_ij < -1e-9 # Potential left neighbor
+            abs_dx_ij = abs(dx_ij)
+            if abs_dx_ij < min_abs_dist_L
+                min_abs_dist_L = abs_dx_ij
+                best_idx_L = nb_actual_idx
+                val_L = fVec[nb_actual_idx]
+                dist_L = dx_ij # Keep its negative sign
+            end
+        end
+    end
+    return best_idx_L, val_L, dist_L, best_idx_R, val_R, dist_R
+end
+
+# Superbee limiter function phi(r)
+function superbee_phi(r::Real)::Float64
+    if r <= 0.0
+        return 0.0
+    else
+        return max(min(1.0, 2.0 * r), min(2.0, r))
+    end
+end
+
+# --- New MUSCLlimited Struct Definition ---
+# (Keep the original MUSCL struct and its methods)
+
+# Using MUSCLORDER1 from original MUSCL definition
+mutable struct MUSCLlimited{ORDER<:MUSCLORDER} <: GradientInterpolator
+    order::ORDER # Will likely always be MUSCLORDER1 for this implementation
+    res::Vector{Float64}  # Result of gradient computation (size matches order)
+    weightFunction::MLSWeightFunction
+    numericalFlux::NumericalFluxFunction
+    limited_slopes_cache::Vector{Float64} # Cache for slopes limited in initTimeStep
+
+    # Constructor for MUSCLlimited - currently only supporting order 1 (linear reconstruction)
+    function MUSCLlimited(order::Int64; weightFunction::MLSWeightFunction = exponentialWeightFunction(), numericalFlux::NumericalFluxFunction = RusanovFlux())
+        @assert (order == 1) "MUSCLlimited currently only supports order=1 (linear reconstruction)"
+        # Need to know the number of particles N to initialize cache, but it's not available here.
+        # Initialize with size 0 and resize in initTimeStep.
+        limited_slopes_cache_init = Vector{Float64}(undef, 0)
+        # res size for order 1 is 1 (for 1D)
+        new{MUSCLORDER1}(MUSCLORDER1(), Vector{Float64}(undef, order), weightFunction, numericalFlux, limited_slopes_cache_init)
+    end
+end
+
+
+# --- initTimeStep specifically for MUSCLlimited{MUSCLORDER1} ---
+# This function *does* take fVec to calculate limited slopes
+function initTimeStep(muscl::MUSCLlimited{MUSCLORDER1}, particleGrid::ParticleGrid1D, interpAlpha::Real, interpRange::Real, fVec::Vector{<:Real})
+    N_total_particles = length(particleGrid.grid)
+    # Ensure cache is correctly sized
+    if length(muscl.limited_slopes_cache) != N_total_particles
+        resize!(muscl.limited_slopes_cache, N_total_particles)
+    end
+
+    # --- Part 1: Calculate original alfaij coefficients (needed for divergence sum) ---
+    # This is identical to the original initTimeStep for MUSCLORDER1
+    for (particleIndex_outer, particle_outer) in enumerate(particleGrid.grid)
+        current_neighbors = particle_outer.neighbourIndices
+        num_neighbors = length(current_neighbors)
+
+        # Ensure internal vectors are sized (should be handled by updateNeighbours!)
+        if length(particle_outer.dxVec) != num_neighbors resize!(particle_outer.dxVec, num_neighbors) end
+        if length(particle_outer.wVec) != num_neighbors resize!(particle_outer.wVec, num_neighbors) end
+        if length(particle_outer.alfaij) != num_neighbors resize!(particle_outer.alfaij, num_neighbors) end # alfaij used by MUSCLORDER1
+
+        for (i, nbIndex) in enumerate(current_neighbors)
+            particle_outer.dxVec[i] = getPeriodicDistance(particleGrid, particleIndex_outer, nbIndex)
+        end
+        
+        # Assuming exponentialWeightFunction has been modified to accept wVec_out
+        # If not, use: particle_outer.wVec .= muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx)
+        try
+             muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx, wVec_out=particle_outer.wVec)
+        catch e
+            # Fallback if wVec_out is not implemented for the weight function
+             if isa(e, MethodError)
+                 particle_outer.wVec .= muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx)
+             else
+                 rethrow(e)
+             end
+        end
+
+
+        wVec_times_dx = particle_outer.wVec .* particle_outer.dxVec
+        t_sum = dot(wVec_times_dx, particle_outer.dxVec)
+
+        if abs(t_sum) < 1e-12
+            fill!(particle_outer.alfaij, 0.0)
+        else
+            particle_outer.alfaij .= wVec_times_dx ./ t_sum
+        end
+    end
+
+    # --- Part 2: Calculate and store all limited slopes ---
+    Threads.@threads for i in 1:N_total_particles # Use multithreading if desired
+        ui = fVec[i]
+        _, val_L, dist_L_val, _, val_R, dist_R_val = find_closest_lr_neighbors_1D(particleGrid, i, fVec)
+
+        slope_L_os = 0.0
+        if !isnothing(val_L) && !isnothing(dist_L_val) && abs(dist_L_val) > 1e-9
+            slope_L_os = (ui - val_L) / (-dist_L_val)
+        end
+
+        slope_R_os = 0.0
+        if !isnothing(val_R) && !isnothing(dist_R_val) && abs(dist_R_val) > 1e-9
+            slope_R_os = (val_R - ui) / dist_R_val
+        end
+
+        r_val = 0.0
+        if abs(slope_R_os) < 1e-12
+            r_val = (abs(slope_L_os) < 1e-12) ? 1.0 : -1.0
+        else
+            r_val = slope_L_os / slope_R_os
+        end
+
+        phi = superbee_phi(r_val)
+
+        if slope_L_os * slope_R_os <= 1e-12 # Use threshold comparison for stability
+            muscl.limited_slopes_cache[i] = 0.0
+        else
+            muscl.limited_slopes_cache[i] = phi * slope_R_os
+        end
+    end
+end
+
+
+# --- Functor for MUSCLlimited{MUSCLORDER1} ---
+# This uses the pre-calculated limited slopes from its cache
+function (muscl::MUSCLlimited{MUSCLORDER1})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
+
+    # Note: This function *assumes* that `initTimeStep(muscl, particleGrid, ..., fVec)`
+    # has already been called for the relevant `fVec` stage, populating
+    # `muscl.limited_slopes_cache` and `particle.alfaij`.
+
+    particle_i_data = particleGrid.grid[particleIndex]
+    ui = fVec[particleIndex]
+    div_val = 0.0
+
+    # Retrieve the limited slope for the current particle 'particleIndex'
+    sigma_i_lim = muscl.limited_slopes_cache[particleIndex]
+
+    if setCurvature # For MUSCLORDER1, curvature is conceptually zero
+        particle_i_data.curvature = 0.0
+    end
+
+    for (idx_in_stencil, actual_nb_idx) in enumerate(particle_i_data.neighbourIndices)
+        deltaPos_ij = getPeriodicDistance(particleGrid, particleIndex, actual_nb_idx)
+        uj = fVec[actual_nb_idx]
+
+        # Retrieve the limited slope for the neighbor particle 'actual_nb_idx'
+        sigma_j_lim = muscl.limited_slopes_cache[actual_nb_idx]
+
+        # Reconstruct states at midpoint using LIMITED slopes
+        fij = ui + (deltaPos_ij / 2.0) * sigma_i_lim
+        fji = uj - (deltaPos_ij / 2.0) * sigma_j_lim
+
+        # Numerical Flux
+        fm, fp = sortFlux(fij, fji, deltaPos_ij)
+        num_flux_ij = muscl.numericalFlux(fm, fp, eq)
+
+        # Accumulate divergence using original particle_i_data.alfaij coefficients
+        div_val += particle_i_data.alfaij[idx_in_stencil] * (num_flux_ij - flux(eq, ui))
+    end
+
+    return 2.0 * div_val # Factor of 2 as in original code
+end
+
+# --- Keep the original initTimeStep and functor for the standard MUSCL struct ---
+# function initTimeStep(muscl::MUSCL{ORDER}, ...) where {ORDER <: MUSCLORDER} ...
+# function (muscl::MUSCL{ORDER})(...) where {ORDER <: MUSCLORDER} ...
+
+# (Keep other interpolators like UpwindGradient, CentralGradient etc.)
+# ...
+
+end # End Module Interpolations
