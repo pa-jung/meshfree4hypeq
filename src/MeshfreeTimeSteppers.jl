@@ -1,4 +1,4 @@
-export EulerUpwind, Upwind, RalstonRK2, RK3, RK4, MOODCriterion, MOODu1, MOODu2, NoMOOD, MOODLoubertU2, OnlyMOOD, FirstStageNoMOOD, MOODAlt, RalstonRK2Limiter, RalstonRK2SmoothSwitch
+export EulerUpwind, Upwind, RalstonRK2, RK3, RK4, MOODCriterion, MOODu1, MOODu2, NoMOOD, MOODLoubertU2, OnlyMOOD, FirstStageNoMOOD, MOODAlt, RalstonRK2Limiter, RalstonRK2SmoothSwitch, RalstonRK2SmoothSwitch2
 
 """
     MOODCriterion
@@ -60,9 +60,8 @@ end
 mutable struct MOODAlt <: MOODCriterion
     count::Int64
     deltaRelax::Bool
-    tol
-    function MOODAlt(;deltaRelax::Bool, tol = 10. ^-2)
-        new(0, deltaRelax, tol)
+    function MOODAlt(;deltaRelax::Bool)
+        new(0, deltaRelax)
     end
 end
 
@@ -438,12 +437,13 @@ struct RalstonRK2SmoothSwitch{G1 <: GradientInterpolator, G2 <: GradientInterpol
     div1::Vector{Float64}
     div_high::Vector{Float64}
     div_low::Vector{Float64}
+    tol::Float64
 
-    function RalstonRK2SmoothSwitch(gradientInterpolator::GradientInterpolator, Nx::Integer; fallbackInterpolator::GradientInterpolator = UpwindGradient(1), mood::MOODCriterion = NoMOOD())
-        new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx))
+    function RalstonRK2SmoothSwitch(gradientInterpolator::GradientInterpolator, Nx::Integer; fallbackInterpolator::GradientInterpolator = UpwindGradient(1), mood::MOODCriterion = NoMOOD(), tol::Float64 = 1.)
+        new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), tol)
     end
-    function RalstonRK2SmoothSwitch(gradientInterpolator::GradientInterpolator, Nx::Integer, Ny::Integer; fallbackInterpolator::GradientInterpolator = UpwindGradient(1; algType="Praveen"), mood::MOODCriterion = NoMOOD()) 
-        new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx))
+    function RalstonRK2SmoothSwitch(gradientInterpolator::GradientInterpolator, Nx::Integer, Ny::Integer; fallbackInterpolator::GradientInterpolator = UpwindGradient(1; algType="Praveen"), mood::MOODCriterion = NoMOOD(), tol::Float64 = 1.) 
+        new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), tol)
     end
 end
 function initTimeStepper(ralston::RalstonRK2SmoothSwitch, particleGrid::ParticleGrid, settings::SimSetting)
@@ -495,39 +495,90 @@ function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicEquation, particl
             particle.rho = ralston.rhos[particleIndex]
         end
     end
-
-    # counter = 0
-    # while !isempty(mood_indices)
-    #     particleIndex = pop!(mood_indices)
-    #     println(particleIndex)
-    #     println(mood_indices)
-    #     counter += 1
-    #     particle = particleGrid.grid[particleIndex]
-    #     div = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=false)
-    #     println(div)
-    #     particle.rho = ralston.rhoInit[particleIndex] - dt*div
-    #     ralston.div1[particleIndex] = div
-
-    #     for nbIndex  = (particle.neighbourIndices)
-    #         nbParticle = particleGrid.grid[nbIndex]
-    #         denom = max(abs(div), abs(ralston.div1[nbIndex]))
-    #         denom = (denom ≈ 0.) ? 1 : denom
-    #         if !nbParticle.moodEvent && (abs(div - ralston.div1[nbIndex])/denom >= -10)#ralston.mood.tol) 
-    #             nbParticle.moodEvent = true
-    #             push!(mood_indices, nbIndex)
-    #         end
-    #     end
-    # end
-    # for particle = particleGrid.grid; particle.moodEvent = false end       
-
-    # for (particleIndex, particle) in enumerate(particleGrid.grid)
-    #     if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, particle.rho; firstStage = true)
-    #         div = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature=false)
-    #         particle.rho = ralston.rhoInit[particleIndex] - dt*div
-    #     end
-    # end
 end
 
+struct RalstonRK2SmoothSwitch2{G1 <: GradientInterpolator, G2 <: GradientInterpolator, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
+    gradientInterpolator::G1
+    fallbackInterpolator::G2
+    mood::MOOD
+    rhoInit::Vector{Float64}
+    rhos::Vector{Float64}
+    rhosFB::Vector{Float64}
+    div1::Vector{Float64}
+    mood_indices::Vector{Int64}
+    prop_indices::Vector{Int64}
+    tol::Float64
+
+    function RalstonRK2SmoothSwitch2(gradientInterpolator::GradientInterpolator, Nx::Integer; fallbackInterpolator::GradientInterpolator = UpwindGradient(1), mood::MOODCriterion = NoMOOD(), tol = 10. ^-7)
+        new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Int64}(undef, 0), Vector{Int64}(undef, 0), tol)
+    end
+    function RalstonRK2SmoothSwitch2(gradientInterpolator::GradientInterpolator, Nx::Integer, Ny::Integer; fallbackInterpolator::GradientInterpolator = UpwindGradient(1; algType="Praveen"), mood::MOODCriterion = NoMOOD(), tol = 10. ^-7) 
+        new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Int64}(undef, Nx), Vector{Int64}(undef, 0), tol)
+    end
+end
+function initTimeStepper(ralston::RalstonRK2SmoothSwitch2, particleGrid::ParticleGrid, settings::SimSetting)
+    initTimeStep(ralston.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+    initTimeStep(ralston.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)  # In case the fallbackInterpolator also starts populating the particle.alfaij fields, unpredictable things will start to happen.
+end
+
+function (ralston::RalstonRK2SmoothSwitch2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+    
+    
+    target_mass = 0.
+    current_mass = 0.
+    empty!(ralston.mood_indices)
+    empty!(ralston.prop_indices)
+    map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
+    copyCurvatures!(particleGrid)
+    # Determine full fallback
+    for (particleIndex,particle) in enumerate(particleGrid.grid)
+        div = ralston.fallbackInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings; setCurvature = false)
+        rho_tmp = ralston.rhoInit[particleIndex] - div*dt
+        target_mass += rho_tmp * particle.volume
+        ralston.rhosFB[particleIndex] = rho_tmp
+    end    
+
+    # regular Ralston with MOOD, Fallback to full fallback gradient
+    for (particleIndex, particle) in enumerate(particleGrid.grid)
+        ralston.div1[particleIndex] = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhoInit, eq, settings)
+        particle.rho = ralston.rhoInit[particleIndex] - ralston.div1[particleIndex]*dt*2/3
+    end
+    map!(particle -> particle.rho, ralston.rhos, particleGrid.grid)
+    copyCurvatures!(particleGrid)
+    for (particleIndex, particle) in enumerate(particleGrid.grid)
+        div = ralston.gradientInterpolator(particleGrid, particleIndex, ralston.rhos, eq, settings)
+        particle.rho = ralston.rhoInit[particleIndex] - dt*(ralston.div1[particleIndex]/4 + 3*div/4)
+        if ralston.mood(particleGrid, particleIndex, ralston.rhoInit, particle.rho; firstStage = true)
+            particle.rho = ralston.rhosFB[particleIndex]
+            #append!(ralston.mood_indices, particle.neighbourIndices)
+            push!(ralston.mood_indices,particleIndex)
+            ralston.div1[particleIndex] = 2/3 * ralston.div1[particleIndex] + 1/3 * div
+        end
+        current_mass += particle.rho * particle.volume
+    end
+    
+    for i = sortperm(ralston.div1[ralston.mood_indices])
+        append!(ralston.prop_indices, particleGrid.grid[ralston.mood_indices[i]].neighbourIndices)
+    end
+    while abs(target_mass - current_mass) >= ralston.tol
+        if isempty(ralston.prop_indices)
+            println(any(map(particle -> particle.moodEvent,particleGrid.grid)))
+            println("Total Fallback or no MOOD detected! Mass change is " * string(abs(target_mass -current_mass)))
+            break
+        end
+        particleIndex = popfirst!(ralston.prop_indices)
+        particle = particleGrid.grid[particleIndex]
+        if particle.moodEvent
+            continue
+        end
+        particle.moodEvent = true
+        append!(ralston.prop_indices, particle.neighbourIndices)
+        local_mass = particle.rho * particle.volume
+        particle.rho = ralston.rhosFB[particleIndex]
+        current_mass += particle.rho * particle.volume - local_mass
+
+    end
+end
 # # Assume RalstonRK2SmoothSwitch is the type, though function signature uses RalstonRK2
 # function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
 #     # --- Stage 1: Calculate k1 and intermediate u* ---

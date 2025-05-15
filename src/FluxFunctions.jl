@@ -42,27 +42,21 @@ function (upwind::UpwindFlux)(leftState::Real, rightState::Real, eq::ScalarHyper
     return 0.5*(leftFlux[ind] + rightFlux[ind] - abs(a)*(rightState - leftState))
 end
 
-# not necessary
-# #--------------- LaxFriedrichFlux
-# struct LaxFriedrichsFlux <: NumericalFluxFunction end
+#--------------- RoeDiffusiveFlux (Lax Wendroff without λ scaling)
+struct RoeDiffusiveFlux <: NumericalFluxFunction end
 
-# function (lf::LaxFriedrichsFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation, alpha::Real)::Real
-#     leftFlux = flux(eq, leftState)
-#     rightFlux = flux(eq, rightState)
-#     return 0.5*(leftFlux + rightFlux - alpha*(rightState - leftState))
-# end
+function (lw::RoeDiffusiveFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation)::Real
+    F_L = flux(eq, leftState)
+    F_R = flux(eq, rightState)
+    
+    avg_F = 0.5 * (F_L + F_R)
+    diff_U = rightState - leftState
 
-#--------------- LaxWendroffFlux
-struct LaxWendroffFlux <: NumericalFluxFunction end
-
-function (lw::LaxWendroffFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation)::Real
-    leftFlux = flux(eq, leftState)
-    rightFlux = flux(eq, rightState)
-    diffState = rightState -leftState
-    if !(diffState == 0)
-        return 0.5*(leftFlux + rightFlux - (leftFlux - rightFlux)^2/(rightState - leftState))
+    if abs(diff_U) < 1e-12
+        return F_L # or F_R, they are the same
     else
-        return 0.5 * (leftFlux + rightFlux)
+        A_roe_squared_term = (F_L - F_R)^2 / diff_U # This is (-(F_R-F_L))^2 / diff_U = (F_R-F_L)^2 / diff_U
+        return avg_F - A_roe_squared_term
     end
 end
 

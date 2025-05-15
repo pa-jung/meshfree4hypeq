@@ -15,7 +15,7 @@ function smoothInit1(x::Real) return exp(-x^2) end
 function smoothInit2(x::Real) return sin(2*pi*x/5) + 1.0 end # Adjusted from burgers.txt
 function shockInit1(x::Real) return x > 0.5 ? 1.0 : -1.0 end  # Adjusted from burgers.txt
 function shockInit2(x::Real) return x > 0. ? 0. : 1.0 end  # Adjusted from burgers.txt
-function shockInit3(x::Real) return ((x < -1.) | (x > 1.)) ? 0. : 1. end
+function shockInit3(x::Real) return ((x < -15.) | (x > 10.)) ? 1/2 : 1. end
 function shockInit2Ana(x::Real, t::Real, xmin, xmax) 
     
     if t < 10
@@ -23,13 +23,71 @@ function shockInit2Ana(x::Real, t::Real, xmin, xmax)
         elseif x-xmin>=t && x<= 1/2*t; return 1.
         else; return 0. end
     else
-        if x < 1/2 * t
-            return (x-xmin)/t
-        else
-            return 0
+        x_shock_interacting = sqrt(10.0 * t) - 5.0
+        if x < -5.0
+            return 0.0
+        elseif x < x_shock_interacting # Implies -5.0 <= x < sqrt(10*t) - 5 (Rarefaction up to shock)
+            # Ensure u doesn't exceed 1 (though physically it shouldn't if x_s is correct)
+            # The value from rarefaction (x+5)/t is the actual value on the left of the shock
+            val = (x + 5.0) / t
+            # The maximum value the rarefaction can provide before being "cut" by the shock is u_L at the shock
+            # u_L_at_shock = (x_shock_interacting + 5.0) / t = (sqrt(10.0*t) - 5.0 + 5.0) / t = sqrt(10.0/t)
+            # This u_L_at_shock decreases from 1 (at t=10) as t increases.
+            return min(val, sqrt(10.0/t)) # Safeguard, though (x+5)/t should be correct if x < x_s(t)
+                                         # More directly, if x is in the rarefaction fan and to the left of the shock,
+                                         # the value is just (x+5)/t. The shock cuts off the fan.
+        else # x >= x_shock_interacting
+            return 0.0
         end
     end
 end
+function shockInit3Ana(x::Real, t::Real)::Float64
+    if t < 0.0
+        error("Time t cannot be negative.")
+    end
+
+    if t == 0.0
+        # Initial condition
+        if x < -1.0 || x > 1.0
+            return 0.0
+        else # -1.0 <= x <= 1.0
+            return 1.0
+        end
+    end
+
+    t_interaction = 15.0
+
+    if t < t_interaction
+        # Phase 1: Waves evolve independently
+        x_rarefaction_head = t - 1.0  # Head of rarefaction: u=1 characteristic from x_0=-1
+        x_shock_front = 1.0 + 0.5 * t # Shock front position
+
+        if x < -1.0
+            return 0.0
+        elseif x < x_rarefaction_head # Implies -1.0 <= x < t - 1.0 (Rarefaction fan)
+            return (x + 1.0) / t
+        elseif x < x_shock_front      # Implies t - 1.0 <= x < 1.0 + 0.5*t (Plateau)
+            return 1.0
+        else # x >= x_shock_front (Behind shock)
+            return 0.0
+        end
+    else # t >= t_interaction (t >= 4.0)
+        # Phase 2: Shock interacts with rarefaction
+        x_shock_interacting = -10.0 + 2.0 * sqrt(t)
+
+        if x < -1.0
+            return 0.0
+        elseif x < x_shock_interacting # Implies -1.0 <= x < -1.0 + 2*sqrt(t) (Rarefaction up to shock)
+            # The value from the rarefaction formula is u = (x+1)/t.
+            # The maximum u value in the rarefaction part is at the shock front: ( (-1+2sqrt(t)) + 1 ) / t = 2/sqrt(t).
+            # This max value is <= 1 for t >= 4.
+            return (x + 1.0) / t
+        else # x >= x_shock_interacting (Behind shock)
+            return 0.0
+        end
+    end
+end
+
 # Helper function to map a value back to the periodic domain [xmin, xmax)
 function periodic_map(y::Real, xmin::Real, xmax::Real)
     L = xmax - xmin
@@ -123,7 +181,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         fallback_grad_name = get(run_params, "fallback_gradient", nothing) # Default fallback = 1st order Upwind
         main_flux_name = get(run_params, "main_flux", nothing)
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
-        mood_tol = get(run_params, "mood_tol", nothing)
+        switch_tol = get(run_params, "switch_tol", nothing)
 
         # --- Derive regularity ---
         regular::Bool = (randomness_factor == 0.0)
@@ -142,7 +200,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif mood_name == "none"; mood_fun = NoMOOD()
         elseif mood_name == "only"; mood_fun = OnlyMOOD()
         elseif mood_name == "firstNone"; mood_fun = FirstStageNoMOOD()
-        elseif mood_name == "alt"; mood_fun = MOODAlt(deltaRelax = delta_relax, tol = mood_tol)
+        elseif mood_name == "alt"; mood_fun = MOODAlt(deltaRelax = delta_relax)
         elseif !isnothing(mood_name); error("MOOD '$mood_name' not recognized") end
 
         local MainFlux
@@ -177,10 +235,11 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif timestepper_name == "RK3"; method = RK3(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
         elseif timestepper_name == "RK4"; method = RK4(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
         elseif timestepper_name == "LF"; method = LaxFriedrich(N)
+        elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(N, MainFlux)
         elseif timestepper_name == "Upwind"; method = Upwind(N)
         elseif timestepper_name == "Analytic"; method = nothing 
         elseif timestepper_name == "RalstonRK2Limiter"; method = RalstonRK2Limiter(MainGrad, N)
-        elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+        elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = switch_tol)
         else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
         # --- Equation ---
@@ -207,7 +266,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif initFunc_name == "smoothInit2"; init_func_handle = smoothInit2
         elseif initFunc_name == "shockInit1"; init_func_handle = shockInit1
         elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2; analytic_func = (x,t) -> shockInit2Ana(x,t,xmin,xmax)
-        elseif initFunc_name == "shockInit3"; init_func_handle = shockInit3
+        elseif initFunc_name == "shockInit3"; init_func_handle = shockInit3; analytic_func = shockInit3Ana
         else; error("Unknown initFunc name: $initFunc_name"); end
         setInitialConditions!(particleGrid, init_func_handle)
             # Create SimSettings object
@@ -232,7 +291,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             us =  Vector{Vector{Float64}}(undef, 0)
             for (i,t) in enumerate(ts)
                 u_tmp = map(x -> analytic_func(x,t), xs[i])
-                println(typeof(u_tmp))
                 push!(us, u_tmp)
             end
         end
@@ -274,13 +332,13 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 20.0, "N" => 100, "xmin" => -5.0, "xmax" => 15.0,
+        "tmax" => 20.0, "N" => 100, "xmin" => -15.0, "xmax" => 30.0,
         "CFL" => 0.2, "save_frequency" => 10, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "shockInit2",
+        "init_func" => "shockInit3",
         "randomness_factor" => 0.25, # Provide default needed when regular=false
         "SEED" => SEED_value, 
-        "timestepper" => "LF",
+        "timestepper" => "Classic",
         "order" => 1
     ),
 
@@ -290,7 +348,7 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
-            "fallback_flux" => "Upwind",
+            "fallback_flux" => "Rusanov",
             "MOOD" => "only",
             "delta_relax" => false,
             "order" => 2
@@ -300,18 +358,18 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
-            "fallback_flux" => "Upwind",
-            "MOOD" => "alt",
-            "mood_tol" => 1.025,
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "U1",
+            "switch_tol" => 10. ^-5,
             "delta_relax" => true,
             "order" => 2
         ),
-        "NoMOOD" => ParamDict(
+        "SlopeLimiter" => ParamDict(
             "timestepper" => "RalstonRK2Limiter",
             "main_gradient" => "MUSCLlimit",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
-            "fallback_flux" => "Upwind",
+            "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
             "order" => 2
@@ -321,34 +379,45 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
-            "fallback_flux" => "Upwind",
+            "fallback_flux" => "Rusanov",
             "MOOD" => "U1",
+            "delta_relax" => true,
+            "order" => 2
+        ),
+            "No MOOD" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "none",
             "delta_relax" => false,
             "order" => 2
         ),
-        # "EulerUpwind" => ParamDict(
-        #     "timestepper" => "EulerUpwind",
-        #     "main_gradient" => "Upwind",
-        #     "fallback_gradient" => "Upwind",
-        #     "main_flux" => "Rusanov",
-        #     "fallback_flux" => "Upwind",
-        #     "MOOD" => "none",
-        #     "delta_relax" => false,
-        #     "order" => 1
-        # ),
+        "EulerUpwind" => ParamDict(
+            "timestepper" => "EulerUpwind",
+            "main_gradient" => "Upwind",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "none",
+            "delta_relax" => false,
+            "order" => 1
+        ),
         "Analytic" => ParamDict(
             "timestepper" => "Analytic",
             "randomness_factor" => 0.
              # No randomness_factor needed when regular=true
         ),
-        "LF" => ParamDict(
-            "randomness_factor" => 0.
+        "Classic" => ParamDict(
+            "randomness_factor" => 0.,
+            "main_flux" => "Rusanov"
         )
 
     ),
-    "Method 2";
-    ui_options = Dict("animation_duration_s" => 10., "show_scatter" => true)
+    "SmoothSwitching";
+    ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false)
 )
 
 # Pass this config to your IPlotPDESols functions
- show1DSolutionFig(sim_config_burgers)
+show1DSolutionFig(sim_config_burgers);
