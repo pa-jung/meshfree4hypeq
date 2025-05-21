@@ -562,8 +562,8 @@ function (ralston::RalstonRK2SmoothSwitch2)(eq::ScalarHyperbolicEquation, partic
     end
     while abs(target_mass - current_mass) >= ralston.tol
         if isempty(ralston.prop_indices)
-            println(any(map(particle -> particle.moodEvent,particleGrid.grid)))
-            println("Total Fallback or no MOOD detected! Mass change is " * string(abs(target_mass -current_mass)))
+            #println(any(map(particle -> particle.moodEvent,particleGrid.grid)))
+            @warn "Total Fallback or no MOOD detected! Mass change is " * string(abs(target_mass -current_mass))
             break
         end
         particleIndex = popfirst!(ralston.prop_indices)

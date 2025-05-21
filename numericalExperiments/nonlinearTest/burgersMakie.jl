@@ -14,13 +14,123 @@ using Meshfree4ScalarEq
 function smoothInit1(x::Real) return exp(-x^2) end
 function smoothInit2(x::Real) return sin(2*pi*x/5) + 1.0 end # Adjusted from burgers.txt
 function shockInit1(x::Real) return x > 0.5 ? 1.0 : -1.0 end  # Adjusted from burgers.txt
-function shockInit2(x::Real) return x > 0. ? 0. : 1.0 end  # Adjusted from burgers.txt
+function shockInit2(x::Real) return ((x > 0.)|(x<-5)) ? 0. : 1.0 end  # Adjusted from burgers.txt
 function shockInit3(x::Real) return ((x < -15.) | (x > 10.)) ? 1/2 : 1. end
+
+
+"""
+    boxInit(x::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
+
+Generates a box-like initial condition.
+Returns `u_box` if `x_box_start <= x <= x_box_end`, and `u_background` otherwise.
+"""
+function boxInit(x::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
+    if x_box_start <= x <= x_box_end
+        return u_box
+    else
+        return u_background
+    end
+end
+
+"""
+    boxInitAna(x::Real, t::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
+
+Provides the analytical solution for Burger's equation for a box initial condition,
+assuming u_box > u_background.
+The solution involves a rarefaction wave starting at x_box_start and a shock wave
+starting at x_box_end.
+
+# Arguments
+- `x`: Spatial coordinate.
+- `t`: Time.
+- `u_background`: Value of u outside the box.
+- `u_box`: Value of u inside the box.
+- `x_box_start`: Left edge of the initial box.
+- `x_box_end`: Right edge of the initial box.
+"""
+function boxInitAna(x::Real, t::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
+    if t < 0.0
+        error("Time t cannot be negative.")
+    end
+
+    if abs(u_box - u_background) < 1e-9 # Effectively constant state
+        return u_background
+    end
+    
+    if u_box < u_background
+        error("This analytical solution is for u_box > u_background (bump/top-hat). For a trough, a different wave interaction occurs.")
+    end
+
+    if t == 0.0
+        return boxInit(x, u_background, u_box, x_box_start, x_box_end)
+    end
+
+    # --- Phase 1 Characteristics (Waves evolve independently) ---
+
+    # Rarefaction wave originating from x_box_start
+    # Speeds in the fan range from u_background to u_box.
+    x_rarefaction_tail = x_box_start + u_background * t
+    x_rarefaction_head = x_box_start + u_box * t
+
+    # Shock wave originating from x_box_end
+    # Left state = u_box, Right state = u_background
+    s_initial = (u_box + u_background) / 2.0
+    x_shock_front_phase1 = x_box_end + s_initial * t
+
+    # Time of interaction (when the u_box plateau vanishes)
+    # Calculated from: x_rarefaction_head(t_int) = x_shock_front_phase1(t_int)
+    # t_int * (u_box - s_initial) = x_box_end - x_box_start
+    delta_u_main = u_box - u_background
+    if abs(delta_u_main) < 1e-9 # Should have been caught by u_box approx u_background check
+        return u_background # Avoid division by zero, effectively constant state
+    end
+    t_interaction = 2.0 * (x_box_end - x_box_start) / delta_u_main
+
+    if t < t_interaction
+        # --- Phase 1 Solution ---
+        if x < x_rarefaction_tail
+            return u_background
+        elseif x < x_rarefaction_head 
+            # Inside rarefaction fan: u(x,t) = (x - x_box_start)/t
+            # This formula gives values in [u_background, u_box]
+            # when x is between x_box_start + u_background*t and x_box_start + u_box*t
+            return (x - x_box_start) / t
+        elseif x < x_shock_front_phase1 
+            # Plateau region
+            return u_box
+        else 
+            # Behind shock
+            return u_background
+        end
+    else # t >= t_interaction
+        # --- Phase 2: Shock interacts with rarefaction ---
+        # The shock path x_s(t) is:
+        # x_s(t) = x_box_start + u_background*t + C*sqrt(t)
+        # C = sqrt(2 * (x_box_end - x_box_start) * (u_box - u_background))
+        
+        C_factor = sqrt(2.0 * (x_box_end - x_box_start) * delta_u_main)
+        x_shock_interacting = x_box_start + u_background * t + C_factor * sqrt(t)
+
+        if x < x_rarefaction_tail 
+            # Still to the left of the rarefaction's slowest part
+            return u_background
+        elseif x < x_shock_interacting 
+            # Inside rarefaction fan, up to the interacting shock
+            # u(x,t) = (x - x_box_start)/t
+            return (x - x_box_start) / t
+        else 
+            # Behind the interacting shock
+            return u_background
+        end
+    end
+end
+
 function shockInit2Ana(x::Real, t::Real, xmin, xmax) 
     
     if t < 10
-        if x-xmin < t; return t == 0. ?  0 : (x-xmin)/t
-        elseif x-xmin>=t && x<= 1/2*t; return 1.
+        if x<-5; return 0
+        elseif x+5 < t; return t == 0. ?  0 : (x+5)/t
+        elseif x+5>=t && x<= 1/2*t; return 1.
         else; return 0. end
     else
         x_shock_interacting = sqrt(10.0 * t) - 5.0
@@ -46,44 +156,68 @@ function shockInit3Ana(x::Real, t::Real)::Float64
         error("Time t cannot be negative.")
     end
 
+    x_bump_start = -15.0
+    x_bump_end = 10.0
+    u_background = 0.5
+    u_bump = 1.0
+
     if t == 0.0
         # Initial condition
-        if x < -1.0 || x > 1.0
-            return 0.0
-        else # -1.0 <= x <= 1.0
-            return 1.0
+        if x_bump_start <= x <= x_bump_end
+            return u_bump
+        else
+            return u_background
         end
     end
 
-    t_interaction = 15.0
+    # Phase 1 characteristics
+    # Rarefaction from x_bump_start = -15
+    # u_left_of_rarefaction_start = u_background (0.5)
+    # u_right_of_rarefaction_start = u_bump (1.0)
+    x_rarefaction_tail = x_bump_start + u_background * t # -15 + 0.5*t
+    x_rarefaction_head = x_bump_start + u_bump * t      # -15 + 1.0*t
+
+    # Shock from x_bump_end = 10
+    # u_left_of_shock_start = u_bump (1.0)
+    # u_right_of_shock_start = u_background (0.5)
+    s_initial = (u_bump + u_background) / 2.0 # (1.0 + 0.5) / 2.0 = 0.75
+    x_shock_front_phase1 = x_bump_end + s_initial * t # 10 + 0.75*t
+
+    # Time of interaction: when head of rarefaction meets the shock path
+    # x_bump_start + u_bump * t_int = x_bump_end + s_initial * t_int
+    # t_int * (u_bump - s_initial) = x_bump_end - x_bump_start
+    # t_int * (1.0 - 0.75) = 10.0 - (-15.0)
+    # t_int * 0.25 = 25.0
+    t_interaction = 100.0
 
     if t < t_interaction
-        # Phase 1: Waves evolve independently
-        x_rarefaction_head = t - 1.0  # Head of rarefaction: u=1 characteristic from x_0=-1
-        x_shock_front = 1.0 + 0.5 * t # Shock front position
-
-        if x < -1.0
-            return 0.0
-        elseif x < x_rarefaction_head # Implies -1.0 <= x < t - 1.0 (Rarefaction fan)
-            return (x + 1.0) / t
-        elseif x < x_shock_front      # Implies t - 1.0 <= x < 1.0 + 0.5*t (Plateau)
-            return 1.0
-        else # x >= x_shock_front (Behind shock)
-            return 0.0
+        if x < x_rarefaction_tail
+            return u_background
+        elseif x < x_rarefaction_head # Inside rarefaction fan
+            return (x - x_bump_start) / t # General formula (x-x0)/t + u0 if rarefaction starts from u0 at x0
+                                                        # Here x0 = x_bump_start, u0_char_speed = u_background for tail
+                                                        # u(x,t) = (x - x_bump_start)/t such that u=u_background at x_rarefaction_tail and u=u_bump at x_rarefaction_head
+                                                        # (x_rarefaction_tail - x_bump_start)/t = u_background => ((-15+0.5t) - (-15))/t = 0.5t/t = 0.5. Correct.
+                                                        # (x_rarefaction_head - x_bump_start)/t = u_bump => ((-15+t) - (-15))/t = t/t = 1.0. Correct.
+            return (x - x_bump_start) / t # This gives u in [u_background, u_bump] range
+        elseif x < x_shock_front_phase1 # Plateau
+            return u_bump
+        else # Behind shock
+            return u_background
         end
-    else # t >= t_interaction (t >= 4.0)
-        # Phase 2: Shock interacts with rarefaction
-        x_shock_interacting = -10.0 + 2.0 * sqrt(t)
+    else # t >= t_interaction
+        x_shock_interacting = x_bump_start + u_background * t + (sqrt(u_bump) - sqrt(u_background))^2 * t + 2 * (sqrt(u_bump) - sqrt(u_background)) * sqrt(t * (x_bump_end - x_bump_start - (u_bump+u_background)/2 * t_interaction_check_again))
+        # The previous derivation: xs(t) = -15 + 0.5*t + 5*sqrt(t) is correct.
+        x_shock_interacting_val = -15.0 + 0.5 * t + 5.0 * sqrt(t)
 
-        if x < -1.0
-            return 0.0
-        elseif x < x_shock_interacting # Implies -1.0 <= x < -1.0 + 2*sqrt(t) (Rarefaction up to shock)
-            # The value from the rarefaction formula is u = (x+1)/t.
-            # The maximum u value in the rarefaction part is at the shock front: ( (-1+2sqrt(t)) + 1 ) / t = 2/sqrt(t).
-            # This max value is <= 1 for t >= 4.
-            return (x + 1.0) / t
-        else # x >= x_shock_interacting (Behind shock)
-            return 0.0
+
+        if x < x_rarefaction_tail # x < -15 + 0.5t
+            return u_background
+        elseif x < x_shock_interacting_val # Rarefaction up to the shock
+                                          # Value is (x - x_bump_start)/t
+            return (x - x_bump_start) / t
+        else # Behind shock
+            return u_background
         end
     end
 end
@@ -173,6 +307,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         randomness_factor::Float64 = run_params["randomness_factor"] # Required
         order::Int = run_params["order"] # <<< Treat order as required
         timestepper_name = run_params["timestepper"] # Timestepper needed
+        eq_name = run_params["PDE"]
 
         # --- Extract METHOD Parameters (Use `get` with sensible defaults) ---
         mood_name = get(run_params, "MOOD", nothing)
@@ -182,6 +317,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         main_flux_name = get(run_params, "main_flux", nothing)
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
         switch_tol = get(run_params, "switch_tol", nothing)
+        init_params = (get(run_params, "init_params", nothing))
 
         # --- Derive regularity ---
         regular::Bool = (randomness_factor == 0.0)
@@ -243,8 +379,11 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
         # --- Equation ---
-        eq = BurgersEquation() # Instantiate Burgers' equation object
-        run_params["equation"] = "BurgersEquation"
+        if eq_name == "burgers"
+            eq = BurgersEquation() # Instantiate Burgers' equation object
+        else 
+            error("Requested PDE not implemented!")
+        end
 
         # --- Grid Creation ---
         dx_nominal = (xmax - xmin) / N
@@ -267,6 +406,13 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif initFunc_name == "shockInit1"; init_func_handle = shockInit1
         elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2; analytic_func = (x,t) -> shockInit2Ana(x,t,xmin,xmax)
         elseif initFunc_name == "shockInit3"; init_func_handle = shockInit3; analytic_func = shockInit3Ana
+        elseif initFunc_name == "box"
+            @assert typeof(init_params) <: Tuple{Real,Real,Real,Real} "Box Init needs a tuple of 4 real numbers as parameters!"
+            u_background, u_box, box_start, box_end = init_params 
+            @assert u_box >= u_background "Only top hat supported atm!"
+            @assert box_end > box_start "The end of the box has to be larger than the start!"
+            init_func_handle = x -> boxInit(x, u_background, u_box, box_start, box_end)
+            analytic_func = (x,t) -> boxInitAna(x,t,u_background,u_box,box_start,box_end)
         else; error("Unknown initFunc name: $initFunc_name"); end
         setInitialConditions!(particleGrid, init_func_handle)
             # Create SimSettings object
@@ -333,13 +479,14 @@ sim_config_burgers = SimulationConfig(
 
     ParamDict(
         "tmax" => 20.0, "N" => 100, "xmin" => -15.0, "xmax" => 30.0,
-        "CFL" => 0.2, "save_frequency" => 10, "interp_alpha" => 1.0,
+        "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "shockInit3",
+        "init_func" => "box",
+        "init_params" => (0., 1., -5.,0.),
         "randomness_factor" => 0.25, # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic",
-        "order" => 1
+        "order" => 1, "PDE" => "burgers"
     ),
 
     MethodDict(
@@ -360,7 +507,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "U1",
-            "switch_tol" => 10. ^-5,
+            "switch_tol" => .0025,
             "delta_relax" => true,
             "order" => 2
         ),
@@ -406,16 +553,16 @@ sim_config_burgers = SimulationConfig(
         ),
         "Analytic" => ParamDict(
             "timestepper" => "Analytic",
-            "randomness_factor" => 0.
+            "randomness_factor" => (:const,0.)
              # No randomness_factor needed when regular=true
         ),
         "Classic" => ParamDict(
-            "randomness_factor" => 0.,
+            "randomness_factor" => (:const,0.),
             "main_flux" => "Rusanov"
         )
 
     ),
-    "SmoothSwitching";
+    ["Analytic"];
     ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false)
 )
 
