@@ -55,7 +55,7 @@ struct ParticleGrid1D <: ParticleGrid
             end
         else
             if randomness >= 0.0
-                @assert randomness <= 0.5*dx "Randomness too larger. Faulty grids could be generated."
+                @assert randomness <= 0.5*dx "Randomness too large. Faulty grids could be generated."
                 for i = 1:N
                     pos = xmin + dx*(i-0.5) + randomness*(rand(rng, Float64)*2 - 1)
                     grid[i] = Particle1D(pos, 0.5, false)
@@ -162,6 +162,7 @@ struct ParticleGrid2D <: ParticleGrid
     end
 end
 
+
 """
     getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection, interpAlpha::Real, interpRange::Real)
 
@@ -252,6 +253,12 @@ function setInitialConditions!(particleGrid::ParticleGrid2D, initFunc::Function)
     end
 end
 
+function setInitialConditions!(particleGrids::Vector{T}, initFuncs::Vector{Function}) where T <: ParticleGrid
+    @assert length(particleGrids) == length(initFuncs) "For each equation a initial condition has to be given!"
+    for i = eachindex(particleGrids)
+        setInitialConditions!(particleGrids[i], initFuncs[i])
+    end
+end
 
 """
     getPeriodicDistance(particleGrid::ParticleGrid1D, particleIndex::Integer, nbParticle::Integer)

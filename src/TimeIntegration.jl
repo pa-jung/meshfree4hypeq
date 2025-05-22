@@ -19,6 +19,7 @@ the ()-operator. See EulerUpwind in "MeshfreeTimeSteppers.jl" as an example.
 abstract type TimeStepper end
 abstract type MeshfreeTimeStepper <: TimeStepper end
 abstract type FixedGridTimeStepper <: TimeStepper end
+abstract type MeshfreeSystemTimeStepper <: MeshfreeTimeStepper end
 
 function (method::TimeStepper)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     error("Each `TimeStepper' must override the ()-operator.")
@@ -29,6 +30,7 @@ function initTimeStepper(method::TimeStepper, particleGrid::ParticleGrid, settin
 
 include("FixedGridTimeSteppers.jl")
 include("MeshfreeTimeSteppers.jl")
+include("MeshfreeSystemTimeSteppers.jl")
 
 
 """
@@ -80,8 +82,6 @@ Note that the usage differs from the function above: It does not save the grid! 
 This allows us to use the mainTimeIntegrator inside of the defining function for the simulationConfig!
 """
 function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting)
-
-
     
     if !particleGrid.regular
         @assert timeStepper isa MeshfreeTimeStepper "Must use a MeshfreeTimeStepper for unstructured grids."
@@ -121,13 +121,128 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
         k += 1
     end
     #saveGrid(settings, particleGrid, t)
-    # push!(xs, map(particle -> particle.pos, particleGrid.grid))
-    # push!(us, map(particle -> particle.rho, particleGrid.grid))
-    # push!(ts, t)
+    push!(xs, map(particle -> particle.pos, particleGrid.grid))
+    push!(us, map(particle -> particle.rho, particleGrid.grid))
+    push!(ts, t)
     # push!(grids, deepcopy(particleGrid.grid))
     #saveSettings(settings)
     #sim_data = createSimData(xs, us, ts, params)#, ParamDict("saved_grids" => grids))
     return time, xs, us, ts
+end
+
+
+"""
+    appendData!(xs_storage, us_storage, ts_storage, particle_grid::ParticleGrid1D, current_t::Real)
+
+Appends data from a SCALAR `ParticleGrid1D` to storage vectors.
+`us_storage` will store vectors of rho values (Vector{Float64}).
+"""
+function appendData!(
+    xs_storage::Vector{Vector{T}} where T <: Union{Float64,Tuple}, 
+    us_storage::Vector{Vector{Float64}}, # For scalar, this is Vector{Vector{Float64}}
+    ts_storage::Vector{Float64}, 
+    particle_grid::T where T <: ParticleGrid, 
+    current_t::Real
+)
+    # Positions: Vector{Float64} for this time step
+    current_xs = [p.pos for p in particle_grid.grid] # More efficient than map
+    push!(xs_storage, current_xs)
+
+    # Solution values: Vector{Float64} for this time step
+    current_us = [p.rho for p in particle_grid.grid]
+    push!(us_storage, current_us)
+    
+    push!(ts_storage, current_t)
+end
+
+"""
+    appendData!(xs_storage, us_storage_sys, ts_storage, system_pg::Vector{ParticleGrid1D}, current_t::Real)
+
+Appends data from a SYSTEM of `ParticleGrid1D` (represented as a Vector) to storage.
+Assumes all component grids share the same particle positions and N_particles.
+`us_storage_sys` will store a Vector where each element is a 
+`Vector{Tuple{Vararg{Float64}}}` for that time step. Each tuple contains the
+component values for a single particle.
+"""
+function appendData!(
+    xs_storage::Vector{Vector{T}} where T <: Union{Float64,Tuple}, 
+    us_storage_sys::Vector{<:AbstractVector{<:Tuple}}, # e.g., Vector{Vector{Tuple{Float64, Float64}}}
+    ts_storage::Vector{Float64}, 
+    system_pg::Vector{<:ParticleGrid}, # Vector of ParticleGrid1D, one per component
+    current_t::Real
+)
+    if isempty(system_pg)
+        @warn "Attempting to append data from an empty system_pg."
+        return
+    end
+
+    N_particles = length(system_pg[1].grid)
+    N_components = length(system_pg)
+
+    if N_particles == 0
+        @warn "Particle grid for component 1 is empty."
+        # Push empty position vector if desired, or handle error
+        push!(xs_storage, Float64[])
+        push!(us_storage_sys, Tuple{Vararg{Float64}}[]) # Pushes an empty Vector{Tuple{Vararg{Float64}}}
+        push!(ts_storage, current_t)
+        return
+    end
+    
+    # Positions (from the first component grid, assumed consistent)
+    current_xs = [p.pos for p in system_pg[1].grid]
+    push!(xs_storage, current_xs)
+    push!(ts_storage, current_t)
+
+    current_step_us = Matrix{Float64}(undef, N_particles, N_components)
+
+    for c_idx in 1:N_compontents
+        current_step_us[:,c_idx] = [p.rho for p in system_pg[1].grid]
+    end
+    push!(us_storage_sys, current_step_us)
+end
+
+function mainTimeIntegrator2!(
+    system_timestepper::TimeStepper, 
+    system_eq::Vector{T} where T <: ScalarHyperbolicEquation, # Your system equation type
+    system_pg::Vector{T} where T <: ParticleGrid,
+    settings::SimSetting 
+)
+    # ... (initial checks and updates for system_pg as before) ...
+
+    xs_data = Vector{Vector{Float64}}()
+    
+    # --- MODIFIED TYPE FOR us_data_sys ---
+    # Determine the Tuple type based on number of components
+    N_components = num_components(system_eq)
+    TupleType = NTuple{N_components, Float64}
+    us_data_sys = Vector{Vector{TupleType}}() # Vector of (Vector of Tuples)
+    # Example: Vector{Vector{Tuple{Float64, Float64}}} for 2 components
+
+    ts_data = Vector{Float64}()
+
+    # Call the new appendData!
+    appendData!(xs_data, us_data_sys, ts_data, system_pg, 0.0)
+
+    # ... (initTimeStepper and setCurvatures for system as before) ...
+    for scalar_grid_k in system_pg
+        setCurvatures!(scalar_grid_k, settings) 
+    end
+    initTimeStepper(system_timestepper, system_pg, settings)
+
+    t = 0.0
+    k_step = 0
+    elapsed_time = @elapsed while t < settings.tmax
+        actual_dt = min(settings.dt, settings.tmax - t)
+
+        system_timestepper(system_eq, system_pg, settings, t, actual_dt)
+        t += actual_dt
+        k_step += 1
+
+        if mod(k_step, settings.saveFreq) == 0 || t >= settings.tmax
+            appendData!(xs_data, us_data_sys, ts_data, system_pg, t)
+        end
+    end
+    return elapsed_time, xs_data, us_data_sys, ts_data
 end
 
 end  # module TimeIntegration
