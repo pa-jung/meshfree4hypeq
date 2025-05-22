@@ -27,6 +27,15 @@ end
 
 # Function called once before time integration loop to pre-calculate all relevant coefficients fot interpolation.
 function initTimeStepper(method::TimeStepper, particleGrid::ParticleGrid, settings::SimSetting) end
+function initTimeStepper(method::TimeStepper, particleGrids::Vector{T}, settings::SimSetting) where T <: ParticleGrid 
+    @warn "Scalar timestepper given during initialization! Initializing each timestepper independently!"
+    for particleGrid = particleGrids
+        initTimeStepper(method, particleGrid, settings)
+    end
+end
+function initTimeStepper(method::MeshfreeSystemTimeStepper, particleGrids::Vector{T}, settings::SimSetting) where T <: ParticleGrid
+    @warn "Timestepper detected as a system timestepper, however, no initialization is used for this Timestepper."
+end
 
 include("FixedGridTimeSteppers.jl")
 include("MeshfreeTimeSteppers.jl")
@@ -166,7 +175,7 @@ component values for a single particle.
 """
 function appendData!(
     xs_storage::Vector{Vector{T}} where T <: Union{Float64,Tuple}, 
-    us_storage_sys::Vector{<:AbstractVector{<:Tuple}}, # e.g., Vector{Vector{Tuple{Float64, Float64}}}
+    us_storage_sys::Vector{Matrix{Float64}}, # e.g., Vector{Vector{Tuple{Float64, Float64}}}
     ts_storage::Vector{Float64}, 
     system_pg::Vector{<:ParticleGrid}, # Vector of ParticleGrid1D, one per component
     current_t::Real
@@ -195,8 +204,8 @@ function appendData!(
 
     current_step_us = Matrix{Float64}(undef, N_particles, N_components)
 
-    for c_idx in 1:N_compontents
-        current_step_us[:,c_idx] = [p.rho for p in system_pg[1].grid]
+    for c_idx in 1:N_components
+        current_step_us[:,c_idx] = [p.rho for p in system_pg[c_idx].grid]
     end
     push!(us_storage_sys, current_step_us)
 end
@@ -210,13 +219,11 @@ function mainTimeIntegrator2!(
     # ... (initial checks and updates for system_pg as before) ...
 
     xs_data = Vector{Vector{Float64}}()
-    
-    # --- MODIFIED TYPE FOR us_data_sys ---
-    # Determine the Tuple type based on number of components
-    N_components = num_components(system_eq)
-    TupleType = NTuple{N_components, Float64}
-    us_data_sys = Vector{Vector{TupleType}}() # Vector of (Vector of Tuples)
-    # Example: Vector{Vector{Tuple{Float64, Float64}}} for 2 components
+    us_data_sys = Vector{Matrix{Float64}}() # Vector of (Vector of Tuples)
+
+    for particleGrid in system_pg
+        updateNeighbours!(particleGrid, settings.interpRange)
+    end
 
     ts_data = Vector{Float64}()
 

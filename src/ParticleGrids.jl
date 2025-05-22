@@ -260,6 +260,12 @@ function setInitialConditions!(particleGrids::Vector{T}, initFuncs::Vector{Funct
     end
 end
 
+function setInitialConditions!(particleGrids::Vector{T}, initFunc::Function) where T <: ParticleGrid
+    @warn "Only one initial condition for a given system found! The same initial condition will be set for all components!"
+    for i = eachindex(particleGrids)
+        setInitialConditions!(particleGrids[i], initFunc)
+    end
+end
 """
     getPeriodicDistance(particleGrid::ParticleGrid1D, particleIndex::Integer, nbParticle::Integer)
 

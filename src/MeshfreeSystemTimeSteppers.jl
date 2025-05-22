@@ -8,7 +8,23 @@ function (ts::TimeStepper)(eqs::Vector{<:ScalarHyperbolicEquation}, particleGrid
     end
 end
 
-function (ts::TimeStepper)(eq:ScalarHyperbolicEquation, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real)
+function (ts::TimeStepper)(eq::ScalarHyperbolicEquation, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real)
     @warn "Only one scalar hyperbolic equation for a system is found. The scalar equation will be used for all components!"
     ts([eq for _ = eachindex(particleGrids)], particleGrids, settings, time, dt)
+end
+
+struct RelaxationStepper <: MeshfreeSystemTimeStepper
+    timestepper::TimeStepper
+    M::Function
+    epsilon::Float64
+
+    function RelaxationStepper(timestepper::TimeStepper, M::Function; epsilon = 10. ^-10)
+        @assert !isa(timestepper, MeshfreeSystemTimeStepper) "A scalar timestepper has to be given!"
+        new(timestepper, M, epsilon)
+    end
+end
+
+function(relax_ts::RelaxationStepper)(eqs::Vector{<:ScalarHyperbolicEquation}, particleGrid::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real)
+    
+
 end
