@@ -262,6 +262,7 @@ function smoothInit2AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real)
 end
 # -------------------------------------------------
 
+
 """
     runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)
 
@@ -318,6 +319,9 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
         switch_tol = get(run_params, "switch_tol", nothing)
         init_params = (get(run_params, "init_params", nothing))
+        relax_vel = get(run_params, "relax_velocities", nothing)
+        relax_method = get(run_params, "relax_method", false)
+        relax_eps = get(run_params, "relax_epsilon", nothing)
 
         # --- Derive regularity ---
         regular::Bool = (randomness_factor == 0.0)
@@ -327,6 +331,20 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         println("  IC = $initFunc_name, N = $N, Regular = $regular (randFactor=$randomness_factor), Order = $order")
         println("  tmax = $tmax, CFL = $cfl")
         println("----------------------------------------")
+
+        # --- Grid Creation ---
+        dx_nominal = (xmax - xmin) / N
+        local particleGrid
+
+        randomness = randomness_factor * dx_nominal
+        particleGrid = ParticleGrid1D(xmin, xmax, N; randomness = randomness)
+
+        # --- Calculate Dependent Parameters ---
+        interp_range = interp_range_factor * particleGrid.dx
+        # Calculate dt based on CFL using the *correct* equation (Burgers)
+        # This assumes getTimeStep can handle BurgersEquation appropriately
+        eqLin = LinearAdvection(1.0)
+        dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
 
         # --- Build Method Components (Ensure types/constructors are accessible) ---
         local mood_fun
@@ -381,23 +399,10 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Equation ---
         if eq_name == "burgers"
             eq = BurgersEquation() # Instantiate Burgers' equation object
+            F = u -> flux(eq, u)
         else 
             error("Requested PDE not implemented!")
         end
-
-        # --- Grid Creation ---
-        dx_nominal = (xmax - xmin) / N
-        local particleGrid
-
-        randomness = randomness_factor * dx_nominal
-        particleGrid = ParticleGrid1D(xmin, xmax, N; randomness = randomness)
-
-        # --- Calculate Dependent Parameters ---
-        interp_range = interp_range_factor * particleGrid.dx
-        # Calculate dt based on CFL using the *correct* equation (Burgers)
-        # This assumes getTimeStep can handle BurgersEquation appropriately
-        eqLin = LinearAdvection(1.0)
-        dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
 
         # --- Initial Condition ---
         local init_func_handle::Function
@@ -426,7 +431,22 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         # --- Call the NEW Time Integrator ---
         println("Starting time integration (Burgers)...")
-        if !isnothing(method)
+        if relax_method
+            @assert !isnothing(relax_vel) "The relaxation method needs velocities to create the linear system!"
+            eqs = [LinearAdvection(a) for a = relax_vel]
+            pgs = [deepcopy(particleGrid) for _ = relax_vel]
+            M = [(rho -> 1/2 * (rho + F(rho)/a)) for a = relax_vel]
+            for (pg_idx,pg) = enumerate(pgs)
+                for particle = pg.grid
+                    particle.rho = M[pg_idx](particle.rho)
+                end
+            end
+            system_method = RelaxationStepper(method, N, M; epsilon = relax_eps)
+            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator2!(system_method, eqs, pgs, settings)
+            us = [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
+            xs = [sys_x[:,1] for sys_x = sys_xs]
+            #println(typeof(us), typeof(xs))
+        elseif !isnothing(method)
             elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
         else
             elapsed_time = 0.
@@ -440,7 +460,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                 push!(us, u_tmp)
             end
         end
-        println(typeof(xs), typeof(us), typeof(ts))
+        #println(typeof(xs), typeof(us), typeof(ts))
         println("Time integration finished in $(round(elapsed_time, digits=2)) seconds.")
 
         sim_data_result = createSimData(xs, us, ts, run_params)
@@ -559,10 +579,38 @@ sim_config_burgers = SimulationConfig(
         "Classic" => ParamDict(
             "randomness_factor" => (:const,0.),
             "main_flux" => "Rusanov"
+        ),
+        "Relax Method" => ParamDict(
+            "timestepper" => "RalstonRK2SmoothSwitch",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "U1",
+            "delta_relax" => true,
+            "order" => 2,
+            "relax_method" => true,
+            "relax_velocities" => (2.,-3.),
+            "relax_epsilon" => 10. ^ -8,
+            "switch_tol" => 0.002
+        ),
+            "Relax Method" => ParamDict(
+            "timestepper" => "RalstonRK2SmoothSwitch",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "U1",
+            "delta_relax" => true,
+            "order" => 2,
+            "relax_method" => true,
+            "relax_velocities" => (1.5,-2),
+            "relax_epsilon" => 10. ^ -8,
+            "switch_tol" => 0.002
         )
 
     ),
-    ["Analytic"];
+    ["Relax Method"];
     ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false)
 )
 
