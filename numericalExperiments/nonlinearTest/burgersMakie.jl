@@ -587,14 +587,14 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "U1",
-            "delta_relax" => true,
+            "delta_relax" => false,
             "order" => 2,
             "relax_method" => true,
-            "relax_velocities" => (2.,-3.),
+            "relax_velocities" => (2.,-2.),
             "relax_epsilon" => 10. ^ -8,
             "switch_tol" => 0.002
         ),
-            "Relax Method" => ParamDict(
+            "Relax Method2" => ParamDict(
             "timestepper" => "RalstonRK2SmoothSwitch",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",

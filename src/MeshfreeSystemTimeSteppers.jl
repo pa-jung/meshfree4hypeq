@@ -27,9 +27,7 @@ struct RelaxationStepper <: MeshfreeSystemTimeStepper
 end
 
 function initTimeStepper(method::RelaxationStepper, particleGrids::Vector{T}, settings::SimSetting) where T <: ParticleGrid
-    for particleGrid = particleGrids
-        initTimeStepper(method, particleGrid, settings)
-    end
+    initTimeStepper(method.timestepper, particleGrids[1], settings)
 end
 
 function(relax_ts::RelaxationStepper)(eqs::Vector{LinearAdvection{T}}, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real) where T <: Float64
