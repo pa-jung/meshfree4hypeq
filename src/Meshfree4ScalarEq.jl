@@ -26,6 +26,12 @@ using .ParticleGrids
 include("Interpolations.jl")
 using .Interpolations
 
+include("ImplicitSolvers.jl")
+using .ImplicitSolvers
+
+include("SourceTerms.jl")
+using .SourceTerms
+
 include("TimeIntegration.jl")
 using .TimeIntegration
 

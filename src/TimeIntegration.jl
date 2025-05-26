@@ -6,6 +6,8 @@ using ..ParticleGrids
 using ..SimSettings
 using ..ScalarHyperbolicEquations
 using ..Interpolations
+using ..SourceTerms
+using ..ImplicitSolvers
 
 export mainTimeIntegrator!, mainTimeIntegrator2!
 
@@ -26,7 +28,14 @@ function (method::TimeStepper)(eq::ScalarHyperbolicEquation, particleGrid::Parti
 end
 
 # Function called once before time integration loop to pre-calculate all relevant coefficients fot interpolation.
-function initTimeStepper(method::TimeStepper, particleGrid::ParticleGrid, settings::SimSetting) end
+function initTimeStepper(method::TimeStepper, particleGrid::ParticleGrid, settings::SimSetting) 
+    @assert hasfield(typeof(method), :gradientInterpolator) "Timestepper needs at least one GradientInterpolator!"
+    fallback_string = "none"
+    if hasfield(typeof(method), :fallbackInterpolator) & !isnothing(method.fallbackInterpolator)
+        fallback_string = "$(typeof(method.fallbackInterpolator))"
+    end
+    @info "Simulation uses $(typeof(method)) with main gradient: $(typeof(method.gradientInterpolator)) and fallback gradient: $fallback_string"
+end
 function initTimeStepper(method::TimeStepper, particleGrids::Vector{T}, settings::SimSetting) where T <: ParticleGrid 
     @warn "Scalar timestepper given during initialization! Initializing each timestepper independently!"
     for particleGrid = particleGrids

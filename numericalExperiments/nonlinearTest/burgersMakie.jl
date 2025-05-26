@@ -7,6 +7,8 @@ using Meshfree4ScalarEq.TimeIntegration
 using Meshfree4ScalarEq.Interpolations
 using Meshfree4ScalarEq.SimSettings
 using Meshfree4ScalarEq.FluxFunctions
+using Meshfree4ScalarEq.SourceTerms
+using Meshfree4ScalarEq.ImplicitSolvers
 using Random                    # For RNG state copy
 using IPlotPDESols
 using Meshfree4ScalarEq
@@ -48,7 +50,7 @@ starting at x_box_end.
 - `x_box_start`: Left edge of the initial box.
 - `x_box_end`: Right edge of the initial box.
 """
-function boxInitAna(x::Real, t::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
+function boxInitAna(x::Real, t::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real, eq::BurgersEquation)::Float64
     if t < 0.0
         error("Time t cannot be negative.")
     end
@@ -123,6 +125,11 @@ function boxInitAna(x::Real, t::Real, u_background::Real, u_box::Real, x_box_sta
             return u_background
         end
     end
+end
+
+function boxInitAna(x::Real, t::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real, eq::LinearAdvection{T})::Float64 where T <: Float64
+    if (x > eq.vel * t + x_box_start) & (x < eq.vel * t + x_box_end); return u_box
+    else; return u_background end
 end
 
 function shockInit2Ana(x::Real, t::Real, xmin, xmax) 
@@ -322,6 +329,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         relax_vel = get(run_params, "relax_velocities", nothing)
         relax_method = get(run_params, "relax_method", false)
         relax_eps = get(run_params, "relax_epsilon", nothing)
+        eq_params = get(run_params, "PDE_params", nothing)
 
         # --- Derive regularity ---
         regular::Bool = (randomness_factor == 0.0)
@@ -392,17 +400,19 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(N, MainFlux)
         elseif timestepper_name == "Upwind"; method = Upwind(N)
         elseif timestepper_name == "Analytic"; method = nothing 
-        elseif timestepper_name == "RalstonRK2Limiter"; method = RalstonRK2Limiter(MainGrad, N)
         elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = switch_tol)
+        elseif timestepper_name == "ARS222"
         else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
         # --- Equation ---
         if eq_name == "burgers"
             eq = BurgersEquation() # Instantiate Burgers' equation object
-            F = u -> flux(eq, u)
+        elseif eq_name == "linear"
+            eq = LinearAdvection(eq_params)
         else 
             error("Requested PDE not implemented!")
         end
+        F = u -> flux(eq, u)
 
         # --- Initial Condition ---
         local init_func_handle::Function
@@ -417,7 +427,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             @assert u_box >= u_background "Only top hat supported atm!"
             @assert box_end > box_start "The end of the box has to be larger than the start!"
             init_func_handle = x -> boxInit(x, u_background, u_box, box_start, box_end)
-            analytic_func = (x,t) -> boxInitAna(x,t,u_background,u_box,box_start,box_end)
+            analytic_func = (x,t) -> boxInitAna(x,t,u_background,u_box,box_start,box_end,eq)
         else; error("Unknown initFunc name: $initFunc_name"); end
         setInitialConditions!(particleGrid, init_func_handle)
             # Create SimSettings object
@@ -441,7 +451,13 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                     particle.rho = M[pg_idx](particle.rho)
                 end
             end
-            system_method = RelaxationStepper(method, N, M; epsilon = relax_eps)
+            if timestepper_name =="ARS222"
+                source_term = RelaxationSourceTerm(M, relax_eps)
+                implicit_solver = PicardIterationSolver()
+                system_method = ARS2IMEX(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
+            else
+                system_method = RelaxationStepper(method, N, M; epsilon = relax_eps)
+            end
             elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator2!(system_method, eqs, pgs, settings)
             us = [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
             xs = [sys_x[:,1] for sys_x = sys_xs]
@@ -472,7 +488,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                  sim_data_result.stats["dx_nominal"] = dx_nominal
                  sim_data_result.stats["dt_calculated"] = dt
                  sim_data_result.stats["interp_range_calculated"] = interp_range
-                 sim_data_result.stats["method_type"] = string(typeof(method))
+                 #sim_data_result.stats["method_type"] = string(typeof(method))
              else
                  @warn "Could not add metadata to stats field in SimData."
              end
@@ -500,13 +516,13 @@ sim_config_burgers = SimulationConfig(
     ParamDict(
         "tmax" => 20.0, "N" => 100, "xmin" => -15.0, "xmax" => 30.0,
         "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
-        "interp_range" => 3.5,
+        "interp_range" => 1.01,
         "init_func" => "box",
-        "init_params" => (0., 1., -5.,0.),
-        "randomness_factor" => 0.25, # Provide default needed when regular=false
+        "init_params" => (0.5, 1., -5.,0.),
+        "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic",
-        "order" => 1, "PDE" => "burgers"
+        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
     ),
 
     MethodDict(
@@ -532,7 +548,7 @@ sim_config_burgers = SimulationConfig(
             "order" => 2
         ),
         "SlopeLimiter" => ParamDict(
-            "timestepper" => "RalstonRK2Limiter",
+            "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCLlimit",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
@@ -581,7 +597,20 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov"
         ),
         "Relax Method" => ParamDict(
-            "timestepper" => "RalstonRK2SmoothSwitch",
+            "timestepper" => "ARS222",
+            "main_gradient" => "Upwind",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "U1",
+            "delta_relax" => false,
+            "order" => 1,
+            "relax_method" => true,
+            "relax_velocities" => (1.5,-1.5),
+            "relax_epsilon" => 10. ^ -1,
+        ),
+            "Relax Method2" => ParamDict(
+            "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
@@ -590,23 +619,8 @@ sim_config_burgers = SimulationConfig(
             "delta_relax" => false,
             "order" => 2,
             "relax_method" => true,
-            "relax_velocities" => (2.,-2.),
-            "relax_epsilon" => 10. ^ -8,
-            "switch_tol" => 0.002
-        ),
-            "Relax Method2" => ParamDict(
-            "timestepper" => "RalstonRK2SmoothSwitch",
-            "main_gradient" => "MUSCL",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "U1",
-            "delta_relax" => true,
-            "order" => 2,
-            "relax_method" => true,
-            "relax_velocities" => (1.5,-2),
-            "relax_epsilon" => 10. ^ -8,
-            "switch_tol" => 0.002
+            "relax_velocities" => (1.,-1.),
+            "relax_epsilon" => 10. ^ -1,
         )
 
     ),

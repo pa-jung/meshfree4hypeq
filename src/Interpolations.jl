@@ -278,7 +278,7 @@ struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: Upw
     end
 end
 
-function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
+function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
     nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, nbNeighbours)
     dfVec = Vector{Float64}(undef, nbNeighbours)
@@ -332,7 +332,7 @@ end
 #     return 2*laxFriedrichs.res[1]/settings.interpRange
 # end
 
-function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
+function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
     vel = eq.vel
     nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, nbNeighbours)
@@ -372,7 +372,7 @@ function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D,
     return ddx*vel[1] + ddy*vel[2]
 end
 
-function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
+function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
     vel = eq.vel
     dxVec = Vector{Float64}(undef, 0)
     dyVec = Vector{Float64}(undef, 0)
@@ -545,7 +545,7 @@ function (central::CentralGradient)(particleGrid::ParticleGrid2D, particleIndex:
     return eq.vel[1]*central.res[1]/particleGrid.dx + eq.vel[2]*central.res[2]/particleGrid.dx
 end
 
-function (central::CentralGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{<:Real}, settings::SimSetting; setCurvature::Bool=true)::Real
+function (central::CentralGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{<:Real}, settings::SimSetting; setCurvature::Bool=true)::Real
     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, Npts)
     dfVec = Vector{Float64}(undef, Npts)
@@ -586,7 +586,7 @@ struct WENO <: GradientInterpolator
     end
 end
 
-function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{<:Real}, settings::SimSetting; setCurvature::Bool=true)::Real
+function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{<:Real}, settings::SimSetting; setCurvature::Bool=true)::Real
     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, Npts)
     dfVec = Vector{Float64}(undef, Npts)
@@ -887,7 +887,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid1D, interpA
     end
 end
 
-function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER}
+function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER}
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
@@ -993,7 +993,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid2D, interpA
     end
 end
 
-function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER}
+function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER}
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
@@ -1147,8 +1147,13 @@ end
 
 
 # --- initTimeStep specifically for MUSCLlimited{MUSCLORDER1} ---
-# This function *does* take fVec to calculate limited slopes
-function initTimeStep(muscl::MUSCLlimited{MUSCLORDER1}, particleGrid::ParticleGrid1D, interpAlpha::Real, interpRange::Real, fVec::Vector{<:Real})
+# MODIFIED: fVec argument is removed; it's constructed internally from particleGrid.
+function initTimeStep(
+    muscl::MUSCLlimited{MUSCLORDER1}, 
+    particleGrid::ParticleGrid1D, 
+    interpAlpha::Real, 
+    interpRange::Real
+)
     N_total_particles = length(particleGrid.grid)
     # Ensure cache is correctly sized
     if length(muscl.limited_slopes_cache) != N_total_particles
@@ -1156,7 +1161,7 @@ function initTimeStep(muscl::MUSCLlimited{MUSCLORDER1}, particleGrid::ParticleGr
     end
 
     # --- Part 1: Calculate original alfaij coefficients (needed for divergence sum) ---
-    # This is identical to the original initTimeStep for MUSCLORDER1
+    # This part is geometric and depends only on particleGrid positions and weights.
     for (particleIndex_outer, particle_outer) in enumerate(particleGrid.grid)
         current_neighbors = particle_outer.neighbourIndices
         num_neighbors = length(current_neighbors)
@@ -1164,64 +1169,85 @@ function initTimeStep(muscl::MUSCLlimited{MUSCLORDER1}, particleGrid::ParticleGr
         # Ensure internal vectors are sized (should be handled by updateNeighbours!)
         if length(particle_outer.dxVec) != num_neighbors resize!(particle_outer.dxVec, num_neighbors) end
         if length(particle_outer.wVec) != num_neighbors resize!(particle_outer.wVec, num_neighbors) end
-        if length(particle_outer.alfaij) != num_neighbors resize!(particle_outer.alfaij, num_neighbors) end # alfaij used by MUSCLORDER1
+        if length(particle_outer.alfaij) != num_neighbors resize!(particle_outer.alfaij, num_neighbors) end
 
         for (i, nbIndex) in enumerate(current_neighbors)
             particle_outer.dxVec[i] = getPeriodicDistance(particleGrid, particleIndex_outer, nbIndex)
         end
         
-        # Assuming exponentialWeightFunction has been modified to accept wVec_out
-        # If not, use: particle_outer.wVec .= muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx)
+        # Calculate weights (wVec)
+        # Assuming muscl.weightFunction can write to an output vector or returns a new one.
+        # If it has a wVec_out keyword:
         try
              muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx, wVec_out=particle_outer.wVec)
         catch e
-            # Fallback if wVec_out is not implemented for the weight function
-             if isa(e, MethodError)
+             if isa(e, MethodError) # Fallback if wVec_out is not implemented
                  particle_outer.wVec .= muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx)
              else
                  rethrow(e)
              end
         end
 
+        # Calculate alfaij
+        wVec_times_dx = similar(particle_outer.dxVec) # Avoid modifying particle_outer.wVec if used later
+        for i in eachindex(wVec_times_dx)
+            wVec_times_dx[i] = particle_outer.wVec[i] * particle_outer.dxVec[i]
+        end
+        t_sum_denominator = dot(wVec_times_dx, particle_outer.dxVec)
 
-        wVec_times_dx = particle_outer.wVec .* particle_outer.dxVec
-        t_sum = dot(wVec_times_dx, particle_outer.dxVec)
-
-        if abs(t_sum) < 1e-12
+        if abs(t_sum_denominator) < 1e-12
             fill!(particle_outer.alfaij, 0.0)
         else
-            particle_outer.alfaij .= wVec_times_dx ./ t_sum
+            for i in eachindex(particle_outer.alfaij)
+                particle_outer.alfaij[i] = wVec_times_dx[i] / t_sum_denominator
+            end
         end
     end
 
-    # --- Part 2: Calculate and store all limited slopes ---
-    Threads.@threads for i in 1:N_total_particles # Use multithreading if desired
-        ui = fVec[i]
-        _, val_L, dist_L_val, _, val_R, dist_R_val = find_closest_lr_neighbors_1D(particleGrid, i, fVec)
+    # --- Construct fVec internally from the current state in particleGrid ---
+    fVec_internal = Vector{Float64}(undef, N_total_particles)
+    for i in 1:N_total_particles
+        fVec_internal[i] = particleGrid.grid[i].rho
+    end
+
+    # --- Part 2: Calculate and store all limited slopes using fVec_internal ---
+    # Consider Threads.@threads for this loop if N_total_particles is large and functions are safe
+    for i in 1:N_total_particles
+        ui = fVec_internal[i] # Current particle's value from fVec_internal
+        
+        # find_closest_lr_neighbors_1D needs the fVec_internal to get neighbor values
+        _, val_L, dist_L_val, _, val_R, dist_R_val = find_closest_lr_neighbors_1D(particleGrid, i, fVec_internal)
 
         slope_L_os = 0.0
         if !isnothing(val_L) && !isnothing(dist_L_val) && abs(dist_L_val) > 1e-9
-            slope_L_os = (ui - val_L) / (-dist_L_val)
+            slope_L_os = (ui - val_L) / (-dist_L_val) # (u_i - u_{i-1}) / (dx_i)
         end
 
         slope_R_os = 0.0
         if !isnothing(val_R) && !isnothing(dist_R_val) && abs(dist_R_val) > 1e-9
-            slope_R_os = (val_R - ui) / dist_R_val
+            slope_R_os = (val_R - ui) / dist_R_val # (u_{i+1} - u_i) / (dx_{i+1})
         end
 
         r_val = 0.0
-        if abs(slope_R_os) < 1e-12
-            r_val = (abs(slope_L_os) < 1e-12) ? 1.0 : -1.0
+        if abs(slope_R_os) < 1e-12 # Denominator for r_val
+            # If both slopes are near zero, r_val=1 (phi=1, limited_slope=0).
+            # If only slope_R_os is zero, r_val=-1 (phi=0, limited_slope=0).
+            r_val = (abs(slope_L_os) < 1e-12) ? 1.0 : -1.0 
         else
             r_val = slope_L_os / slope_R_os
         end
 
         phi = superbee_phi(r_val)
 
-        if slope_L_os * slope_R_os <= 1e-12 # Use threshold comparison for stability
+        # Apply limiter: phi * one_sided_slope (typically the "downwind" one if r=up/down)
+        # Or, if slopes have different signs (r<=0), limited slope is 0.
+        if slope_L_os * slope_R_os <= 1e-12 # If signs differ or one is zero, no overshoot from this form
             muscl.limited_slopes_cache[i] = 0.0
         else
-            muscl.limited_slopes_cache[i] = phi * slope_R_os
+            # Superbee often applied as phi(r) * slope_R (if r = slope_L/slope_R)
+            # or minmod(slope_L, slope_R) if phi is minmod(1,r)
+            # For Superbee: phi(r) * slope_R ensures that if r > 2, it uses 2*slope_R, if r < 0.5, it uses 2r*slope_R = 2*slope_L
+            muscl.limited_slopes_cache[i] = phi * slope_R_os # This is a common way
         end
     end
 end
@@ -1229,7 +1255,7 @@ end
 
 # --- Functor for MUSCLlimited{MUSCLORDER1} ---
 # This uses the pre-calculated limited slopes from its cache
-function (muscl::MUSCLlimited{MUSCLORDER1})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
+function (muscl::MUSCLlimited{MUSCLORDER1})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
 
     # Note: This function *assumes* that `initTimeStep(muscl, particleGrid, ..., fVec)`
     # has already been called for the relevant `fVec` stage, populating

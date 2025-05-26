@@ -463,7 +463,7 @@ end
 
 Find the minima and the maxima in the neighbourhood of particleIndex in fVec.
 """
-function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, fVec::Vector{Float64})::Tuple{Float64, Float64}
+function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, fVec::AbstractVector{Float64})::Tuple{Float64, Float64}
     mini = fVec[particleIndex]
     maxi = fVec[particleIndex]
     for i in particleGrid.grid[particleIndex].neighbourIndices
@@ -473,7 +473,7 @@ function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, f
     return (mini, maxi)
 end
 
-function findLocalExtremaAbs!(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{Float64})::Tuple{Float64, Float64, Float64, Float64}
+function findLocalExtremaAbs!(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{Float64})::Tuple{Float64, Float64, Float64, Float64}
     mini = fVec[particleIndex]
     maxi = fVec[particleIndex]
     minAbs = abs(fVec[particleIndex])
@@ -487,7 +487,7 @@ function findLocalExtremaAbs!(particleGrid::ParticleGrid1D, particleIndex::Integ
     return (mini, maxi, minAbs, maxAbs)
 end
 
-function findLocalExtremaAbs!(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Matrix{Float64})::Tuple{Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64}
+function findLocalExtremaAbs!(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractMatrix{Float64})::Tuple{Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64}
     @assert size(fVec, 2) == 2
     mini1 = fVec[particleIndex, 1]
     maxi1 = fVec[particleIndex, 1]
@@ -515,7 +515,7 @@ end
 
 Find the minima and the maxima in the neighbourhood of particleIndex in every column of fMatrix.
 """
-function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, fMatrix::Matrix{Float64})::Array{Float64}
+function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, fMatrix::AbstractMatrix{Float64})::Array{Float64}
     @assert size(fMatrix, 2) == 2  # Assume two columns
     minxx = fMatrix[particleIndex, 1]
     maxxx = fMatrix[particleIndex, 1]
