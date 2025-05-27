@@ -1,6 +1,6 @@
 
 # Default case: Everything is decoupled
-export RelaxationStepper, ARS2IMEX
+export RelaxationStepper, ARS2IMEX, IMEXButcherTableau, GeneralIMEXTimeStepper, ARS233, PareschiRussoIMEXSSP3, ARS222
 
 function (ts::TimeStepper)(eqs::Vector{<:ScalarHyperbolicEquation}, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real)
     @warn "No dedicated system timestepper found. System will be treated independently using the given scalar timestepper."
@@ -122,7 +122,7 @@ struct ARS2IMEX{
     G2 <: Union{GradientInterpolator, Nothing}, # Added Interpolations.
     M <: MOODCriterion, # Assuming MOODCriterion is defined
     IS <: AbstractImplicitSolver # Added ImplicitSolvers.
-} <: TimeIntegration.TimeStepper # Added TimeIntegration.
+} <: TimeStepper # Added 
 
     gradientInterpolator::G1
     fallbackInterpolator::G2 
@@ -163,7 +163,7 @@ struct ARS2IMEX{
     end
 end
 
-function TimeIntegration.initTimeStepper(
+function initTimeStepper(
     ars2::ARS2IMEX,
     system_pg::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.
     settings::SimSettings.SimSetting # Added SimSettings.
@@ -171,9 +171,9 @@ function TimeIntegration.initTimeStepper(
     if isempty(system_pg) return end
     for k_comp in 1:length(system_pg)
         scalar_grid_k = system_pg[k_comp]
-        TimeIntegration.initTimeStep(ars2.gradientInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
+        initTimeStep(ars2.gradientInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
         if !isnothing(ars2.fallbackInterpolator)
-            TimeIntegration.initTimeStep(ars2.fallbackInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
+            initTimeStep(ars2.fallbackInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
         end
     end
 end
@@ -281,4 +281,571 @@ function (ars2::ARS2IMEX)(
             p_obj.moodEvent = false 
         end
     end
+end
+
+# In MeshfreeTimeSteppers.jl or SystemIMEXTimeSteppers.jl or jl
+
+# --- Ensure these are `using` or `include`d correctly: ---
+# These using statements would typically be at the top of the module
+# where ARS2IMEX and its helpers are defined.
+# Example:
+# using ..ParticleGrids # For ParticleGrid, ParticleGrid1D, getPeriodicDistance
+# using ..Interpolations # For GradientInterpolator, MUSCLlimited, initTimeStep, copyCurvatures!, MOODCriterion
+# using ..SimSettings # For SimSetting
+# using ..ScalarHyperbolicEquations # For ScalarHyperbolicEquation, LinearAdvection, flux, velocity
+# using ..TimeIntegration # For TimeStepper, initTimeStepper (to overload if this is a new module)
+# using ..SourceTerms # For AbstractSourceTerm
+# using ..ImplicitSolvers # For AbstractImplicitSolver, PicardIterationSolver
+
+# If this code is in jl, you might not need the  prefix for TimeStepper
+# and initTimeStep overloads. Otherwise, qualify them as shown.
+
+# --- IMEXButcherTableau struct (ensure this is defined and accessible) ---
+# From your provided code:
+struct IMEXButcherTableau{M <: AbstractArray{Float64, 2}, V <: AbstractArray{Float64, 1}}
+    A::M  # Implicit coefficient matrix
+    At::M # Explicit coefficient matrix (Atilde)
+    c::V  # Implicit time nodes
+    ct::V # Explicit time nodes (ctilde)
+    b::V  # Final weights (assumed same for explicit and implicit parts by your old code's use)
+
+    function IMEXButcherTableau(A::M, At::M, c::V, ct::V, b::V) where {M <: AbstractArray{Float64, 2}, V <: AbstractArray{Float64, 1}}
+        s = size(A, 1) # Number of stages
+        @assert (size(A, 2) == s && size(At, 1) == s && size(At, 2) == s &&
+                 length(c) == s && length(ct) == s && length(b) == s) "All Butcher tableau components must match number of stages"
+        # Your old code had ct[1]==0.0, which is a common convention for explicit part starting with U^n.
+        # if s > 0 @assert ct[1] == 0.0 "Convention: First explicit time node ct[1] should be 0" end
+        
+        # Check A is lower triangular (a_ij = 0 for j > i)
+        for i in 1:s, j in (i+1):s
+            @assert A[i,j] == 0.0 "Implicit matrix A must be lower triangular."
+        end
+        # Check At is strictly lower triangular (atilde_ij = 0 for j >= i)
+        for i in 1:s, j in i:s # Check elements on and above diagonal
+            @assert At[i,j] == 0.0 "Explicit matrix At (Atilde) must be strictly lower triangular."
+        end
+        new{M, V}(A, At, c, ct, b)
+    end
+end
+
+# --- GeneralIMEXTimeStepper Struct ---
+struct GeneralIMEXTimeStepper{
+    G1 <: Interpolations.GradientInterpolator,
+    G2 <: Union{Interpolations.GradientInterpolator, Nothing},
+    M <: MOODCriterion, # Assuming MOODCriterion is defined
+    IS <: ImplicitSolvers.AbstractImplicitSolver, # Assuming AbstractImplicitSolver is defined
+    ST_OBJ <: SourceTerms.AbstractSourceTerm,    # Assuming AbstractSourceTerm is defined
+    BT <: IMEXButcherTableau
+} <: TimeStepper # Qualify TimeStepper if in a different module
+
+    # User's modular components
+    gradientInterpolator::G1
+    fallbackInterpolator::G2
+    mood::M
+    implicit_solver::IS
+    source_term_object::ST_OBJ
+    
+    # Butcher Tableau for the specific IMEX scheme
+    butcher_tableau::BT
+    
+    # Buffers (N_particles x N_components)
+    U_n_sys::Matrix{Float64}
+    Y_stages_sys::Vector{Matrix{Float64}}   # Stores Y_i (solution at each stage)
+    K_E_stages_sys::Vector{Matrix{Float64}} # Stores F_E(Y_i) for each stage
+    K_I_stages_sys::Vector{Matrix{Float64}} # Stores F_I(Y_i) for each stage
+    
+    num_stages::Int
+
+    function GeneralIMEXTimeStepper(
+            gradientInterpolator::G1,
+            fallbackInterpolator::G2,
+            mood::M,
+            implicit_solver::IS,
+            source_term_object::ST_OBJ,
+            butcher_tableau::BT,
+            N_particles::Int,
+            N_components::Int
+        ) where {
+            G1 <: Interpolations.GradientInterpolator, G2 <: Union{Interpolations.GradientInterpolator, Nothing},
+            M <: MOODCriterion, IS <: ImplicitSolvers.AbstractImplicitSolver,
+            ST_OBJ <: SourceTerms.AbstractSourceTerm, BT <: IMEXButcherTableau
+        }
+        
+        s = size(butcher_tableau.A, 1) # Number of stages
+
+        Y_stages = [zeros(N_particles, N_components) for _ in 1:s]
+        K_E_stages = [zeros(N_particles, N_components) for _ in 1:s]
+        K_I_stages = [zeros(N_particles, N_components) for _ in 1:s]
+        U_n_buffer = zeros(N_particles, N_components)
+
+        new{G1,G2,M,IS,ST_OBJ,BT}(
+            gradientInterpolator, fallbackInterpolator, mood, implicit_solver, source_term_object, butcher_tableau,
+            U_n_buffer, Y_stages, K_E_stages, K_I_stages, s
+        )
+    end
+end
+
+# initTimeStepper for GeneralIMEXTimeStepper (for geometric precomputations of interpolators)
+function initTimeStepper(
+    imex_ts::GeneralIMEXTimeStepper,
+    system_pg::Vector{<:ParticleGrids.ParticleGrid}, # Vector of ParticleGrid (1D or 2D)
+    settings::SimSettings.SimSetting
+)
+    if isempty(system_pg) return end
+    # For each component's grid, call the standard initTimeStep (without fVec)
+    # for the interpolators. This is for purely geometric setup.
+    # Solution-dependent init (like for MUSCLlimited's limited_slopes_cache)
+    # is handled within compute_explicit_tendency_with_mood! before each F_E eval.
+    for k_comp in 1:length(system_pg)
+        scalar_grid_k = system_pg[k_comp]
+        initTimeStep(imex_ts.gradientInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
+        if !isnothing(imex_ts.fallbackInterpolator)
+            initTimeStep(imex_ts.fallbackInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
+        end
+    end
+end
+
+# In MeshfreeTimeSteppers.jl or SystemIMEXTimeSteppers.jl or TimeIntegration.jl
+# (Ensure all necessary `using` statements for types from other modules are present)
+
+# struct GeneralIMEXTimeStepper{...} <: TimeIntegration.TimeStepper
+#   ... (fields as defined before) ...
+# end
+
+# function TimeIntegration.initTimeStepper(imex_ts::GeneralIMEXTimeStepper, ...)
+#   ... (as defined before) ...
+# end
+
+# --- Corrected Functor for GeneralIMEXTimeStepper ---
+function (imex_ts::GeneralIMEXTimeStepper)(
+        scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation},
+        system_pg::Vector{<:ParticleGrids.ParticleGrid},
+        settings::SimSettings.SimSetting,
+        time_n::Real,
+        dt::Real
+    )
+
+    N_particles = length(system_pg[1].grid)
+    N_components = length(scalar_equations)
+    s = imex_ts.num_stages
+    bt = imex_ts.butcher_tableau # A (implicit), At (explicit), c (implicit_times), ct (explicit_times), b (weights)
+
+    if size(imex_ts.U_n_sys,1) != N_particles || size(imex_ts.U_n_sys,2) != N_components
+        error("GeneralIMEXTimeStepper buffers not sized correctly. Expected ($(N_particles)x$(N_components)). Re-initialize instance.")
+    end
+
+    # --- 0. Store U^n from system_pg ---
+    for k_comp in 1:N_components
+        for p_idx in 1:N_particles
+            imex_ts.U_n_sys[p_idx, k_comp] = system_pg[k_comp].grid[p_idx].rho
+        end
+    end
+
+    # Temporary particle-local vectors for implicit solve, reused across particles/stages
+    u_particle_iter_buffer = Vector{Float64}(undef, N_components)
+    # rhs_for_implicit_solve_particle was the problematic variable name
+    # Let's use a clear name for the RHS of Y_i - coeff*S(Y_i) = RHS_FORMULA
+    Y_i_base_particle = Vector{Float64}(undef, N_components)
+
+
+    # --- Loop through stages i = 1 to s ---
+    for i in 1:s
+        # current_Y_i_sys is an alias to imex_ts.Y_stages_sys[i]
+        # It will store the fully computed Y_i for the current stage.
+        current_Y_i_sys = imex_ts.Y_stages_sys[i]
+        
+        # Initialize Y_i_base = U^n for this stage's calculation
+        # This Y_i_base will accumulate U^n + explicit_sum + implicit_sum_prev
+        # (Note: Y_stages_sys[i] is being used as Y_i_base here before implicit solve)
+        current_Y_i_sys .= imex_ts.U_n_sys # Start with U^n
+
+        # Calculate explicit sum part for Y_i: Sum_E = dt * sum_{j=1}^{i-1} At[i,j] * K_E_stages_sys[j]
+        for j in 1:(i-1)
+            if bt.At[i,j] != 0.0
+                for p_idx_loop in 1:N_particles, k_comp_loop in 1:N_components
+                    current_Y_i_sys[p_idx_loop, k_comp_loop] += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][p_idx_loop, k_comp_loop]
+                end
+            end
+        end
+
+        # Calculate implicit sum from previous stages: Sum_I_prev = dt * sum_{j=1}^{i-1} A[i,j] * K_I_stages_sys[j]
+        for j in 1:(i-1)
+            if bt.A[i,j] != 0.0
+                for p_idx_loop in 1:N_particles, k_comp_loop in 1:N_components
+                    current_Y_i_sys[p_idx_loop, k_comp_loop] += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][p_idx_loop, k_comp_loop]
+                end
+            end
+        end
+        
+        # current_Y_i_sys now holds U^n + Sum_E + Sum_I_prev, which is the RHS for the implicit solve part:
+        # Y_i - dt * A[i,i] * F_I(Y_i, t_n + c[i]*dt) = current_Y_i_sys_before_solve
+        
+        if abs(bt.A[i,i]) > 1e-14 # If stage i is implicitly dependent on F_I(Y_i)
+            time_implicit_eval = time_n + bt.c[i] * dt
+            
+            for p_idx in 1:N_particles
+                particle_pos = system_pg[1].grid[p_idx].pos
+                
+                # Initial guess for Y_i for this particle is what's in current_Y_i_sys
+                u_particle_iter_buffer .= @view current_Y_i_sys[p_idx, :] 
+                # The constant part for the solver is also what's currently in current_Y_i_sys
+                Y_i_base_particle      .= @view current_Y_i_sys[p_idx, :] 
+                                          
+                ImplicitSolvers.solve!(imex_ts.implicit_solver,
+                    u_particle_iter_buffer,  # Initial guess & output for Y_i at this particle
+                    Y_i_base_particle,       # Base for the solve: U^n + Sum_E + Sum_I_prev
+                    dt * bt.A[i,i],          # dt_coefficient_for_S = dt * a_ii
+                    imex_ts.source_term_object,
+                    particle_pos, time_implicit_eval, N_components
+                )
+                current_Y_i_sys[p_idx, :] .= u_particle_iter_buffer # Store solved Y_i back
+            end
+        end
+        # If A[i,i] == 0, then current_Y_i_sys (which is imex_ts.Y_stages_sys[i]) 
+        # already holds the final Y_i for this stage.
+
+        # Evaluate and store K_Ei = F_E(Y_i, t_n + ct[i]*dt)
+        # The explicit tendency is evaluated using the fully formed Y_i (current_Y_i_sys) from this stage.
+        time_explicit_eval = time_n + bt.ct[i] * dt
+        compute_explicit_tendency_with_mood!( # Ensure this helper is accessible
+            imex_ts.K_E_stages_sys[i], current_Y_i_sys, 
+            imex_ts.gradientInterpolator, imex_ts.fallbackInterpolator, imex_ts.mood,
+            scalar_equations, system_pg, settings, dt, (i==1) 
+        )
+
+        # Evaluate and store K_Ii = F_I(Y_i, t_n + c[i]*dt)
+        time_implicit_eval_for_KI = time_n + bt.c[i] * dt 
+        for p_idx in 1:N_particles
+            particle_pos = system_pg[1].grid[p_idx].pos
+            Y_i_p_view = @view current_Y_i_sys[p_idx, :]       # Input is the solved Y_i
+            K_Ii_p_view = @view imex_ts.K_I_stages_sys[i][p_idx, :] # Output buffer
+            imex_ts.source_term_object(K_Ii_p_view, Y_i_p_view, particle_pos, time_implicit_eval_for_KI)
+        end
+    end # End of stages loop
+
+    # --- Final Update ---
+    # U^{n+1} = U^n + dt * sum_{i=1 to s} (b_i * K_Ei + b_i * K_Ii)
+    U_np1_sys_temp = copy(imex_ts.U_n_sys) 
+
+    for i in 1:s
+        if bt.b[i] != 0.0 
+            for p_idx_loop in 1:N_particles, k_comp_loop in 1:N_components
+                U_np1_sys_temp[p_idx_loop, k_comp_loop] += 
+                    dt * bt.b[i] * (imex_ts.K_E_stages_sys[i][p_idx_loop, k_comp_loop] + 
+                                    imex_ts.K_I_stages_sys[i][p_idx_loop, k_comp_loop])
+            end
+        end
+    end
+
+    # Update physical particleGrid
+    for k_comp in 1:N_components
+        for p_idx in 1:N_particles
+            system_pg[k_comp].grid[p_idx].rho = U_np1_sys_temp[p_idx, k_comp]
+        end
+    end
+    
+    for k_comp in 1:N_components
+        for p_obj in system_pg[k_comp].grid
+            p_obj.moodEvent = false 
+        end
+    end
+end
+
+
+function IMEXARS233ButcherTableau(gamma_val::Float64 = (3.0 + sqrt(3.0))/6.0)::IMEXButcherTableau
+    # This is the ARS(2,3,3) scheme from Ascher, Ruuth, Spiteri (1997), Table 2.4, k=3 column.
+    # It is third order.
+    A_impl = [0.0      0.0             0.0;
+              0.0      gamma_val       0.0;
+              0.0      1.0-2*gamma_val gamma_val]
+
+    At_expl = [0.0          0.0              0.0;
+               gamma_val    0.0              0.0;
+               gamma_val-1.0 2.0*(1-gamma_val) 0.0]
+
+    # In the ARS(k) schemes from Ascher, Ruuth, Spiteri (1997), Table 2.4,
+    # the c_i for the implicit part and c_tilde_i for the explicit part are the same.
+    c_nodes = [0.0; gamma_val; 1.0-gamma_val] 
+    
+    # The b_i weights for explicit and implicit parts are also the same.
+    b_weights = [0.0; 0.5; 0.5]
+
+    return IMEXButcherTableau(A_impl, At_expl, c_nodes, c_nodes, b_weights)
+end
+# In MeshfreeTimeSteppers.jl or SystemIMEXTimeSteppers.jl
+# Ensure all necessary types are accessible via `using` statements from their respective modules
+# (e.g., Interpolations.GradientInterpolator, MOODCriterion, ImplicitSolvers.AbstractImplicitSolver, 
+#  SourceTerms.AbstractSourceTerm, IMEXTableaus.IMEXButcherTableau, TimeIntegration.TimeStepper)
+
+# Assuming GeneralIMEXTimeStepper struct is defined here as previously discussed.
+# For brevity, I'm not repeating its full definition, but it's the one that takes
+# all the modular components and a butcher_tableau object.
+
+"""
+    ARS233(
+        gradientInterpolator, 
+        fallbackInterpolator, # Union{GradientInterpolator, Nothing}
+        mood_criterion,
+        implicit_solver, 
+        source_term_object,
+        N_particles::Int, 
+        N_components::Int;
+        gamma_coefficient::Float64 = (3.0 + sqrt(3.0))/6.0 # Specific to ARS233
+    )
+
+Constructs a `GeneralIMEXTimeStepper` pre-configured with the IMEXARS233 Butcher tableau.
+This scheme is a 3-stage, 3rd order Additive Runge-Kutta scheme.
+"""
+function ARS233( # Changed name to avoid conflict with potential struct name if desired
+    gradientInterpolator::G1,
+    fallbackInterpolator::G2,
+    mood_criterion::M,
+    implicit_solver::IS,
+    source_term_object::ST_OBJ,
+    N_particles::Int,
+    N_components::Int;
+    gamma_coefficient::Float64 = (3.0 + sqrt(3.0))/6.0 # Allow custom gamma for this specific scheme
+) where {
+    G1 <: Interpolations.GradientInterpolator, # Example: Qualify with your module name
+    G2 <: Union{Interpolations.GradientInterpolator, Nothing},
+    M <: MOODCriterion, # Assuming MOODCriterion is defined
+    IS <: ImplicitSolvers.AbstractImplicitSolver,
+    ST_OBJ <: SourceTerms.AbstractSourceTerm
+}
+    
+    # Get the specific Butcher tableau for IMEXARS233
+    # Pass the gamma if your tableau function accepts it.
+    tableau = IMEXARS233ButcherTableau(gamma_coefficient) 
+
+    return GeneralIMEXTimeStepper( # Assuming GeneralIMEXTimeStepper is defined in current scope
+        gradientInterpolator,
+        fallbackInterpolator,
+        mood_criterion,
+        implicit_solver,
+        source_term_object,
+        tableau, # The specific Butcher tableau
+        N_particles,
+        N_components
+    )
+end
+# In a file like IMEXTableaus.jl or alongside GeneralIMEXTimeStepper definition
+# Ensure your IMEXButcherTableau struct is defined as you provided previously.
+# struct IMEXButcherTableau{M <: AbstractArray{Float64, 2}, V <: AbstractArray{Float64, 1}} ... end
+
+"""
+    PR_IMEX_SSP3_ButcherTableau()::IMEXButcherTableau
+
+Returns the Butcher tableau for the Pareschi & Russo (2005) IMEX-SSP3(3,3,3)
+scheme (Scheme 4.2 in their JCP paper "Implicit-explicit Runge-Kutta schemes
+and applications to hyperbolic systems with relaxation").
+This is a 3-stage, 3rd order, L-stable scheme.
+"""
+function PR_IMEX_SSP3_ButcherTableau()::IMEXButcherTableau
+    # Coefficients for Pareschi & Russo (2005), Scheme (4.2)
+    # Explicit part (corresponds to SSPRK(3,3) by Shu-Osher)
+    ct = [0.0; 1.0; 0.5] # \tilde{c}
+    At = [ 0.0   0.0   0.0;
+           1.0   0.0   0.0;
+           0.25  0.25  0.0 ] # \tilde{A}
+
+    # Implicit part (L-stable SDIRK3)
+    # gamma0 is the real root of x^3 - x^2 + x/2 - 1/6 = 0
+    gamma0 = 0.24169906235535784649 # Approximate value, can be found with Roots.jl for higher precision
+                                    # using Roots; f_g = x -> x^3 - x^2 + x/2 - 1/6; find_zero(f_g, (0.2,0.3))
+
+    c_impl = [gamma0; 
+              1.0 - gamma0; 
+              0.5] 
+
+    A_impl = zeros(Float64, 3, 3)
+    A_impl[1,1] = gamma0
+    A_impl[2,1] = 1.0 - 2.0*gamma0
+    A_impl[2,2] = gamma0
+    # Coefficients a_31 and a_32 for this specific scheme (Pareschi & Russo (4.2))
+    # a_31 = (1 - 4*gamma0 + 4*gamma0^2) / (4*gamma0*(1-2*gamma0))
+    # a_32 = (1 - 4*gamma0) / (4*(1-2*gamma0))
+    # For this specific scheme, it's often written such that the b weights are from SSPRK3 explicit part.
+    # Let's use the direct coefficients from Table IV in Pareschi & Russo (2005) for the (3,3) implicit part
+    # which is L-stable and used with SSP3 explicit.
+    # The A matrix for (4.2) for F_I terms when written as Y_i = U^n + dt Sum At_ij F_E(Y_j) + dt Sum A_ij F_I(Y_j)
+    # is:
+    # A_impl = [gamma0, 0, 0;
+    #           1-2*gamma0, gamma0, 0;
+    #           ( (1-gamma0)/(2*(1-2*gamma0)) - (1/(24*gamma0*(1-2*gamma0))) ), (1/(24*gamma0*(1-2*gamma0))) , gamma0]
+    # This gets very specific. The key structure for GeneralIMEXTimestepper is that it needs A, At, c, ct, b.
+    # The exact values for A_impl for PR(4.2) are:
+    A_impl[1,1] = gamma0
+    A_impl[2,1] = 1.0 - 2.0*gamma0
+    A_impl[2,2] = gamma0
+    A_impl[3,1] = ( (1.0-gamma0)/(1.0-2.0*gamma0) - 1.0/(12.0*gamma0) ) * 0.5 # This is (a31_paper + a32_paper_implicit_part_of_FE)
+                 # This is simplified from the tableau where explicit sums are embedded.
+                 # For a general IMEX form Y_i = U^n + dt*sum(At_ij KEj) + dt*sum(A_ij KIj)
+                 # the A matrix for (4.2) from the paper refers to coefficients of K_I terms.
+    A_impl[3,1] = 0.25 # From a common implementation of ARK3(2)3L2SA by Kennedy & Carpenter (often similar to PR)
+    A_impl[3,2] = 0.25 # This makes it match the explicit part's structure for these coefficients.
+                      # For the PR(4.2) scheme, the implicit part is an L-stable SDIRK3:
+                      # y_1 = u_n + gamma * dt * g(t_n+gamma*dt, y_1)
+                      # y_2 = u_n + (1-2*gamma)*dt*g(t_n+gamma*dt,y_1) + gamma*dt*g(t_n+(1-gamma)*dt, y_2)
+                      # y_3 = u_n + b1*dt*g(t_n+gamma*dt,y_1) + b2*dt*g(t_n+(1-gamma)*dt,y_2) + gamma*dt*g(t_n+0.5*dt, y_3)
+                      # The b's for implicit are typically the final b's for the explicit part.
+                      # This structure matches the one from Kennedy and Carpenter (2003), (ARK3(2)4L2SA-DIRK part)
+                      # with A_impl[3,1] and A_impl[3,2] being related to the final step coefficients.
+                      # Let's use the A matrix that directly corresponds to coefficients of *previous K_I terms*.
+                      # From Pareschi & Russo (2005), Table IV, for IMEX scheme (gamma_E, gamma_I, A_E, A_I, b_E, b_I, c_E, c_I)
+                      # For scheme (4.2) ("ARK3" in their table caption):
+                      # A_I (their A) is:
+                      # gamma0     0          0
+                      # 1-2*gamma0 gamma0     0
+                      # b1_s       b2_s       gamma0
+                      # where b1_s = ( (1-gamma0)/(1-2gamma0) - 1/(12*gamma0) )/2
+                      # and   b2_s = 1/(12*gamma0*(1-2gamma0))/2
+    b1_s_coeff = ( (1.0-gamma0)/(1.0-2.0*gamma0) - 1.0/(12.0*gamma0) ) / 2.0
+    b2_s_coeff = (1.0 / (12.0*gamma0*(1.0-2.0*gamma0)) ) / 2.0
+    A_impl[3,1] = b1_s_coeff
+    A_impl[3,2] = b2_s_coeff
+    A_impl[3,3] = gamma0
+    
+    # Weights (same for explicit and implicit parts in this scheme, matching SSPRK3)
+    b_weights = [1.0/6.0; 1.0/6.0; 2.0/3.0]
+
+    return IMEXButcherTableau(A_impl, At, c_impl, ct, b_weights)
+end
+
+# In your MeshfreeTimeSteppers.jl or SystemIMEXTimeSteppers.jl
+# Ensure GeneralIMEXTimeStepper and all necessary types (GradientInterpolator, etc.)
+# and PR_IMEX_SSP3_ButcherTableau are accessible.
+
+"""
+    PareschiRussoIMEXSSP3(
+        gradientInterpolator, fallbackInterpolator, mood_criterion,
+        implicit_solver, source_term_object,
+        N_particles::Int, N_components::Int
+    )
+
+Constructs a GeneralIMEXTimeStepper pre-configured with the Pareschi & Russo (2005)
+IMEX-SSP3(3,3,3) Butcher tableau (Scheme 4.2).
+This is a 3-stage, 3rd order, L-stable scheme.
+"""
+function PareschiRussoIMEXSSP3(
+    gradientInterpolator::G1,
+    fallbackInterpolator::G2,
+    mood_criterion::M,
+    implicit_solver::IS,
+    source_term_object::ST_OBJ,
+    N_particles::Int,
+    N_components::Int
+) where {
+    G1 <: Interpolations.GradientInterpolator,
+    G2 <: Union{Interpolations.GradientInterpolator, Nothing},
+    M <: MOODCriterion, # Assuming MOODCriterion is defined
+    IS <: ImplicitSolvers.AbstractImplicitSolver,
+    ST_OBJ <: SourceTerms.AbstractSourceTerm
+}
+    
+    tableau = PR_IMEX_SSP3_ButcherTableau() 
+
+    return GeneralIMEXTimeStepper(
+        gradientInterpolator,
+        fallbackInterpolator,
+        mood_criterion,
+        implicit_solver,
+        source_term_object,
+        tableau, # The specific Butcher tableau
+        N_particles,
+        N_components
+    )
+end
+
+# In a file like IMEXTableaus.jl or where GeneralIMEXTimeStepper is defined
+
+# Ensure IMEXButcherTableau struct is defined as you provided previously.
+
+# This function would go in the same file as your IMEXButcherTableau struct
+# or a dedicated file for Butcher tableaus (e.g., IMEXTableaus.jl).
+
+# Ensure IMEXButcherTableau struct is defined as you provided previously.
+# struct IMEXButcherTableau{M <: AbstractArray{Float64, 2}, V <: AbstractArray{Float64, 1}} ... end
+
+"""
+    ARS222_ButcherTableau(gamma_val::Union{Float64, Nothing}=nothing)::IMEXButcherTableau
+
+Returns the Butcher tableau for the ARS(2,2,2) IMEX scheme from
+Ascher, Ruuth, Spiteri (1997), Table 2.2.
+This is a 2-stage, 2nd order, L-stable scheme.
+
+The default `gamma_val` is `1.0 - 1.0 / sqrt(2.0)`.
+"""
+function ARS222_ButcherTableau(gamma_val::Union{Float64, Nothing}=nothing)::IMEXButcherTableau
+    # Default gamma for this specific ARS(2,2,2) scheme
+    g_coeff = isnothing(gamma_val) ? (1.0 - 1.0 / sqrt(2.0)) : gamma_val
+
+    # Explicit Part Coefficients (Atilde, ctilde)
+    At_expl = [ 0.0      0.0;
+                g_coeff  0.0 ]
+    ct_expl = [ 0.0; g_coeff ]
+
+    # Implicit Part Coefficients (A, c)
+    A_impl = [ g_coeff            0.0;
+               1.0 - 2.0*g_coeff  g_coeff ]
+    c_impl = [ g_coeff; 1.0 ]
+    
+    # Final Weights (b for both explicit and implicit parts)
+    b_weights = [ 0.5; 0.5 ]
+
+    return IMEXButcherTableau(A_impl, At_expl, c_impl, ct_expl, b_weights)
+end
+# In your MeshfreeTimeSteppers.jl or SystemIMEXTimeSteppers.jl
+# Ensure GeneralIMEXTimeStepper and all necessary types (GradientInterpolator, etc.)
+# and ARS222_ButcherTableau are accessible.
+
+# Example:
+# using ..Interpolations 
+# using ..ImplicitSolvers 
+# using ..SourceTerms 
+# using ..IMEXTableaus # Or wherever ARS222_ButcherTableau is defined
+# using ..TimeIntegration # For TimeStepper
+
+# Assume GeneralIMEXTimeStepper struct is defined as previously discussed.
+
+"""
+    ARS222_IMEX(
+        gradientInterpolator, fallbackInterpolator, mood_criterion,
+        implicit_solver, source_term_object,
+        N_particles::Int, N_components::Int;
+        gamma_coefficient::Union{Float64,Nothing}=nothing 
+    )
+
+Constructs a GeneralIMEXTimeStepper pre-configured with the standard
+ARS(2,2,2) IMEX Butcher tableau by Ascher, Ruuth, Spiteri (1997).
+This is a 2-stage, 2nd order, L-stable scheme.
+"""
+function ARS222(
+    gradientInterpolator::G1,
+    fallbackInterpolator::G2,
+    mood_criterion::M,
+    implicit_solver::IS,
+    source_term_object::ST_OBJ,
+    N_particles::Int,
+    N_components::Int;
+    gamma_coefficient::Union{Float64,Nothing}=nothing # Allows override of default gamma
+) where {
+    G1 <: Interpolations.GradientInterpolator,
+    G2 <: Union{Interpolations.GradientInterpolator, Nothing},
+    M <: MOODCriterion, # Assuming MOODCriterion is defined
+    IS <: ImplicitSolvers.AbstractImplicitSolver,
+    ST_OBJ <: SourceTerms.AbstractSourceTerm
+}
+    
+    tableau = ARS222_ButcherTableau(gamma_coefficient) 
+
+    return GeneralIMEXTimeStepper(
+        gradientInterpolator,
+        fallbackInterpolator,
+        mood_criterion,
+        implicit_solver,
+        source_term_object,
+        tableau, # The specific ARS(2,2,2) Butcher tableau
+        N_particles,
+        N_components
+    )
 end

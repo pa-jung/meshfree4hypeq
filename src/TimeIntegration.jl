@@ -28,9 +28,10 @@ function (method::TimeStepper)(eq::ScalarHyperbolicEquation, particleGrid::Parti
 end
 
 # Function called once before time integration loop to pre-calculate all relevant coefficients fot interpolation.
-function initTimeStepper(method::TimeStepper, particleGrid::ParticleGrid, settings::SimSetting) 
-    @assert hasfield(typeof(method), :gradientInterpolator) "Timestepper needs at least one GradientInterpolator!"
-    fallback_string = "none"
+function initTimeStepper(method::FixedGridTimeStepper, particleGrid::ParticleGrid, settings::SimSetting)
+    @info "Simulation uses $(typeof(method)) on a fixed regular Grid!"
+end
+function initTimeStepper(method::MeshfreeTimeStepper, particleGrid::ParticleGrid, settings::SimSetting) 
     if hasfield(typeof(method), :fallbackInterpolator) & !isnothing(method.fallbackInterpolator)
         fallback_string = "$(typeof(method.fallbackInterpolator))"
     end

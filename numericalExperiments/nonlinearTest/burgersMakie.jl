@@ -401,7 +401,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif timestepper_name == "Upwind"; method = Upwind(N)
         elseif timestepper_name == "Analytic"; method = nothing 
         elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = switch_tol)
-        elseif timestepper_name == "ARS222"
+        elseif relax_method @info "Relaxation Method Detected!"
         else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
         # --- Equation ---
@@ -451,10 +451,16 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                     particle.rho = M[pg_idx](particle.rho)
                 end
             end
-            if timestepper_name =="ARS222"
-                source_term = RelaxationSourceTerm(M, relax_eps)
-                implicit_solver = PicardIterationSolver()
+            source_term = RelaxationSourceTerm(M, relax_eps)
+            implicit_solver = LinearizedRelaxationImplicitSolver()
+            if timestepper_name =="ARS2"
                 system_method = ARS2IMEX(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
+            elseif timestepper_name == "ARS233"
+                system_method = ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
+            elseif timestepper_name == "PRSSP3"
+                system_method = PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
+            elseif timestepper_name == "ARS222"
+                system_method = ARS222(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
             else
                 system_method = RelaxationStepper(method, N, M; epsilon = relax_eps)
             end
@@ -516,13 +522,13 @@ sim_config_burgers = SimulationConfig(
     ParamDict(
         "tmax" => 20.0, "N" => 100, "xmin" => -15.0, "xmax" => 30.0,
         "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
-        "interp_range" => 1.01,
+        "interp_range" => 3.5,
         "init_func" => "box",
         "init_params" => (0.5, 1., -5.,0.),
-        "randomness_factor" => 0., # Provide default needed when regular=false
+        "randomness_factor" => 0.25, # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic",
-        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
+        "order" => 1, "PDE" => "burgers"#, "PDE_params" => 1.
     ),
 
     MethodDict(
@@ -544,7 +550,7 @@ sim_config_burgers = SimulationConfig(
             "fallback_flux" => "Rusanov",
             "MOOD" => "U1",
             "switch_tol" => .0025,
-            "delta_relax" => true,
+            "delta_relax" => false,
             "order" => 2
         ),
         "SlopeLimiter" => ParamDict(
@@ -564,7 +570,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "U1",
-            "delta_relax" => true,
+            "delta_relax" => false,
             "order" => 2
         ),
             "No MOOD" => ParamDict(
@@ -597,20 +603,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov"
         ),
         "Relax Method" => ParamDict(
-            "timestepper" => "ARS222",
-            "main_gradient" => "Upwind",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "U1",
-            "delta_relax" => false,
-            "order" => 1,
-            "relax_method" => true,
-            "relax_velocities" => (1.5,-1.5),
-            "relax_epsilon" => 10. ^ -1,
-        ),
-            "Relax Method2" => ParamDict(
-            "timestepper" => "RalstonRK2",
+            "timestepper" => "ARS2",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
@@ -620,11 +613,24 @@ sim_config_burgers = SimulationConfig(
             "order" => 2,
             "relax_method" => true,
             "relax_velocities" => (1.,-1.),
-            "relax_epsilon" => 10. ^ -1,
+            "relax_epsilon" => 10. ^ -8,
+        ),
+            "Relax Method2" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "U1",
+            "delta_relax" => false,
+            "order" => 2,
+            "relax_method" => true,
+            "relax_velocities" => (1.,-1.),
+            "relax_epsilon" => 10. ^ -8,
         )
 
     ),
-    ["Relax Method"];
+    ["Relax Method"],#,"Classic","Analytic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"];
     ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false)
 )
 
