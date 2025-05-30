@@ -1,7 +1,6 @@
 module TimeIntegration
 
 using LinearAlgebra
-using IPlotPDESols
 using ..ParticleGrids
 using ..SimSettings
 using ..ScalarHyperbolicEquations

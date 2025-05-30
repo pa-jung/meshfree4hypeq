@@ -14,7 +14,7 @@ using IPlotPDESols
 using Meshfree4ScalarEq
 # --- Keep initial condition function definitions ---
 function smoothInit1(x::Real) return exp(-x^2) end
-function smoothInit2(x::Real) return sin(2*pi*x/5) + 1.0 end # Adjusted from burgers.txt
+function sineInit(x::Real, a::Real, b::Real, c::Real) return a*sin(2*pi*x/b) + c end # Adjusted from burgers.txt
 function shockInit1(x::Real) return x > 0.5 ? 1.0 : -1.0 end  # Adjusted from burgers.txt
 function shockInit2(x::Real) return ((x > 0.)|(x<-5)) ? 0. : 1.0 end  # Adjusted from burgers.txt
 function shockInit3(x::Real) return ((x < -15.) | (x > 10.)) ? 1/2 : 1. end
@@ -259,13 +259,72 @@ function solve_implicit_periodic(x::Real, t::Real, xmin::Real, xmax::Real, f::Fu
 end
 
 # Analytical solution for smoothInit1 with periodicity (iterative evaluation)
-function smoothInit1AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real)
+function smoothInit1AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real, eq::BurgersEquation)
     return solve_implicit_periodic(x, t, xmin, xmax, smoothInit1)
 end
 
+
+
 # Analytical solution for smoothInit2 with periodicity (iterative evaluation)
-function smoothInit2AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real)
+function smoothInit2Ana(x::Real, t::Real, xmin::Real, xmax::Real, eq::BurgersEquation)
     return solve_implicit_periodic(x, t, xmin, xmax, smoothInit2)
+end
+
+function sineInitAna(eq::LinearAdvection{T}, x::Real, t::Real, a::Real, b::Real, c::Real) where T <: Float64
+    return a*sin(2*pi*(x-eq.vel*t)/b) + c
+end
+
+# Ensure BurgersEquation is defined, e.g., from your ScalarHyperbolicEquations module
+# struct BurgersEquation <: NonLinearScalarHyperbolicEquation end # Minimal definition if needed here
+# using ..Meshfree4ScalarEq.ScalarHyperbolicEquations # Or your actual path
+
+function sineInitAna_infinite_domain(eq::BurgersEquation, 
+                                     x::Real, t::Real, 
+                                     a::Real, b_period::Real, c_offset::Real;
+                                     tol::Real = 1e-10, max_iter::Int = 1000)::Float64
+    
+    if t < 0.0
+        error("Time t cannot be negative.")
+    end
+
+    initial_condition_func = (x0::Real) -> a * sin(2.0 * pi * x0 / b_period) + c_offset
+
+    if abs(t) < 1e-14 # Effectively t == 0.0
+        return initial_condition_func(x)
+    end
+
+    # Calculate theoretical shock formation time
+    t_shock_formation = Inf
+    if abs(a) > 1e-14 && abs(b_period) > 1e-14
+        min_derivative_val = -abs(a * (2.0 * pi / b_period))
+        if abs(min_derivative_val) > 1e-14
+            t_shock_formation = -1.0 / min_derivative_val
+        end
+    end
+
+    if t >= t_shock_formation && abs(a) > 1e-14 # Warn if t is beyond expected smooth regime
+        # This analytical solution method (simple fixed point for smooth u) is not valid after shock.
+        # Depending on the exact x, it might still give a value from one of the branches.
+        # For strictness, one could error or return NaN.
+        # However, for plotting/comparison, letting it attempt and warn is common.
+        # @warn "Attempting analytical solution at t=$t which may be at or after shock time t_sh=$t_shock_formation."
+    end
+
+    u_current::Float64 = initial_condition_func(x) # Initial guess for u(x,t) is u(x,0)
+    u_next::Float64 = 0.0
+
+    for iter_count in 1:max_iter
+        x_characteristic_foot = x - u_current * t # x0 on infinite domain
+        u_next = initial_condition_func(x_characteristic_foot)
+        
+        if abs(u_next - u_current) < tol
+            return u_next
+        end
+        u_current = u_next
+    end
+
+    @warn "sineInitAna_infinite_domain: Fixed-point iteration did not converge at x=$x, t=$t after $max_iter iterations. Last diff: $(abs(u_next - u_current)). Approx. shock time: $t_shock_formation. Returning last iterate."
+    return u_current 
 end
 # -------------------------------------------------
 
@@ -416,7 +475,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         # --- Initial Condition ---
         local init_func_handle::Function
-        if initFunc_name == "smoothInit1"; init_func_handle = smoothInit1; analytic_func(x,t) = smoothInit1AnaPeriodic(x::Real, t::Real, xmin::Real, xmax::Real)
+        if initFunc_name == "sine"; init_func_handle(x) = sineInit(x, init_params...); analytic_func(x,t) = sineInitAna(eq, x, t, init_params...)
         elseif initFunc_name == "smoothInit2"; init_func_handle = smoothInit2
         elseif initFunc_name == "shockInit1"; init_func_handle = shockInit1
         elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2; analytic_func = (x,t) -> shockInit2Ana(x,t,xmin,xmax)
@@ -461,6 +520,8 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                 system_method = PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
             elseif timestepper_name == "ARS222"
                 system_method = ARS222(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
+            elseif timestepper_name == "SSP2332"
+                system_method = SSP2332(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
             else
                 system_method = RelaxationStepper(method, N, M; epsilon = relax_eps)
             end
@@ -475,6 +536,9 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             dx = (xmax - xmin) * 10^-3
             dt = (tmax - 0) * 10^-2
             ts = collect(0:dt:tmax)
+            if ts[end] != tmax
+                push!(ts, tmax)
+            end
             xs = [collect(xmin:dx:xmax) for _ = eachindex(ts)]
             us =  Vector{Vector{Float64}}(undef, 0)
             for (i,t) in enumerate(ts)
@@ -520,15 +584,15 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 20.0, "N" => 100, "xmin" => -15.0, "xmax" => 30.0,
+        "tmax" =>4.0, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "box",
-        "init_params" => (0.5, 1., -5.,0.),
+        "init_func" => "sine",
+        "init_params" => (.3, 10., .5),
         "randomness_factor" => 0.25, # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic",
-        "order" => 1, "PDE" => "burgers"#, "PDE_params" => 1.
+        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
     ),
 
     MethodDict(
@@ -612,11 +676,11 @@ sim_config_burgers = SimulationConfig(
             "delta_relax" => false,
             "order" => 2,
             "relax_method" => true,
-            "relax_velocities" => (1.,-1.),
+            "relax_velocities" => (1.5,-1.5),
             "relax_epsilon" => 10. ^ -8,
         ),
-            "Relax Method2" => ParamDict(
-            "timestepper" => "ARS222",
+            "Relax Method 2" => ParamDict(
+            "timestepper" => "SSP2332",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
@@ -625,12 +689,12 @@ sim_config_burgers = SimulationConfig(
             "delta_relax" => false,
             "order" => 2,
             "relax_method" => true,
-            "relax_velocities" => (1.,-1.),
+            "relax_velocities" => (1.5,-1.5),
             "relax_epsilon" => 10. ^ -8,
         )
 
     ),
-    ["Relax Method"],#,"Classic","Analytic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"];
+    ["Relax Method", "Relax Method 2"],#,"Classic","Analytic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"];
     ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false)
 )
 
