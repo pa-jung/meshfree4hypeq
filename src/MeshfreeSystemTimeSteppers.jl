@@ -475,8 +475,8 @@ function (imex_ts::GeneralIMEXTimeStepper)(
         if bt.b[i] != 0.0 
             for p_idx_loop in 1:N_particles, k_comp_loop in 1:N_components
                 U_np1_sys_temp[p_idx_loop, k_comp_loop] += 
-                    dt * bt.b[i] * (imex_ts.K_E_stages_sys[i][p_idx_loop, k_comp_loop] + 
-                                    imex_ts.K_I_stages_sys[i][p_idx_loop, k_comp_loop])
+                    dt * (bt.bt[i] * imex_ts.K_E_stages_sys[i][p_idx_loop, k_comp_loop] + 
+                           bt.b[i] * imex_ts.K_I_stages_sys[i][p_idx_loop, k_comp_loop])
             end
         end
     end

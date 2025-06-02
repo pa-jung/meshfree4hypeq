@@ -14,7 +14,7 @@ using ..ScalarHyperbolicEquations
 import Meshfree4ScalarEq
 
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, getPeriodicDistance, saveGrid, plotDensity, animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!
-export gridToLinearIndex, linearIndexToGrid, findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!
+export gridToLinearIndex, linearIndexToGrid, findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, determineVolumes!
 
 abstract type ParticleGrid end
 
@@ -650,188 +650,108 @@ function animateDensity(settings::SimSetting; saveFigure::Union{Bool, String}=fa
 end
 
 
+# This function should ideally be part of your ParticleGrids.jl module
+
+# In ParticleGrids.jl
+# module ParticleGrids
+# ... (your existing code) ...
+
+# using VoronoiCells # Ensure this is available if not already at module top
+# using GeometryBasics # For Point2 if not already at module top
+
 """
-    calculate_solution_stats_1D(
-        u_numerical::AbstractVector{<:Real},
-        u_analytical_func::Function, # Should take x_coord -> analytical_value
-        x_coords::AbstractVector{<:Real},
-        xmin_domain::Real,
-        xmax_domain::Real,
-        N_particles::Int;
-        settings_for_interp::Union{SimSettings.SimSetting, Nothing} = nothing, # For interpAlpha, interpRange
-        default_interp_alpha::Real = 1.0, # Default if settings_for_interp is not provided
-        default_interp_range_factor::Real = 1.01, # Default if settings_for_interp is not provided
-        interp_order_for_val_at_point::Int = 0, # Order for functionInterpolation!
-        stats_to_calculate::Vector{String} = ["l1norm", "l2norm", "supnorm", "mass"]
-    ) -> Dict{String, Float64}
+    determineVolumes!(particleGrid::ParticleGrid1D)
 
-Calculates statistics for a 1D numerical solution.
-Uses functionInterpolation! to potentially get higher-order estimates of
-values at particle locations for integration if interp_order_for_val_at_point >= 0.
-If interp_order_for_val_at_point < 0, simple point-wise values are used for sums.
-
-# Arguments
-- `u_numerical`: Numerical solution values.
-- `u_analytical_func`: Function `f(x)` for the analytical solution.
-- `x_coords`: Particle x-coordinates (must be sorted for ParticleGrid1D).
-- `xmin_domain`, `xmax_domain`: Domain boundaries for periodic volume calculation.
-- `N_particles`: Number of particles (should match length of u_numerical and x_coords).
-- `settings_for_interp`: Optional SimSetting object to get interpAlpha and interpRange.
-- `default_interp_alpha`, `default_interp_range_factor`: Defaults if settings_for_interp is nothing.
-- `interp_order_for_val_at_point`: Order for `functionInterpolation!`. 
-  If < 0, no interpolation is used for summing (direct pointwise).
-- `stats_to_calculate`: Which statistics to compute.
-
-# Returns
-- `Dict{String, Float64}`: Dictionary of computed statistics.
+Calculates the 1D 'volume' (length of the Voronoi cell) for each particle
+in a periodic domain and updates `particle.volume`.
+Assumes particleGrid.grid is sorted by particle.pos.
 """
-function calculateStats(
-    u_numerical::AbstractVector{<:Real},
-    u_analytical_func::Function,
-    x_coords::Union{AbstractVector{<:Real},Tuple},
-    xmin_domain::Real,
-    xmax_domain::Real,
-    N_particles::Int;
-    settings::Union{SimSetting, Nothing} = nothing,
-    order::Int = 2,
-    stats_to_calculate::Vector{String} = ["l1norm", "l2norm", "supnorm", "mass"]
-)::Dict{String, Float64}
-
-    if N_particles == 0
-        @warn "Numerical solution vector is empty. Returning empty stats."
-        return Dict{String, Float64}()
+function determineVolumes!(particleGrid::ParticleGrid1D)
+    N = particleGrid.N
+    if N == 0
+        return
     end
-    if length(u_numerical) != N_particles || length(x_coords) != N_particles
-        error("Input vector lengths must match N_particles.")
+    domain_length = particleGrid.xmax - particleGrid.xmin
+
+    if N == 1
+        particleGrid.grid[1].volume = domain_length
+        return
     end
 
-    results = Dict{String, Float64}()
-
-    # --- 1. Create a temporary ParticleGrid to get volumes and neighbors ---
-    # Create Particle1D objects (rho will be u_numerical, boundary=false)
-    temp_particles = [Particles.Particle1D(x_coords[i], u_numerical[i], false) for i in 1:N_particles]
-    
-    nominal_dx = (xmax_domain - xmin_domain) / N_particles
-    temp_grid = ParticleGrids.ParticleGrid1D(temp_particles, xmin_domain, xmax, .1, false)
-    particle_volumes = [particle.volume for particle = temp_grid.grid]
-
-    # Determine interpolation parameters
-    interp_alpha_val = settings.interpAlpha
-    interp_range_val = settings.interpRange
-
-    ParticleGrids.updateNeighbours!(temp_grid, interp_range_val)
-
-    # --- 2. Calculate Analytical Solution and Errors at particle locations ---
-    u_analytical_at_particles = [u_analytical_func(x_coords[i]) for i in 1:N_particles]
-    errors_at_particles = u_numerical .- u_analytical_at_particles
-    abs_errors_at_particles = abs.(errors_at_particles)
-    sq_errors_at_particles = errors_at_particles.^2
-
-    # --- 3. Calculate Norms and Mass ---
-    sum_l1_norm = 0.0
-    sum_l2_norm_sq = 0.0
-    max_sup_norm = 0.0
-    sum_mass = 0.0
-    
-    dxVec_interp = Vector{Float64}(undef, max_stencil_size)
-    wVec_interp = Vector{Float64}(undef, max_stencil_size)
-    fVec_interp = Vector{Float64}(undef, max_stencil_size)
-    # functionInterpolation! needs res to be order+1. Max order for interp could be e.g. 2.
-    res_interp = Vector{Float64}(undef, max(1, order + 1)) 
-    # Default weight function (e.g., from MUSCL)
-    weight_func_default = exponentialWeightFunction()
-
-
-    for i in 1:N_particles
-        particle_i = temp_grid.grid[i]
-        vol_i = particle_i.volume # Use volume from temp_grid
-
-        # Quantities at point i
-        val_num_i = u_numerical[i]
-        val_abs_err_i = abs_errors_at_particles[i]
-        val_sq_err_i = sq_errors_at_particles[i]
-
-        # --- Interpolated values if requested and possible ---
-        interpolated_abs_err_at_i = val_abs_err_i
-        interpolated_sq_err_at_i = val_sq_err_i
-        interpolated_u_num_at_i = val_num_i
+    for i in 1:N
+        particle_i = particleGrid.grid[i]
         
-        num_neighbors_i = length(particle_i.neighbourIndices)
+        local deltaPosL, deltaPosR
 
-        if order >= 0 && num_neighbors_i > 0 && num_neighbors_i >= order
-
-            if num_neighbors_i > 0 # Ensure we have neighbors for MLS
-                # Resize if current particle has fewer neighbors than max_stencil_size
-                # This is inefficient, better to pass views or size correctly always.
-                # For now, just use up to num_neighbors_i
-                
-                local_dxVec = @view dxVec_interp[1:num_neighbors_i]
-                local_wVec = @view wVec_interp[1:num_neighbors_i]
-                
-                for k_stencil in 1:num_neighbors_i
-                    nb_idx = particle_i.neighbourIndices[k_stencil]
-                    local_dxVec[k_stencil] = getPeriodicDistance(temp_grid, i, nb_idx)
-                end
-                local_wVec .= weight_func_default(local_dxVec; param=interp_alpha_val, normalisation=nominal_dx)
-
-
-                if "l1norm" in stats_to_calculate
-                    local_fVec_abs_err = @view fVec_interp[1:num_neighbors_i]
-                    for k_stencil in 1:num_neighbors_i; local_fVec_abs_err[k_stencil] = abs_errors_at_particles[particle_i.neighbourIndices[k_stencil]]; end
-                    functionInterpolation!(local_dxVec, copy(local_wVec), local_fVec_abs_err, res_interp; order=order)
-                    interpolated_abs_err_at_i = res_interp[1]
-                end
-                if "l2norm" in stats_to_calculate
-                    local_fVec_sq_err = @view fVec_interp[1:num_neighbors_i]
-                    for k_stencil in 1:num_neighbors_i; local_fVec_sq_err[k_stencil] = sq_errors_at_particles[particle_i.neighbourIndices[k_stencil]]; end
-                    functionInterpolation!(local_dxVec, copy(local_wVec), local_fVec_sq_err, res_interp; order=order)
-                    interpolated_sq_err_at_i = res_interp[1]
-                end
-                if "mass" in stats_to_calculate
-                    local_fVec_u_num = @view fVec_interp[1:num_neighbors_i]
-                    for k_stencil in 1:num_neighbors_i; local_fVec_u_num[k_stencil] = u_numerical[particle_i.neighbourIndices[k_stencil]]; end
-                    functionInterpolation!(local_dxVec, copy(local_wVec), local_fVec_u_num, res_interp; order=order)
-                    interpolated_u_num_at_i = res_interp[1]
-                end
-            end # if num_neighbors_i > 0
-        end # if interp_order >=0
-
-        # Accumulate statistics
-        if "l1norm" in stats_to_calculate
-            sum_l1_norm += interpolated_abs_err_at_i * vol_i
+        if i == 1
+            deltaPosL = (particle_i.pos - particleGrid.xmin) + (particleGrid.xmax - particleGrid.grid[N].pos)
+        else
+            deltaPosL = particle_i.pos - particleGrid.grid[i-1].pos
         end
-        if "l2norm" in stats_to_calculate
-            sum_l2_norm_sq += interpolated_sq_err_at_i * vol_i # Sum of squares
-        end
-        if "supnorm" in stats_to_calculate
-            # Sup norm is typically max of pointwise error, not interpolated
-            if val_abs_err_i > max_sup_norm
-                max_sup_norm = val_abs_err_i
-            end
-        end
-        if "mass" in stats_to_calculate
-            sum_mass += interpolated_u_num_at_i * vol_i
-        end
-    end # End particle loop
 
-    if "l1norm" in stats_to_calculate
-        results["l1norm"] = sum_l1_norm
+        if i == N
+            deltaPosR = (particleGrid.xmax - particle_i.pos) + (particleGrid.grid[1].pos - particleGrid.xmin)
+        else
+            deltaPosR = particleGrid.grid[i+1].pos - particle_i.pos
+        end
+        particle_i.volume = (deltaPosL + deltaPosR) / 2.0
     end
-    if "l2norm" in stats_to_calculate
-        results["l2norm"] = sqrt(sum_l2_norm_sq) # Take sqrt at the end
-    end
-    if "supnorm" in stats_to_calculate
-        results["supnorm"] = max_sup_norm
-    end
-    if "mass" in stats_to_calculate
-        results["mass"] = sum_mass
-    end
-    if "volume" in stats_to_calculate # Optional, sum of cell volumes
-        results["volume"] = sum(particle_volumes)
-    end
-    
-    return results
+
+    # Optional: Normalize volumes to ensure they sum exactly to domain_length
+    # current_total_volume = sum(p.volume for p in particleGrid.grid)
+    # if abs(current_total_volume - domain_length) > 1e-9 * domain_length
+    #     factor = domain_length / current_total_volume
+    #     for p in particleGrid.grid
+    #         p.volume *= factor
+    #     end
+    # end
 end
 
+"""
+    determineVolumes!(particleGrid::ParticleGrid2D)
+
+Calculates the 2D 'volume' (area of the Voronoi cell) for each particle
+and updates `particle.volume`. Uses VoronoiCells.jl.
+Assumes particleGrid.grid contains Particle2D objects.
+"""
+function determineVolumes!(particleGrid::ParticleGrid2D)
+    N = length(particleGrid.grid)
+    if N == 0
+        return
+    end
+
+    points = [GeometryBasics.Point2(p.pos[1], p.pos[2]) for p in particleGrid.grid]
+    
+    # Define a bounding rectangle for Voronoi tessellation.
+    # It should encompass all points and handle periodicity if applicable.
+    # For simplicity, if your domain is [xmin, xmax] x [ymin, ymax] and periodic,
+    # the tessellation should ideally handle that. VoronoiCells.jl can take a Rectangle.
+    # The original constructor padded this rectangle.
+    dx_avg = (particleGrid.xmax - particleGrid.xmin) / particleGrid.Nx
+    dy_avg = (particleGrid.ymax - particleGrid.ymin) / particleGrid.Ny
+
+    # Bounding box slightly larger than domain, as in your constructor
+    # This helps VoronoiCells.jl deal with boundary cells.
+    # For periodic, the library might have specific ways, but a common approach
+    # is to tile points and take the central cell, or use specific periodic Voronoi algorithms.
+    # Assuming VoronoiCells.jl handles this appropriately with a large enough rect.
+    bounding_rect = GeometryBasics.Rectangle(
+        Point2(particleGrid.xmin - dx_avg, particleGrid.ymin - dy_avg),
+        Point2(particleGrid.xmax + dx_avg, particleGrid.ymax + dy_avg)
+    )
+    
+    tess = VoronoiCells.voronoicells(points, bounding_rect)
+    vols = VoronoiCells.voronoiarea(tess)
+
+    if length(vols) == N
+        for i in 1:N
+            particleGrid.grid[i].volume = vols[i]
+        end
+    else
+        @warn "Voronoi cell calculation returned $(length(vols)) volumes for $N particles. Volumes not updated."
+        # Fallback or error handling might be needed here.
+        # For now, volumes will remain as they were (e.g., 0.0 from Particle2D constructor).
+    end
+end
 
 end  # module ParticleGrids

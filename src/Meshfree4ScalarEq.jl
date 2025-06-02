@@ -38,4 +38,7 @@ using .TimeIntegration
 include("ParticleGridStability.jl")
 using .ParticleGridStability
 
+include("PlottingUtils.jl")
+using .PlottingUtils
+
 end  # module 

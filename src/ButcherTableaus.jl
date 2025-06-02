@@ -7,6 +7,25 @@ struct IMEXButcherTableau{M <: AbstractArray{Float64, 2}, V <: AbstractArray{Flo
     c::V  # Implicit time nodes
     ct::V # Explicit time nodes (ctilde)
     b::V  # Final weights (assumed same for explicit and implicit parts by your old code's use)
+    bt::V
+
+    function IMEXButcherTableau(A::M, At::M, c::V, ct::V, b::V, bt::V) where {M <: AbstractArray{Float64, 2}, V <: AbstractArray{Float64, 1}}
+        s = size(A, 1) # Number of stages
+        @assert (size(A, 2) == s && size(At, 1) == s && size(At, 2) == s &&
+                 length(c) == s && length(ct) == s && length(b) == s && length(bt) == s) "All Butcher tableau components must match number of stages"
+        # Your old code had ct[1]==0.0, which is a common convention for explicit part starting with U^n.
+        # if s > 0 @assert ct[1] == 0.0 "Convention: First explicit time node ct[1] should be 0" end
+        
+        # Check A is lower triangular (a_ij = 0 for j > i)
+        for i in 1:s, j in (i+1):s
+            @assert A[i,j] == 0.0 "Implicit matrix A must be lower triangular."
+        end
+        # Check At is strictly lower triangular (atilde_ij = 0 for j >= i)
+        for i in 1:s, j in i:s # Check elements on and above diagonal
+            @assert At[i,j] == 0.0 "Explicit matrix At (Atilde) must be strictly lower triangular."
+        end
+        new{M, V}(A, At, c, ct, b, bt)
+    end
 
     function IMEXButcherTableau(A::M, At::M, c::V, ct::V, b::V) where {M <: AbstractArray{Float64, 2}, V <: AbstractArray{Float64, 1}}
         s = size(A, 1) # Number of stages
@@ -23,7 +42,7 @@ struct IMEXButcherTableau{M <: AbstractArray{Float64, 2}, V <: AbstractArray{Flo
         for i in 1:s, j in i:s # Check elements on and above diagonal
             @assert At[i,j] == 0.0 "Explicit matrix At (Atilde) must be strictly lower triangular."
         end
-        new{M, V}(A, At, c, ct, b)
+        new{M, V}(A, At, c, ct, b, b)
     end
 end
 
@@ -130,7 +149,8 @@ The default `gamma_val` is `1.0 - 1.0 / sqrt(2.0)`.
 function ARS222_ButcherTableau(gamma_val::Union{Float64, Nothing}=nothing)::IMEXButcherTableau
     # Default gamma for this specific ARS(2,2,2) scheme
     g_coeff = isnothing(gamma_val) ? (1.0 - 1.0 / sqrt(2.0)) : gamma_val
-
+    delta = 1 - 1/(2*g_coeff)
+    #g_coeff = 1
     # Explicit Part Coefficients (Atilde, ctilde)
     At_expl = [ 0.0      0.0;
                 g_coeff  0.0 ]
@@ -138,13 +158,15 @@ function ARS222_ButcherTableau(gamma_val::Union{Float64, Nothing}=nothing)::IMEX
 
     # Implicit Part Coefficients (A, c)
     A_impl = [ g_coeff            0.0;
-               1.0 - 2.0*g_coeff  g_coeff ]
+               1.0 - g_coeff  g_coeff ]
     c_impl = [ g_coeff; 1.0 ]
     
     # Final Weights (b for both explicit and implicit parts)
-    b_weights = [ 0.5; 0.5 ]
+    #b_weights = [ 0.5; 0.5 ]
+    b = [1-g_coeff; g_coeff] # Implicit b
+    bt = [delta; 1-delta]
 
-    return IMEXButcherTableau(A_impl, At_expl, c_impl, ct_expl, b_weights)
+    return IMEXButcherTableau(A_impl, At_expl, c_impl, ct_expl, b, bt)
 end
 
 function SSP2332ButcherTableau()::IMEXButcherTableau

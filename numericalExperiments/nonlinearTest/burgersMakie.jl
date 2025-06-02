@@ -9,6 +9,7 @@ using Meshfree4ScalarEq.SimSettings
 using Meshfree4ScalarEq.FluxFunctions
 using Meshfree4ScalarEq.SourceTerms
 using Meshfree4ScalarEq.ImplicitSolvers
+using Meshfree4ScalarEq.PlottingUtils
 using Random                    # For RNG state copy
 using IPlotPDESols
 using Meshfree4ScalarEq
@@ -553,6 +554,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Post-processing ---
         if !isnothing(sim_data_result)
              # Add metadata to stats dictionary
+             calculateAllStats!(sim_data_result, analytic_func, xmin, xmax, N; settings = settings, order = 3)
              if hasproperty(sim_data_result, :stats) && isa(sim_data_result.stats, Dict)
                  sim_data_result.stats["time"] = elapsed_time
                  sim_data_result.stats["dx_nominal"] = dx_nominal
@@ -586,10 +588,10 @@ sim_config_burgers = SimulationConfig(
     ParamDict(
         "tmax" =>4.0, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
-        "interp_range" => 3.5,
+        "interp_range" => 1.01,
         "init_func" => "sine",
-        "init_params" => (.3, 10., .5),
-        "randomness_factor" => 0.25, # Provide default needed when regular=false
+        "init_params" => (.5, 5., .5),
+        "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic",
         "order" => 1, "PDE" => "linear", "PDE_params" => 1.
@@ -667,12 +669,12 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov"
         ),
         "Relax Method" => ParamDict(
-            "timestepper" => "ARS2",
+            "timestepper" => "ARS222",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
-            "MOOD" => "U1",
+            "MOOD" => "none",
             "delta_relax" => false,
             "order" => 2,
             "relax_method" => true,
@@ -685,7 +687,7 @@ sim_config_burgers = SimulationConfig(
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
-            "MOOD" => "U1",
+            "MOOD" => "none",
             "delta_relax" => false,
             "order" => 2,
             "relax_method" => true,
