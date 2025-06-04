@@ -279,7 +279,7 @@ end
 # struct BurgersEquation <: NonLinearScalarHyperbolicEquation end # Minimal definition if needed here
 # using ..Meshfree4ScalarEq.ScalarHyperbolicEquations # Or your actual path
 
-function sineInitAna_infinite_domain(eq::BurgersEquation, 
+function sineInitAna(eq::BurgersEquation, 
                                      x::Real, t::Real, 
                                      a::Real, b_period::Real, c_offset::Real;
                                      tol::Real = 1e-10, max_iter::Int = 1000)::Float64
@@ -368,7 +368,8 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         xmin::Float64 = run_params["xmin"]
         xmax::Float64 = run_params["xmax"]
         initFunc_name::String = run_params["init_func"]
-        cfl::Float64 = run_params["CFL"]
+        cfl = get(run_params, "CFL", nothing)
+        dt = get(run_params, "dt", nothing)
         save_freq::Int = run_params["save_frequency"]
         interp_alpha::Float64 = run_params["interp_alpha"]
         interp_range_factor::Float64 = run_params["interp_range"]
@@ -411,8 +412,12 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         interp_range = interp_range_factor * particleGrid.dx
         # Calculate dt based on CFL using the *correct* equation (Burgers)
         # This assumes getTimeStep can handle BurgersEquation appropriately
-        eqLin = LinearAdvection(1.0)
-        dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
+        if !isnothing(cfl)
+            eqLin = LinearAdvection(1.0)
+            dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
+        elseif isnothing(dt)
+            error("The time step has to be given directly via the dt-key or via the CFL fraction using the CFL-key!")
+        end
 
         # --- Build Method Components (Ensure types/constructors are accessible) ---
         local mood_fun
@@ -438,7 +443,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif !isnothing(fallback_flux_name); error("Requested Fallback Flux is not implemented!") end
 
         local MainGrad
-        if main_grad_name == "MUSCL"; MainGrad = MUSCL(order-1; numericalFlux = MainFlux)
+        if main_grad_name == "MUSCL"; MainGrad = MUSCL(order-1; numericalFlux = MainFlux); println(MainGrad)
         elseif main_grad_name == "MUSCLlimit"; MainGrad = MUSCLlimited(1; numericalFlux = MainFlux)
         elseif main_grad_name == "Upwind"; MainGrad = UpwindGradient(order; numericalFlux = MainFlux)
         elseif main_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
@@ -534,13 +539,12 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
         else
             elapsed_time = 0.
-            dx = (xmax - xmin) * 10^-3
-            dt = (tmax - 0) * 10^-2
+            
             ts = collect(0:dt:tmax)
             if ts[end] != tmax
                 push!(ts, tmax)
             end
-            xs = [collect(xmin:dx:xmax) for _ = eachindex(ts)]
+            xs = [collect(range(xmin, xmax, N)) for _ = ts]
             us =  Vector{Vector{Float64}}(undef, 0)
             for (i,t) in enumerate(ts)
                 u_tmp = map(x -> analytic_func(x,t), xs[i])
@@ -554,7 +558,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Post-processing ---
         if !isnothing(sim_data_result)
              # Add metadata to stats dictionary
-             calculateAllStats!(sim_data_result, analytic_func, xmin, xmax, N; settings = settings, order = 3)
+             calculateAllStats!(sim_data_result, analytic_func, (xmin = xmin, xmax = xmax), N; quad_tol = 10e-14, dierckx_k = 5)
              if hasproperty(sim_data_result, :stats) && isa(sim_data_result.stats, Dict)
                  sim_data_result.stats["time"] = elapsed_time
                  sim_data_result.stats["dx_nominal"] = dx_nominal
@@ -586,11 +590,11 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" =>4.0, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => 0.2, "save_frequency" => 2, "interp_alpha" => 1.0,
+        "tmax" => 4.0, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
+        "dt" => 1e-4, "save_frequency" => 5, "interp_alpha" => 1.0,
         "interp_range" => 1.01,
         "init_func" => "sine",
-        "init_params" => (.5, 5., .5),
+        "init_params" => (.5, 5., .5),#(.2, 10., .3)
         "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic",
@@ -598,91 +602,173 @@ sim_config_burgers = SimulationConfig(
     ),
 
     MethodDict(
-        "OnlyFallback" => ParamDict(
-            "timestepper" => "RalstonRK2",
-            "main_gradient" => "MUSCL",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "only",
-            "delta_relax" => false,
-            "order" => 2
-        ),
-        "SmoothSwitching" => ParamDict(
-            "timestepper" => "RalstonRK2SmoothSwitch",
-            "main_gradient" => "MUSCL",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "U1",
-            "switch_tol" => .0025,
-            "delta_relax" => false,
-            "order" => 2
-        ),
-        "SlopeLimiter" => ParamDict(
-            "timestepper" => "RalstonRK2",
-            "main_gradient" => "MUSCLlimit",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "none",
-            "delta_relax" => false,
-            "order" => 2
-        ),
-        "Regular MOOD" => ParamDict(
-            "timestepper" => "RalstonRK2",
-            "main_gradient" => "MUSCL",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "U1",
-            "delta_relax" => false,
-            "order" => 2
-        ),
-            "No MOOD" => ParamDict(
-            "timestepper" => "RalstonRK2",
-            "main_gradient" => "MUSCL",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "none",
-            "delta_relax" => false,
-            "order" => 2
-        ),
-        "EulerUpwind" => ParamDict(
+    #     "OnlyFallback" => ParamDict(
+    #         "timestepper" => "RalstonRK2",
+    #         "main_gradient" => "MUSCL",
+    #         "fallback_gradient" => "Upwind",
+    #         "main_flux" => "Rusanov",
+    #         "fallback_flux" => "Rusanov",
+    #         "MOOD" => "only",
+    #         "delta_relax" => false,
+    #         "order" => 2
+    #     ),
+    #     "SmoothSwitching" => ParamDict(
+    #         "timestepper" => "RalstonRK2SmoothSwitch",
+    #         "main_gradient" => "MUSCL",
+    #         "fallback_gradient" => "Upwind",
+    #         "main_flux" => "Rusanov",
+    #         "fallback_flux" => "Rusanov",
+    #         "MOOD" => "U1",
+    #         "switch_tol" => .0025,
+    #         "delta_relax" => false,
+    #         "order" => 2
+    #     ),
+    #     "SlopeLimiter" => ParamDict(
+    #         "timestepper" => "RalstonRK2",
+    #         "main_gradient" => "MUSCLlimit",
+    #         "fallback_gradient" => "Upwind",
+    #         "main_flux" => "Rusanov",
+    #         "fallback_flux" => "Rusanov",
+    #         "MOOD" => "none",
+    #         "delta_relax" => false,
+    #         "order" => 2
+    #     ),
+    #     "Regular MOOD" => ParamDict(
+    #         "timestepper" => "RalstonRK2",
+    #         "main_gradient" => "MUSCL",
+    #         "fallback_gradient" => "Upwind",
+    #         "main_flux" => "Rusanov",
+    #         "fallback_flux" => "Rusanov",
+    #         "MOOD" => "U1",
+    #         "delta_relax" => false,
+    #         "order" => 2
+    #     ),
+            "1st order Timestepper direct" => ParamDict(
             "timestepper" => "EulerUpwind",
-            "main_gradient" => "Upwind",
-            "fallback_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
-            "fallback_flux" => "Rusanov",
-            "MOOD" => "none",
-            "delta_relax" => false,
-            "order" => 1
-        ),
-        "Analytic" => ParamDict(
-            "timestepper" => "Analytic",
-            "randomness_factor" => (:const,0.)
-             # No randomness_factor needed when regular=true
-        ),
-        "Classic" => ParamDict(
-            "randomness_factor" => (:const,0.),
-            "main_flux" => "Rusanov"
-        ),
-        "Relax Method" => ParamDict(
-            "timestepper" => "ARS222",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 2,
+            "order" => 3
+        ),
+        "3rd order direct" => ParamDict(
+            "timestepper" => "RK3",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "none",
+            "delta_relax" => false,
+            "order" => 3
+        ),
+        # "2nd order direct" => ParamDict(
+        #     "timestepper" => "RK3",
+        #     "main_gradient" => "MUSCL",
+        #     "fallback_gradient" => "Upwind",
+        #     "main_flux" => "Rusanov",
+        #     "fallback_flux" => "Rusanov",
+        #     "MOOD" => "none",
+        #     "delta_relax" => false,
+        #     "order" => 2
+        # ),
+        #     "3rd order direct" => ParamDict(
+        #     "timestepper" => "RK3",
+        #     "main_gradient" => "MUSCL",
+        #     "fallback_gradient" => "Upwind",
+        #     "main_flux" => "Rusanov",
+        #     "fallback_flux" => "Rusanov",
+        #     "MOOD" => "none",
+        #     "delta_relax" => false,
+        #     "order" => 3
+        # ),
+    #     "EulerUpwind" => ParamDict(
+    #         "timestepper" => "EulerUpwind",
+    #         "main_gradient" => "Upwind",
+    #         "fallback_gradient" => "Upwind",
+    #         "main_flux" => "Rusanov",
+    #         "fallback_flux" => "Rusanov",
+    #         "MOOD" => "none",
+    #         "delta_relax" => false,
+    #         "order" => 1
+    #     ),
+    #     "Analytic" => ParamDict(
+    #         "timestepper" => "Analytic",
+    #         "randomness_factor" => (:const,0.)
+    #          # No randomness_factor needed when regular=true
+    #     ),
+        # "Classic" => ParamDict(
+        #     "randomness_factor" => (:const,0.),
+        #     "main_flux" => "Rusanov"
+        # ),
+        # "Relax Method" => ParamDict(
+        #     "timestepper" => "ARS222",
+        #     "main_gradient" => "MUSCL",
+        #     "fallback_gradient" => "Upwind",
+        #     "main_flux" => "Rusanov",
+        #     "fallback_flux" => "Rusanov",
+        #     "MOOD" => "none",
+        #     "delta_relax" => false,
+        #     "order" => 2,
+        #     "relax_method" => true,
+        #     "relax_velocities" => (1.,-1.),
+        #     "relax_epsilon" => 10. ^ -8,
+        # ),
+        #     "Relax Method 2" => ParamDict(
+        #     "timestepper" => "SSP2332",
+        #     "main_gradient" => "MUSCL",
+        #     "fallback_gradient" => "Upwind",
+        #     "main_flux" => "Rusanov",
+        #     "fallback_flux" => "Rusanov",
+        #     "MOOD" => "none",
+        #     "delta_relax" => false,
+        #     "order" => 2,
+        #     "relax_method" => true,
+        #     "relax_velocities" => (1.,-1.),
+        #     "relax_epsilon" => 10. ^ -8,
+        # ),
+        # "Relax Method 4th order" => ParamDict(
+        #     "timestepper" => "ARS233",
+        #     "main_gradient" => "MUSCL",
+        #     "fallback_gradient" => "Upwind",
+        #     "main_flux" => "Rusanov",
+        #     "fallback_flux" => "Rusanov",
+        #     "MOOD" => "none",
+        #     "delta_relax" => false,
+        #     "order" => 4,
+        #     "relax_method" => true,
+        #     "relax_velocities" => (1.,-1.),
+        #     "relax_epsilon" => 10. ^ -8,
+        # ),
+                "Relax Method 3rd order" => ParamDict(
+            "timestepper" => "PRSSP3",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "none",
+            "delta_relax" => false,
+            "order" => 3,
             "relax_method" => true,
-            "relax_velocities" => (1.5,-1.5),
+            "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
         ),
-            "Relax Method 2" => ParamDict(
-            "timestepper" => "SSP2332",
+        "Relax Method simple splitting" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "none",
+            "delta_relax" => false,
+            "order" => 3,
+            "relax_method" => true,
+            "relax_velocities" => (1.,-1.),
+            "relax_epsilon" => 10. ^ -8,
+        ),
+                "Relax Method 2nd order" => ParamDict(
+            "timestepper" => "ARS233",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
@@ -691,14 +777,16 @@ sim_config_burgers = SimulationConfig(
             "delta_relax" => false,
             "order" => 2,
             "relax_method" => true,
-            "relax_velocities" => (1.5,-1.5),
+            "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
         )
 
     ),
-    ["Relax Method", "Relax Method 2"],#,"Classic","Analytic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"];
-    ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false)
+    ["Relax Method 2nd order"],#, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"];
+    ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false, "dashed_lines" => true)
 )
 
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers);
+#show1DSolutionFig(sim_config_burgers);
+#calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
+showConvergencePlot(sim_config_burgers, "N", 10. .^(1:.25:2.5), "l2norm"; force_int_param = true, initial_calc = true)

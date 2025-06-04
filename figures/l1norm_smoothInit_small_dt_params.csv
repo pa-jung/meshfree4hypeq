@@ -1,0 +1,116 @@
+Parameter,Value
+# Context Info,====================
+Save Type,Static Frame
+Timestamp,2025-06-04T11:01:04.788
+# Shared Parameters,====================
+N,100
+PDE,linear
+PDE_params,1.0
+SEED,10
+dt,0.0001
+init_func,sine
+init_params,"(0.5, 5.0, 0.5)"
+interp_alpha,1.0
+interp_range,1.01
+order,1
+randomness_factor,0.0
+save_frequency,2500
+timestepper,Classic
+tmax,5.0
+xmax,5.0
+xmin,-5.0
+# Method-Specific Parameters,==========================
+# Method: Classic,--------------------
+main_flux,Rusanov
+randomness_factor,"(:const, 0.0)"
+# Method: EulerUpwind,--------------------
+MOOD,none
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,Upwind
+order,1
+timestepper,EulerUpwind
+# Method: No MOOD,--------------------
+MOOD,none
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,4
+timestepper,RK4
+# Method: OnlyFallback,--------------------
+MOOD,only
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+timestepper,RalstonRK2
+# Method: Regular MOOD,--------------------
+MOOD,U1
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+timestepper,RalstonRK2
+# Method: Relax Method,--------------------
+MOOD,none
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+relax_epsilon,1.0e-8
+relax_method,true
+relax_velocities,"(1.0, -1.0)"
+timestepper,ARS222
+# Method: Relax Method 2,--------------------
+MOOD,none
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+relax_epsilon,1.0e-8
+relax_method,true
+relax_velocities,"(1.0, -1.0)"
+timestepper,SSP2332
+# Method: Relax Method 3rd order,--------------------
+MOOD,none
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,4
+relax_epsilon,1.0e-8
+relax_method,true
+relax_velocities,"(1.0, -1.0)"
+timestepper,ARS233
+# Method: SlopeLimiter,--------------------
+MOOD,none
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCLlimit
+order,2
+timestepper,RalstonRK2
+# Method: SmoothSwitching,--------------------
+MOOD,U1
+delta_relax,false
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+switch_tol,0.0025
+timestepper,RalstonRK2SmoothSwitch
