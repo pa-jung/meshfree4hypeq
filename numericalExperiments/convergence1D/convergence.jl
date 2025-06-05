@@ -223,5 +223,5 @@ function checkError(init::Integer)
 end
 
 checkError(1)
-checkError(2)
-checkError(3)
+#checkError(2)
+#checkError(3)

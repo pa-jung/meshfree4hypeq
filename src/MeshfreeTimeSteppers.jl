@@ -369,7 +369,7 @@ function (rk3::RK3)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, se
     end
 end
 
-struct RalstonRK2{G1 <: GradientInterpolator, G2 <: GradientInterpolator, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
+struct RalstonRK2{G1 <: GradientInterpolator, G2 <: Union{GradientInterpolator, Nothing}, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
     gradientInterpolator::G1
     fallbackInterpolator::Union{G2,Nothing}
     mood::MOOD

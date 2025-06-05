@@ -31,6 +31,7 @@ function initTimeStepper(method::FixedGridTimeStepper, particleGrid::ParticleGri
     @info "Simulation uses $(typeof(method)) on a fixed regular Grid!"
 end
 function initTimeStepper(method::MeshfreeTimeStepper, particleGrid::ParticleGrid, settings::SimSetting) 
+    fallback_string = "none"
     if hasfield(typeof(method), :fallbackInterpolator) & !isnothing(method.fallbackInterpolator)
         fallback_string = "$(typeof(method.fallbackInterpolator))"
     end

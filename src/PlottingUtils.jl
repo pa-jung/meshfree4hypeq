@@ -34,12 +34,15 @@ function calculateStats(
     u_numerical::AbstractVector{<:Real},
     u_analytical_func::Function,
     x_coords_input::Union{AbstractVector{<:Real}, AbstractVector{<:NTuple{2,Float64}}},
-    domain_params::NamedTuple,
+    domain_params::NamedTuple, # (xmin, xmax) for 1D; (xmin, xmax, ymin, ymax) for 2D
     N_particles::Int;
     dierckx_k::Int = 3, 
     dierckx_s::Union{Real,Nothing} = nothing,
     quad_tol::Real = 1e-10,
-    stats_to_calculate::Vector{String} = ["l1norm", "l2norm", "supnorm", "mass"] # "volume" removed
+    stats_to_calculate::Vector{String} = [
+        "l1norm", "l2norm", "supnorm", "mass", 
+        "discrete_l1norm", "discrete_l2norm"
+    ]
 )::Dict{String, Float64}
 
     if N_particles == 0
@@ -52,9 +55,10 @@ function calculateStats(
 
     results = Dict{String, Float64}()
     
-    s_val_actual = isnothing(dierckx_s) ? Float64(N_particles) - sqrt(2.0*Float64(N_particles)) : Float64(dierckx_s)
+    s_val_actual = isnothing(dierckx_s) ? max(0.0, Float64(N_particles) - sqrt(2.0*Float64(N_particles))) : Float64(dierckx_s)
     if s_val_actual < 0.0; s_val_actual = 0.0; end
 
+    # --- 1. Calculate Analytical Solution and Pointwise Errors ---
     u_analytical_at_particles = Vector{Float64}(undef, N_particles)
     if eltype(x_coords_input) <: Real # 1D
         for i in 1:N_particles
@@ -62,88 +66,117 @@ function calculateStats(
         end
     else # 2D (NTuple{2,Float64})
         for i in 1:N_particles
-            u_analytical_at_particles[i] = u_analytical_func(x_coords_input[i]...)
+            u_analytical_at_particles[i] = u_analytical_func(x_coords_input[i]...) # Splat tuple
         end
     end
-    errors_at_particles = u_numerical .- u_analytical_at_particles
+    errors_at_particles = u_numerical .- u_analytical_at_particles # Vector of pointwise errors e_i
 
+    # --- 2. Supremum Norm (always pointwise) ---
     if "supnorm" in stats_to_calculate
         results["supnorm"] = N_particles > 0 ? maximum(abs.(errors_at_particles)) : 0.0
     end
 
+    # --- 3. Discrete Unweighted Norms ---
+    if "discrete_l1norm" in stats_to_calculate
+        results["discrete_l1norm"] = N_particles > 0 ? sum(abs.(errors_at_particles)) : 0.0
+    end
+    if "discrete_l2norm" in stats_to_calculate
+        # This is LinearAlgebra.norm(errors_at_particles, 2)
+        sum_sq_err_discrete = 0.0
+        if N_particles > 0
+            for err_val in errors_at_particles
+                sum_sq_err_discrete += err_val^2
+            end
+        end
+        results["discrete_l2norm"] = sqrt(sum_sq_err_discrete)
+    end
+
+    # --- 4. Interpolation and Integration for "l1norm", "l2norm", "mass" (Dierckx/QuadGK based) ---
     if eltype(x_coords_input) <: Real # 1D Case
         xmin, xmax = domain_params.xmin, domain_params.xmax
         
-        perm = sortperm(x_coords_input)
-        x_sorted = x_coords_input[perm]
-        u_num_sorted = u_numerical[perm]
-        errors_sorted = errors_at_particles[perm]
-
-        spl_u_num = Dierckx.Spline1D(x_sorted, u_num_sorted; k=dierckx_k, s=s_val_actual, bc="nearest")
-        spl_error = Dierckx.Spline1D(x_sorted, errors_sorted; k=dierckx_k, s=s_val_actual, bc="nearest")
-
-        if "mass" in stats_to_calculate
-            results["mass"] = Dierckx.integrate(spl_u_num, xmin, xmax)
+        # Dierckx.Spline1D needs sorted x coordinates
+        local x_sorted_1D, u_num_sorted_1D, errors_sorted_1D
+        if N_particles > 1 && !issorted(x_coords_input)
+            perm_1D = sortperm(x_coords_input)
+            x_sorted_1D = x_coords_input[perm_1D]
+            u_num_sorted_1D = u_numerical[perm_1D]
+            errors_sorted_1D = errors_at_particles[perm_1D]
+            @warn "x_coords were not sorted. Sorted them for Dierckx.Spline1D."
+        else
+            x_sorted_1D = x_coords_input
+            u_num_sorted_1D = u_numerical
+            errors_sorted_1D = errors_at_particles
         end
+
+        spl_u_num_1D = nothing
+        if "mass" in stats_to_calculate && N_particles > 0
+            try
+                spl_u_num_1D = Dierckx.Spline1D(x_sorted_1D, u_num_sorted_1D; k=dierckx_k, s=s_val_actual, bc="nearest")
+                results["mass"] = Dierckx.integrate(spl_u_num_1D, xmin, xmax)
+            catch e
+                @warn "Dierckx.Spline1D for u_numerical failed: $e. Mass not computed."
+                results["mass"] = NaN
+            end
+        elseif "mass" in stats_to_calculate
+            results["mass"] = 0.0
+        end
+        
+        spl_error_1D = nothing
+        if ("l1norm" in stats_to_calculate || "l2norm" in stats_to_calculate) && N_particles > 0
+            try
+                spl_error_1D = Dierckx.Spline1D(x_sorted_1D, errors_sorted_1D; k=dierckx_k, s=s_val_actual, bc="nearest")
+            catch e
+                @warn "Dierckx.Spline1D for error failed: $e. Integrated L1/L2 norms not computed."
+                spl_error_1D = nothing # Ensure it's nothing
+            end
+        end
+
         if "l1norm" in stats_to_calculate
-            l1_val, _ = QuadGK.quadgk(x -> abs(spl_error(x)), xmin, xmax, rtol=quad_tol, atol=quad_tol^2)
-            results["l1norm"] = l1_val
+            if !isnothing(spl_error_1D)
+                l1_val, _ = QuadGK.quadgk(x -> abs(spl_error_1D(x)), xmin, xmax, rtol=quad_tol, atol=quad_tol^2)
+                results["l1norm"] = l1_val
+            else
+                results["l1norm"] = NaN # Indicate failure if spline wasn't created
+            end
         end
         if "l2norm" in stats_to_calculate
-            l2_sq_val, _ = QuadGK.quadgk(x -> spl_error(x)^2, xmin, xmax, rtol=quad_tol, atol=quad_tol^2)
-            results["l2norm"] = sqrt(l2_sq_val)
+            if !isnothing(spl_error_1D)
+                l2_sq_val, _ = QuadGK.quadgk(x -> spl_error_1D(x)^2, xmin, xmax, rtol=quad_tol, atol=quad_tol^2)
+                results["l2norm"] = sqrt(l2_sq_val)
+            else
+                results["l2norm"] = NaN
+            end
         end
 
     elseif eltype(x_coords_input) <: NTuple{2,Float64} # 2D Case
         xmin, xmax = domain_params.xmin, domain_params.xmax
         ymin, ymax = domain_params.ymin, domain_params.ymax
 
-        x_vec_2d = [pt[1] for pt in x_coords_input]
-        y_vec_2d = [pt[2] for pt in x_coords_input]
-
-        spl_u_num_2D = Dierckx.Spline2D(x_vec_2d, y_vec_2d, u_numerical; kx=dierckx_k, ky=dierckx_k, s=s_val_actual)
-        # spl_error_2D = Dierckx.Spline2D(x_vec_2d, y_vec_2d, errors_at_particles; kx=dierckx_k, ky=dierckx_k, s=s_val_actual)
-
-        if "mass" in stats_to_calculate
-            results["mass"] = Dierckx.integrate(spl_u_num_2D, xmin, xmax, ymin, ymax)
+        if "mass" in stats_to_calculate && N_particles > 0
+            x_vec_2d = [pt[1] for pt in x_coords_input]
+            y_vec_2d = [pt[2] for pt in x_coords_input]
+            try
+                spl_u_num_2D = Dierckx.Spline2D(x_vec_2d, y_vec_2d, u_numerical; kx=dierckx_k, ky=dierckx_k, s=s_val_actual)
+                results["mass"] = Dierckx.integrate(spl_u_num_2D, xmin, xmax, ymin, ymax)
+            catch e
+                @warn "Dierckx.Spline2D for u_numerical (mass) failed: $e. Mass not computed."
+                results["mass"] = NaN
+            end
+        elseif "mass" in stats_to_calculate
+            results["mass"] = 0.0
         end
         
-        # For 2D L1 and L2, Dierckx.integrate integrates the spline, not abs(spline) or spline^2.
-        # Using pointwise sum with volumes as an approximation if HCubature/Cuba not available.
-        if "l1norm" in stats_to_calculate || "l2norm" in stats_to_calculate
-            @warn "For 2D, L1 and L2 norms are approximated by pointwise summation using particle volumes. For higher accuracy, consider a 2D quadrature package."
-            
-            # Create temporary ParticleGrid2D to get volumes
-            temp_particles_2D = [Meshfree4ScalarEq.Particles.Particle2D(x_coords_input[i], u_numerical[i], false) for i in 1:N_particles]
-            temp_grid_2D_obj = Meshfree4ScalarEq.ParticleGrids.ParticleGrid2D(
-                domain_params.xmin, domain_params.xmax, domain_params.ymin, domain_params.ymax,
-                get(domain_params, :Nx, round(Int,sqrt(N_particles))), # Get Nx, Ny from domain_params
-                get(domain_params, :Ny, round(Int,sqrt(N_particles))); 
-                randomness = (0.0, 0.0) 
-            )
-            if length(temp_grid_2D_obj.grid) == N_total_particles
-                for i_pg in 1:N_total_particles; temp_grid_2D_obj.grid[i_pg].pos = x_coords_input[i_pg]; end
-                determineVolumes_placeholder!(temp_grid_2D_obj) # Your function
-            else
-                error("Temp grid particle count mismatch for 2D volume calculation in stats.")
-            end
-
-            sum_l1_val_2D = 0.0
-            sum_l2_sq_val_2D = 0.0
-            for i in 1:N_particles
-                vol_i = temp_grid_2D_obj.grid[i].volume
-                # Error is already calculated pointwise in errors_at_particles
-                error_val_at_particle = errors_at_particles[i] 
-
-                if "l1norm" in stats_to_calculate
-                    sum_l1_val_2D += abs(error_val_at_particle) * vol_i
-                end
-                if "l2norm" in stats_to_calculate
-                    sum_l2_sq_val_2D += error_val_at_particle^2 * vol_i
-                end
-            end
-            if "l1norm" in stats_to_calculate; results["l1norm"] = sum_l1_val_2D; end
-            if "l2norm" in stats_to_calculate; results["l2norm"] = sqrt(sum_l2_sq_val_2D); end
+        # For 2D, "l1norm" and "l2norm" (integrated versions) are not computed via Dierckx/QuadGK here.
+        # They will rely on the discrete unweighted norms if those are requested,
+        # or you can choose to report NaN or an error if "l1norm"/"l2norm" are specifically requested for 2D.
+        if "l1norm" in stats_to_calculate
+            results["l1norm"] = get(results, "discrete_l1norm", NaN)
+            if isnan(results["l1norm"]) @warn "Integrated L1 norm for 2D not computed; using discrete if available, else NaN." end
+        end
+        if "l2norm" in stats_to_calculate
+            results["l2norm"] = get(results, "discrete_l2norm", NaN)
+             if isnan(results["l2norm"]) @warn "Integrated L2 norm for 2D not computed; using discrete if available, else NaN." end
         end
     else
         error("Unsupported x_coords_input element type: $(eltype(x_coords_input))")
@@ -160,7 +193,10 @@ function calculateAllStats!(
         dierckx_k::Int = 3, 
         dierckx_s::Union{Real,Nothing} = nothing,
         quad_tol::Real = 1e-9,
-        stats_to_calculate::Vector{String} = ["l1norm", "l2norm", "supnorm", "mass"] # "volume" removed
+        stats_to_calculate::Vector{String} = [
+        "l1norm", "l2norm", "supnorm", "mass", 
+        "discrete_l1norm", "discrete_l2norm"
+    ]
     )
     for key = stats_to_calculate
         sim_data.stats[key] = []

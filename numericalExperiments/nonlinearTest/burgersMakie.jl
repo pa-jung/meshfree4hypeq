@@ -19,8 +19,7 @@ function sineInit(x::Real, a::Real, b::Real, c::Real) return a*sin(2*pi*x/b) + c
 function shockInit1(x::Real) return x > 0.5 ? 1.0 : -1.0 end  # Adjusted from burgers.txt
 function shockInit2(x::Real) return ((x > 0.)|(x<-5)) ? 0. : 1.0 end  # Adjusted from burgers.txt
 function shockInit3(x::Real) return ((x < -15.) | (x > 10.)) ? 1/2 : 1. end
-
-
+function gaussInit(x::Real, a::Real, b::Real, width::Real) return a*exp(-((x-b)/width)^2) end
 """
     boxInit(x::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
 
@@ -33,6 +32,11 @@ function boxInit(x::Real, u_background::Real, u_box::Real, x_box_start::Real, x_
     else
         return u_background
     end
+end
+
+function linearSolution(x::Real, t::Real, eq::LinearAdvection, initFunc::Function, init_params::Tuple, xmin::Real, xmax::Real)
+    L = xmax - xmin
+    return initFunc(mod(x-eq.vel*t-xmin, L)+xmin, init_params...)
 end
 
 """
@@ -411,9 +415,18 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Calculate Dependent Parameters ---
         interp_range = interp_range_factor * particleGrid.dx
         # Calculate dt based on CFL using the *correct* equation (Burgers)
+        # --- Equation ---
+        if eq_name == "burgers"
+            eq = BurgersEquation() # Instantiate Burgers' equation object
+        elseif eq_name == "linear"
+            eq = LinearAdvection(eq_params)
+        else 
+            error("Requested PDE not implemented!")
+        end
+        F = u -> flux(eq, u)
         # This assumes getTimeStep can handle BurgersEquation appropriately
         if !isnothing(cfl)
-            eqLin = LinearAdvection(1.0)
+            eqLin = eq_name == "linear" ? eq : LinearAdvection(1.0)
             dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
         elseif isnothing(dt)
             error("The time step has to be given directly via the dt-key or via the CFL fraction using the CFL-key!")
@@ -443,7 +456,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif !isnothing(fallback_flux_name); error("Requested Fallback Flux is not implemented!") end
 
         local MainGrad
-        if main_grad_name == "MUSCL"; MainGrad = MUSCL(order-1; numericalFlux = MainFlux); println(MainGrad)
+        if main_grad_name == "MUSCL"; MainGrad = MUSCL(order-1; numericalFlux = MainFlux)
         elseif main_grad_name == "MUSCLlimit"; MainGrad = MUSCLlimited(1; numericalFlux = MainFlux)
         elseif main_grad_name == "Upwind"; MainGrad = UpwindGradient(order; numericalFlux = MainFlux)
         elseif main_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
@@ -454,7 +467,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif fallback_grad_name == "Upwind"; FallbackGrad = UpwindGradient(1; numericalFlux = FallbackFlux)
         elseif fallback_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
         elseif !isnothing(fallback_grad_name); error("Requested Fallback GradientInterpolator not implemented!") end
-        println(run_params)
         # --- Time Stepper Selection ---
         local method
         if timestepper_name == "RalstonRK2"; method = RalstonRK2(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
@@ -469,19 +481,18 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif relax_method @info "Relaxation Method Detected!"
         else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
-        # --- Equation ---
-        if eq_name == "burgers"
-            eq = BurgersEquation() # Instantiate Burgers' equation object
-        elseif eq_name == "linear"
-            eq = LinearAdvection(eq_params)
-        else 
-            error("Requested PDE not implemented!")
-        end
-        F = u -> flux(eq, u)
+
 
         # --- Initial Condition ---
         local init_func_handle::Function
         if initFunc_name == "sine"; init_func_handle(x) = sineInit(x, init_params...); analytic_func(x,t) = sineInitAna(eq, x, t, init_params...)
+        elseif initFunc_name == "gauss"
+            init_func_handle = x -> gaussInit(x, init_params...)
+            if eq_name == "linear" 
+                analytic_func = (x,t) -> linearSolution(x, t, eq, gaussInit, init_params, xmin, xmax)
+            else 
+                error("Non-linear analytic function not implemented yet!")
+            end
         elseif initFunc_name == "smoothInit2"; init_func_handle = smoothInit2
         elseif initFunc_name == "shockInit1"; init_func_handle = shockInit1
         elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2; analytic_func = (x,t) -> shockInit2Ana(x,t,xmin,xmax)
@@ -516,7 +527,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                     particle.rho = M[pg_idx](particle.rho)
                 end
             end
-            source_term = RelaxationSourceTerm(M, relax_eps)
+            source_term = RelaxationSourceTerm1D(M, relax_eps)
             implicit_solver = LinearizedRelaxationImplicitSolver()
             if timestepper_name =="ARS2"
                 system_method = ARS2IMEX(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
@@ -591,10 +602,10 @@ sim_config_burgers = SimulationConfig(
 
     ParamDict(
         "tmax" => 4.0, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
-        "dt" => 1e-4, "save_frequency" => 5, "interp_alpha" => 1.0,
-        "interp_range" => 1.01,
+        "CFL" => .2, "save_frequency" => 30, "interp_alpha" => 1.0,
+        "interp_range" => 3.5,
         "init_func" => "sine",
-        "init_params" => (.5, 5., .5),#(.2, 10., .3)
+        "init_params" => (1., 5., 1.), #(1., 0., 1.)
         "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic",
@@ -643,25 +654,37 @@ sim_config_burgers = SimulationConfig(
     #         "delta_relax" => false,
     #         "order" => 2
     #     ),
-            "1st order Timestepper direct" => ParamDict(
-            "timestepper" => "EulerUpwind",
+            "2nd order direct" => ParamDict(
+            "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 3
+            "order" => 2,
+            "interp_range" => 1.5,
         ),
         "3rd order direct" => ParamDict(
-            "timestepper" => "RK3",
+            "timestepper" => "RK4",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 3
+            "order" => 3,
+            "interp_range" => 2.5,
+        ),
+        "4th order direct" => ParamDict(
+            "timestepper" => "RK4",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD" => "none",
+            "delta_relax" => false,
+            "order" => 4
         ),
         # "2nd order direct" => ParamDict(
         #     "timestepper" => "RK3",
@@ -693,11 +716,11 @@ sim_config_burgers = SimulationConfig(
     #         "delta_relax" => false,
     #         "order" => 1
     #     ),
-    #     "Analytic" => ParamDict(
-    #         "timestepper" => "Analytic",
-    #         "randomness_factor" => (:const,0.)
-    #          # No randomness_factor needed when regular=true
-    #     ),
+        # "Analytic" => ParamDict(
+        #     "timestepper" => "Analytic",
+        #     "randomness_factor" => (:const,0.)
+        #      # No randomness_factor needed when regular=true
+        # ),
         # "Classic" => ParamDict(
         #     "randomness_factor" => (:const,0.),
         #     "main_flux" => "Rusanov"
@@ -741,21 +764,21 @@ sim_config_burgers = SimulationConfig(
         #     "relax_velocities" => (1.,-1.),
         #     "relax_epsilon" => 10. ^ -8,
         # ),
-                "Relax Method 3rd order" => ParamDict(
-            "timestepper" => "PRSSP3",
+                "Relax Method 4th order" => ParamDict(
+            "timestepper" => "ARS233",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 3,
+            "order" => 4,
             "relax_method" => true,
             "relax_velocities" => (1.,-1.),
-            "relax_epsilon" => 10. ^ -8,
+            "relax_epsilon" => 10. ^ -8
         ),
-        "Relax Method simple splitting" => ParamDict(
-            "timestepper" => "RalstonRK2",
+        "Relax Method 3rd order" => ParamDict(
+            "timestepper" => "ARS233",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
             "main_flux" => "Rusanov",
@@ -766,6 +789,7 @@ sim_config_burgers = SimulationConfig(
             "relax_method" => true,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
+            "interp_range" => 2.5,
         ),
                 "Relax Method 2nd order" => ParamDict(
             "timestepper" => "ARS233",
@@ -779,6 +803,7 @@ sim_config_burgers = SimulationConfig(
             "relax_method" => true,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
+            "interp_range" => 1.5,
         )
 
     ),
@@ -788,5 +813,5 @@ sim_config_burgers = SimulationConfig(
 
 # Pass this config to your IPlotPDESols functions
 #show1DSolutionFig(sim_config_burgers);
-#calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
+calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
 showConvergencePlot(sim_config_burgers, "N", 10. .^(1:.25:2.5), "l2norm"; force_int_param = true, initial_calc = true)

@@ -91,7 +91,7 @@ function solve!(
     Y_out_particle::AbstractVector{Float64},         # Output: result U_k_new is stored here
     RHS_const_particle::AbstractVector{Float64},     # Input: This is U_k_base (e.g., U^n or U_temp for ARS2 stages)
     dt_coefficient_for_S::Float64,              # This is the effective dt' (e.g., dt*gamma in ARS2)
-    source_term_object::RelaxationSourceTerm,     # Must be RelaxationSourceTerm
+    source_term_object::RelaxationSourceTerm1D,     # Must be RelaxationSourceTerm
     particle_pos::Float64,                      # Unused by this specific solver for this source
     time_for_S_eval::Real,                      # Unused if Maxwellians are not time-dependent
     N_components::Int
@@ -129,6 +129,39 @@ function solve!(
     end
     
     return true # Direct formula, always "converges" in one evaluation
+end
+
+function solve!(
+    solver::LinearizedRelaxationImplicitSolver,
+    Y_out_particle::AbstractVector{Float64},         
+    RHS_const_particle::AbstractVector{Float64},     
+    dt_coefficient_for_S::Float64,              
+    source_term_object::RelaxationSourceTerm,     
+    particle_pos::Float64,                      
+    time_for_S_eval::Real,                      
+    N_total_kinetic_components_arg::Int      
+)::Bool
+    # ... (checks) ...
+    epsilon = source_term_object.epsilon
+    maxwellians = source_term_object.maxwellians
+
+    coeff_sum_inv = 1.0 / (epsilon + dt_coefficient_for_S)
+
+    # General coupled case: reconstruct U_macro_base
+    kinetic_map = source_term_object.kinetic_indices
+    N_macro_vars = source_term_object.num_macro_variables
+    U_macro_base_values = Vector{Float64}(undef, N_macro_vars)
+    for i_macro in 1:N_macro_vars
+        U_macro_base_values[i_macro] = sum(RHS_const_particle[kinetic_map[i_macro]])
+    end
+
+    for k_global_comp in 1:N_total_kinetic_components_arg
+        v_k_base_kinetic = RHS_const_particle[k_global_comp]
+        # M_k here expects N_macro_vars arguments, splatted from U_macro_base_values
+        Mk_val = maxwellians[k_global_comp](U_macro_base_values...)
+        Y_out_particle[k_global_comp] = (epsilon * v_k_base_kinetic + dt_coefficient_for_S * Mk_val) * coeff_sum_inv
+    end
+    return true 
 end
 
 end # Module ImplicitSolvers
