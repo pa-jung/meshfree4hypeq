@@ -477,8 +477,7 @@ sim_config_burgers = SimulationConfig(
         )
 
     ),
-    ["Classic"];
-    ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false, "system_dimension" => 2)
+    ["Classic"]
 )
 
 # Pass this config to your IPlotPDESols functions

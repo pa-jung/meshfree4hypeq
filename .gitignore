@@ -6,3 +6,5 @@ git-filer-repo
 *.gif
 *.pdf
 *.txt
+*.csv
+*.svg

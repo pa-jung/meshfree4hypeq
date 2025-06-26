@@ -408,8 +408,7 @@ sim_config_euler1d_system = SimulationConfig(
             "relax_epsilon" => 1e-4
         ),
     ),
-    ["Slope Limiter", "Regular MOOD"]; 
-    ui_options = Dict("animation_duration_s" => 10., "show_scatter" => false, "system_dimension" => 3) 
+    ["Slope Limiter", "Regular MOOD"]
     # sys_dim_plot=3 tells plotting to expect 3 macro components (rho,m,E)
 )
 

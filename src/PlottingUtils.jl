@@ -11,37 +11,33 @@ using IPlotPDESols
 export calculateStats, calculateAllStats!
 
 """
-    calculate_stats_with_dierckx(
+    calculateStats(
         u_numerical::AbstractVector{<:Real},
-        u_analytical_func::Function, # Should take x (1D) or (x,y) (2D) -> analytical_value
+        u_analytical_func::Function,
         x_coords_input::Union{AbstractVector{<:Real}, AbstractVector{<:NTuple{2,Float64}}},
-        domain_params::NamedTuple, # (xmin, xmax) for 1D; (xmin, xmax, ymin, ymax, Nx, Ny) for 2D
+        domain_params::NamedTuple,
         N_particles::Int;
-        dierckx_k::Int = 3, 
-        dierckx_s::Union{Real,Nothing} = nothing, 
-        quad_tol::Real = 1e-9, 
-        stats_to_calculate::Vector{String} = ["l1norm", "l2norm", "supnorm", "mass"] # Removed "volume"
+        ...
     ) -> Dict{String, Float64}
 
-Calculates statistics using Dierckx.jl for spline interpolation and integration.
-Supremum norm is calculated pointwise.
-L1 norm for 1D uses QuadGK on abs(error_spline).
-L2 norm for 1D uses QuadGK on (error_spline)^2.
-Mass for 1D uses Dierckx.integrate on u_numerical_spline.
-For 2D, L1/L2 norms are approximated by pointwise sums due to Dierckx.integrate limitations.
+Calculates normalized statistics for a numerical solution by comparing it
+to an analytical solution. Uses Dierckx.jl and QuadGK.jl for accurate
+interpolation and integration to compute relative L1, L2, and sup norms,
+as well as relative mass and wave position error.
 """
 function calculateStats(
     u_numerical::AbstractVector{<:Real},
     u_analytical_func::Function,
     x_coords_input::Union{AbstractVector{<:Real}, AbstractVector{<:NTuple{2,Float64}}},
-    domain_params::NamedTuple, # (xmin, xmax) for 1D; (xmin, xmax, ymin, ymax) for 2D
+    domain_params::NamedTuple,
     N_particles::Int;
     dierckx_k::Int = 3, 
     dierckx_s::Union{Real,Nothing} = nothing,
-    quad_tol::Real = 1e-10,
+    quad_tol::Real = 1e-10, # Increased tolerance slightly for stability
     stats_to_calculate::Vector{String} = [
-        "l1norm", "l2norm", "supnorm", "mass", 
-        "discrete_l1norm", "discrete_l2norm"
+        "l1norm", "l2norm", "supnorm", "mass", "relative_mass",
+        "wave_position_error", "wave_height_error",
+        "discrete_l2norm", "discrete_l1norm"
     ]
 )::Dict{String, Float64}
 
@@ -66,94 +62,121 @@ function calculateStats(
         end
     else # 2D (NTuple{2,Float64})
         for i in 1:N_particles
-            u_analytical_at_particles[i] = u_analytical_func(x_coords_input[i]...) # Splat tuple
+            u_analytical_at_particles[i] = u_analytical_func(x_coords_input[i]...)
         end
     end
-    errors_at_particles = u_numerical .- u_analytical_at_particles # Vector of pointwise errors e_i
+    errors_at_particles = u_numerical .- u_analytical_at_particles
 
-    # --- 2. Supremum Norm (always pointwise) ---
-    if "supnorm" in stats_to_calculate
-        results["supnorm"] = N_particles > 0 ? maximum(abs.(errors_at_particles)) : 0.0
-    end
-
-    # --- 3. Discrete Unweighted Norms ---
-    if "discrete_l1norm" in stats_to_calculate
-        results["discrete_l1norm"] = N_particles > 0 ? sum(abs.(errors_at_particles)) : 0.0
-    end
-    if "discrete_l2norm" in stats_to_calculate
-        # This is LinearAlgebra.norm(errors_at_particles, 2)
-        sum_sq_err_discrete = 0.0
-        if N_particles > 0
-            for err_val in errors_at_particles
-                sum_sq_err_discrete += err_val^2
-            end
+    # --- 2. Supremum Norm (Pointwise) ---
+    if "supnorm" in stats_to_calculate || "supnorm" in stats_to_calculate
+        # Sup norm of the error
+        sup_norm_error = N_particles > 0 ? maximum(abs.(errors_at_particles)) : 0.0
+        results["supnorm"] = sup_norm_error # Store absolute sup norm
+        
+        # Sup norm of the analytical solution for normalization
+        sup_norm_analytical = N_particles > 0 ? maximum(abs.(u_analytical_at_particles)) : 0.0
+        if sup_norm_analytical > 1e-12
+            results["supnorm"] = sup_norm_error / sup_norm_analytical
+        else
+            results["supnorm"] = sup_norm_error # Avoid division by zero, return absolute error
         end
-        results["discrete_l2norm"] = sqrt(sum_sq_err_discrete)
     end
 
-    # --- 4. Interpolation and Integration for "l1norm", "l2norm", "mass" (Dierckx/QuadGK based) ---
+    # --- 3. Discrete, Unweighted Vector Norms ---
+    if any(s -> occursin("discrete", s), stats_to_calculate)
+        # Discrete L1 error norm: sum of absolute errors
+        discrete_l1_error = sum(abs.(errors_at_particles))
+        results["discrete_l1norm"] = discrete_l1_error
+        
+        # Discrete L2 error norm: sqrt of sum of squared errors
+        # Using LinearAlgebra.norm is concise and efficient for this.
+        # using LinearAlgebra; discrete_l2_error = norm(errors_at_particles, 2)
+        discrete_l2_error = sqrt(sum(errors_at_particles.^2))
+        results["discrete_l2norm"] = discrete_l2_error
+
+        # Calculate analytical norms for normalization
+        discrete_l1_analytical = sum(abs.(u_analytical_at_particles))
+        discrete_l2_analytical = sqrt(sum(u_analytical_at_particles.^2))
+
+        if "discrete_l1norm" in stats_to_calculate
+            results["discrete_l1norm"] = discrete_l1_analytical > 1e-12 ? discrete_l1_error / discrete_l1_analytical : discrete_l1_error
+        end
+        if "discrete_l2norm" in stats_to_calculate
+            results["discrete_l2norm"] = discrete_l2_analytical > 1e-12 ? discrete_l2_error / discrete_l2_analytical : discrete_l2_error
+        end
+    end
+
+    # --- 3. Interpolation and Integration for Norms and Mass ---
     if eltype(x_coords_input) <: Real # 1D Case
         xmin, xmax = domain_params.xmin, domain_params.xmax
         
-        # Dierckx.Spline1D needs sorted x coordinates
-        local x_sorted_1D, u_num_sorted_1D, errors_sorted_1D
+        local x_sorted, u_num_sorted, errors_sorted, u_ana_sorted
         if N_particles > 1 && !issorted(x_coords_input)
-            perm_1D = sortperm(x_coords_input)
-            x_sorted_1D = x_coords_input[perm_1D]
-            u_num_sorted_1D = u_numerical[perm_1D]
-            errors_sorted_1D = errors_at_particles[perm_1D]
-            @warn "x_coords were not sorted. Sorted them for Dierckx.Spline1D."
+            perm = sortperm(x_coords_input)
+            x_sorted = x_coords_input[perm]
+            u_num_sorted = u_numerical[perm]
+            errors_sorted = errors_at_particles[perm]
+            u_ana_sorted = u_analytical_at_particles[perm]
         else
-            x_sorted_1D = x_coords_input
-            u_num_sorted_1D = u_numerical
-            errors_sorted_1D = errors_at_particles
+            x_sorted = x_coords_input
+            u_num_sorted = u_numerical
+            errors_sorted = errors_at_particles
+            u_ana_sorted = u_analytical_at_particles
         end
 
-        spl_u_num_1D = nothing
-        if "mass" in stats_to_calculate && N_particles > 0
+        # --- Mass Calculation (Spline vs Spline) ---
+        if ("mass" in stats_to_calculate || "relative_mass" in stats_to_calculate) && N_particles > 0
+            mass_num, mass_ana = NaN, NaN
             try
-                spl_u_num_1D = Dierckx.Spline1D(x_sorted_1D, u_num_sorted_1D; k=dierckx_k, s=s_val_actual, bc="nearest")
-                results["mass"] = Dierckx.integrate(spl_u_num_1D, xmin, xmax)
+                spl_u_num = Dierckx.Spline1D(x_sorted, u_num_sorted; k=dierckx_k, s=s_val_actual, bc="nearest")
+                mass_num = Dierckx.integrate(spl_u_num, xmin, xmax)
+                
+                spl_u_ana = Dierckx.Spline1D(x_sorted, u_ana_sorted; k=dierckx_k, s=s_val_actual, bc="nearest")
+                mass_ana = Dierckx.integrate(spl_u_ana, xmin, xmax)
             catch e
-                @warn "Dierckx.Spline1D for u_numerical failed: $e. Mass not computed."
-                results["mass"] = NaN
+                @warn "Dierckx.Spline1D for mass calculation failed: $e. Mass not computed."
             end
-        elseif "mass" in stats_to_calculate
-            results["mass"] = 0.0
+            
+            if "mass" in stats_to_calculate; results["mass"] = mass_num; end
+            if "relative_mass" in stats_to_calculate
+                results["relative_mass"] = (abs(mass_ana) > 1e-12 && !isnan(mass_num)) ? mass_num / mass_ana : NaN
+            end
         end
         
-        spl_error_1D = nothing
-        if ("l1norm" in stats_to_calculate || "l2norm" in stats_to_calculate) && N_particles > 0
-            try
-                spl_error_1D = Dierckx.Spline1D(x_sorted_1D, errors_sorted_1D; k=dierckx_k, s=s_val_actual, bc="nearest")
-            catch e
-                @warn "Dierckx.Spline1D for error failed: $e. Integrated L1/L2 norms not computed."
-                spl_error_1D = nothing # Ensure it's nothing
-            end
-        end
+        # --- Integrated Error Norms (Error Spline vs. Analytical Function Integral) ---
+        if ("l1norm" in stats_to_calculate || "l2norm" in stats_to_calculate) && N_particles > 1
+            spl_error_1D = nothing
+            try spl_error_1D = Dierckx.Spline1D(x_sorted, errors_sorted; k=dierckx_k, s=s_val_actual, bc="nearest")
+            catch e; @warn "Dierckx.Spline1D for error failed: $e. Integrated L1/L2 norms will be NaN."; end
 
-        if "l1norm" in stats_to_calculate
             if !isnothing(spl_error_1D)
-                l1_val, _ = QuadGK.quadgk(x -> abs(spl_error_1D(x)), xmin, xmax, rtol=quad_tol, atol=quad_tol^2)
-                results["l1norm"] = l1_val
-            else
-                results["l1norm"] = NaN # Indicate failure if spline wasn't created
-            end
-        end
-        if "l2norm" in stats_to_calculate
-            if !isnothing(spl_error_1D)
-                l2_sq_val, _ = QuadGK.quadgk(x -> spl_error_1D(x)^2, xmin, xmax, rtol=quad_tol, atol=quad_tol^2)
-                results["l2norm"] = sqrt(l2_sq_val)
-            else
-                results["l2norm"] = NaN
-            end
-        end
+                # Normalization denominator is the norm of the TRUE analytical function
+                ana_l1_norm_integrated, _ = QuadGK.quadgk(x -> abs(u_analytical_func(x)), xmin, xmax, rtol=quad_tol)
+                ana_l2_norm_sq_integrated, _ = QuadGK.quadgk(x -> u_analytical_func(x)^2, xmin, xmax, rtol=quad_tol)
+                ana_l2_norm_integrated = sqrt(ana_l2_norm_sq_integrated)
 
+                if "l1norm" in stats_to_calculate
+                    l1_err_val, _ = QuadGK.quadgk(x -> abs(spl_error_1D(x)), xmin, xmax, rtol=quad_tol)
+                    results["l1norm"] = ana_l1_norm_integrated > 1e-12 ? l1_err_val / ana_l1_norm_integrated : l1_err_val
+                end
+                if "l2norm" in stats_to_calculate
+                    l2_err_sq_val, _ = QuadGK.quadgk(x -> spl_error_1D(x)^2, xmin, xmax, rtol=quad_tol)
+                    results["l2norm"] = ana_l2_norm_integrated > 1e-12 ? sqrt(l2_err_sq_val) / ana_l2_norm_integrated : sqrt(l2_err_sq_val)
+                end
+            else # spl_error_1D failed to be created
+                 if "l1norm" in stats_to_calculate; results["l1norm"] = NaN; end
+                 if "l2norm" in stats_to_calculate; results["l2norm"] = NaN; end
+            end
+        end
     elseif eltype(x_coords_input) <: NTuple{2,Float64} # 2D Case
-        xmin, xmax = domain_params.xmin, domain_params.xmax
-        ymin, ymax = domain_params.ymin, domain_params.ymax
-
+        @warn "Integrated L1/L2 norms for 2D are not yet implemented with a high-order quadrature package. Discrete norms can be used as a proxy."
+        # If stats_to_calculate contains "l1norm" or "l2norm", report NaN as they are not computed.
+        if "l1norm" in stats_to_calculate; results["l1norm"] = NaN; end
+        if "l2norm" in stats_to_calculate; results["l2norm"] = NaN; end
+        # Mass calculation for 2D via Dierckx can still be done
         if "mass" in stats_to_calculate && N_particles > 0
+            xmin, xmax = domain_params.xmin, domain_params.xmax
+            ymin, ymax = domain_params.ymin, domain_params.ymax
             x_vec_2d = [pt[1] for pt in x_coords_input]
             y_vec_2d = [pt[2] for pt in x_coords_input]
             try
@@ -166,20 +189,22 @@ function calculateStats(
         elseif "mass" in stats_to_calculate
             results["mass"] = 0.0
         end
+    end
+
+    # --- Wave Tracking (Pointwise) ---
+    if ("wave_position_error" in stats_to_calculate || "wave_height_error" in stats_to_calculate) && N_particles > 0
+        height_ana, index_ana = findmax(u_analytical_at_particles)
+        pos_ana = x_coords_input[index_ana]
+        height_num, index_num = findmax(u_numerical)
+        pos_num = x_coords_input[index_num]
         
-        # For 2D, "l1norm" and "l2norm" (integrated versions) are not computed via Dierckx/QuadGK here.
-        # They will rely on the discrete unweighted norms if those are requested,
-        # or you can choose to report NaN or an error if "l1norm"/"l2norm" are specifically requested for 2D.
-        if "l1norm" in stats_to_calculate
-            results["l1norm"] = get(results, "discrete_l1norm", NaN)
-            if isnan(results["l1norm"]) @warn "Integrated L1 norm for 2D not computed; using discrete if available, else NaN." end
+        if "wave_position_error" in stats_to_calculate
+            domain_length = eltype(x_coords_input) <: Real ? (domain_params.xmax - domain_params.xmin) : 1.0 # Placeholder for 2D domain size
+            results["wave_position_error"] = domain_length > 1e-9 ? abs(pos_ana - pos_num) / domain_length : abs(pos_ana - pos_num)
         end
-        if "l2norm" in stats_to_calculate
-            results["l2norm"] = get(results, "discrete_l2norm", NaN)
-             if isnan(results["l2norm"]) @warn "Integrated L2 norm for 2D not computed; using discrete if available, else NaN." end
+        if "wave_height_error" in stats_to_calculate
+            results["wave_height_error"] = abs(height_ana) > 1e-9 ? abs(height_ana - height_num) / abs(height_ana) : abs(height_ana - height_num)
         end
-    else
-        error("Unsupported x_coords_input element type: $(eltype(x_coords_input))")
     end
     
     return results
@@ -194,8 +219,8 @@ function calculateAllStats!(
         dierckx_s::Union{Real,Nothing} = nothing,
         quad_tol::Real = 1e-9,
         stats_to_calculate::Vector{String} = [
-        "l1norm", "l2norm", "supnorm", "mass", 
-        "discrete_l1norm", "discrete_l2norm"
+        "l1norm", "l2norm", "supnorm", "mass", "relative_mass",
+        "discrete_l1norm", "discrete_l2norm", "wave_position_error", "wave_height_error"
     ]
     )
     for key = stats_to_calculate
