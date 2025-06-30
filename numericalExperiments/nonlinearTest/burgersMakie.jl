@@ -517,9 +517,12 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             u_background, u_box, box_start, box_end = init_params 
             @assert u_box >= u_background "Only top hat supported atm!"
             @assert box_end > box_start "The end of the box has to be larger than the start!"
-            init_func_handle = x -> boxInit(x, u_background, u_box, box_start, box_end)
+            init_func_handle = x -> boxInit(x, init_params...)
             analytic_func = (x,t) -> boxInitAna(x,t,u_background,u_box,box_start,box_end,eq)
         else; error("Unknown initFunc name: $initFunc_name"); end
+        # if eq_name == "linear" 
+        #         analytic_func = (x,t) -> linearSolution(x, t, eq, init_func_handle, init_params, xmin, xmax)
+        # end
         setInitialConditions!(particleGrid, init_func_handle)
             # Create SimSettings object
         settings = SimSetting(  tmax=tmax,
@@ -616,8 +619,8 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 10, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => .2, "save_frequency" => 10, "interp_alpha" => 1.0,
+        "tmax" => 200, "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "CFL" => .2, "save_frequency" => 50, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "gauss",
         "init_params" => (1., 0, .5), #(1., 0., 1.)
@@ -646,7 +649,7 @@ sim_config_burgers = SimulationConfig(
             "fallback_flux" => "Rusanov",
             "MOOD" => "U2",
             "switch_tol" => .0025,
-            "delta_relax" => false,
+            "delta_relax" => true,
             "order" => 2
         ),
         "RK2MUSCL2Limiter" => ParamDict(
@@ -658,7 +661,7 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "none",
             "delta_relax" => false,
             "order" => 2,
-            "limiter" => "superbee"
+            "limiter" => "VK"
         ),
         "RK2MUSCL2MOOD" => ParamDict(
             "timestepper" => "RalstonRK2",
@@ -667,7 +670,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "U2",
-            "delta_relax" => false,
+            "delta_relax" => true,
             "order" => 2
         ),
             "RK4MUSCL2" => ParamDict(
@@ -680,7 +683,7 @@ sim_config_burgers = SimulationConfig(
             "delta_relax" => false,
             "order" => 2,
         ),
-        "RK4MUSCL4" => ParamDict(
+        "RK4MUSCL5" => ParamDict(
             "timestepper" => "RK4",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
@@ -688,7 +691,7 @@ sim_config_burgers = SimulationConfig(
             "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 4
+            "order" => 5
         ),
         "EulerUpwind" => ParamDict(
             "timestepper" => "EulerUpwind",
@@ -709,7 +712,7 @@ sim_config_burgers = SimulationConfig(
             "randomness_factor" => (:const,0.),
             "main_flux" => "Rusanov"
         ),
-                "ARS233MUSCL4" => ParamDict(
+                "ARS233MUSCL5" => ParamDict(
             "timestepper" => "ARS233",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
@@ -717,12 +720,12 @@ sim_config_burgers = SimulationConfig(
             "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 4,
+            "order" => 5,
             "relax_method" => true,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8
         ),
-        "PRSSP3MUSCL4" => ParamDict(
+        "PRSSP3MUSCL5" => ParamDict(
             "timestepper" => "PRSSP3",
             "main_gradient" => "MUSCL",
             "fallback_gradient" => "Upwind",
@@ -730,7 +733,7 @@ sim_config_burgers = SimulationConfig(
             "fallback_flux" => "Rusanov",
             "MOOD" => "none",
             "delta_relax" => false,
-            "order" => 4,
+            "order" => 5,
             "relax_method" => true,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
@@ -763,7 +766,7 @@ sim_config_burgers = SimulationConfig(
         )
 
     ),
-    ["RK2MUSCL2Limiter"],#, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
+    "all" #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
 );
 
 # Pass this config to your IPlotPDESols functions
