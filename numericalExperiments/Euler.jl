@@ -300,6 +300,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
     try
         tmax::Float64 = run_params["tmax"]
         N_particles::Int = run_params["N"]
+        bc::Symbol = run_params["bc"]
 
         xmin = run_params["xmin"]
         xmax = run_params["xmax"]
@@ -312,9 +313,10 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         save_freq::Int = run_params["save_frequency"]
         interp_alpha::Float64 = run_params["interp_alpha"]
         interp_range_factor::Float64 = run_params["interp_range"]
+        
         randomness_factor::Float64 = run_params["randomness_factor"]
 
-        timestepper_name = run_params["timestepper"] # e.g., "ARS2IMEX_Relax"
+        timestepper_name = get(run_params,"timestepper",nothing) # e.g., "ARS2IMEX_Relax"
         main_grad_name = get(run_params,"main_gradient",nothing)
         muscl_order_param = get(run_params,"order",nothing)
         main_flux_name = get(run_params,"main_flux", nothing)
@@ -329,9 +331,11 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         relax_epsilon_val = get(run_params,"relax_epsilon", nothing)
 
         N_macro_vars = length(relax_velocities_config) # rho, m, E
+        N_ghost::Int64 = bc == :periodic ? 0 : convert(Int64, ceil(interp_range_factor))
         # if length(relax_velocities_pairs_list) != N_macro_vars
         #     error("`relax_velocities` must provide a pair of speeds for each of $N_macro_vars macroscopic variables.")
         # end
+        N_total = N_particles + 2*N_ghost
 
         println("  System Timestepper: $(timestepper_name), Main Gradient: $(main_grad_name)")
         println("  IC: $(initFunc_name), N_particles: $(N_particles), Domain: [$xmin,$xmax]")
@@ -341,9 +345,10 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         local base_particleGrid1D
 
         randomness = randomness_factor * dx_nominal
-        base_particleGrid1D = ParticleGrid1D(xmin, xmax, N_particles; randomness = randomness)
+        base_particleGrid1D = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc; randomness = randomness)
+        interior_indices = base_particleGrid1D.interior_indices
         interp_range = interp_range_factor * base_particleGrid1D.dx
-
+        println(length(base_particleGrid1D.grid))
         # --- Determine dt ---
         local actual_dt::Float64
         if !isnothing(cfl_val)
@@ -358,10 +363,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         elseif !isnothing(dt_val); actual_dt = dt_val;
         else error("Either CFL or dt must be specified."); end
         println("  Calculated/Used dt: $actual_dt")
-        if timestepper_name != "Analytic"
-
-
-
+        if !isnothing(timestepper_name)
             # --- Build Scalar Method Components ---
             MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() else error("Flux $main_flux_name NYI"); end
             FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux() else error("Flux $fallback_flux_name NYI"); end
@@ -445,19 +447,19 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
             
             # This matrix stores the macroscopic IC [rho_0(xp), m_0(xp), E_0(xp)] for each particle
             macro_IC_at_points = Matrix{Float64}(undef, N_particles, N_macro_vars)
-            for p_idx in 1:N_particles
+            for (i,p_idx) in enumerate(base_particleGrid1D.interior_indices)
                 xp = base_particleGrid1D.grid[p_idx].pos
                 U_macro_0_at_p_tuple = init_func_evaluator(xp, init_params_tuple)
                 for i_mvar in 1:N_macro_vars
-                    macro_IC_at_points[p_idx, i_mvar] = U_macro_0_at_p_tuple[i_mvar]
+                    macro_IC_at_points[i, i_mvar] = U_macro_0_at_p_tuple[i_mvar]
                 end
             end
 
             # Initialize each kinetic component grid
             for k_global_comp in 1:N_total_kinetic_components
-                for p_idx in 1:N_particles
+                for (i, p_idx) in enumerate(base_particleGrid1D.interior_indices)
                     # M_funcs[k_global_comp] expects splatted arguments (rho_0, m_0, E_0) for particle p_idx
-                    current_macro_ic_for_particle_p = (macro_IC_at_points[p_idx,1], macro_IC_at_points[p_idx,2], macro_IC_at_points[p_idx,3])
+                    current_macro_ic_for_particle_p = (macro_IC_at_points[i,1], macro_IC_at_points[i,2], macro_IC_at_points[i,3])
                     component_pgs[k_global_comp].grid[p_idx].rho = M_funcs[k_global_comp](current_macro_ic_for_particle_p...)
                 end
             end
@@ -466,22 +468,22 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
             if timestepper_name == "ARS222" # Default IMEX choice
                 system_method_instance = ARS222( MainGrad, FallbackGrad, mood_fun,
                     implicit_solver, relaxation_source,
-                    N_particles, N_total_kinetic_components
+                    N_total, N_total_kinetic_components
                 )
             elseif timestepper_name == "ARS233" # Default IMEX choice
                 system_method_instance = ARS233( MainGrad, FallbackGrad, mood_fun,
                     implicit_solver, relaxation_source,
-                    N_particles, N_total_kinetic_components
+                    N_total, N_total_kinetic_components
                 )
             elseif timestepper_name == "SSP2" # Default IMEX choice
                 system_method_instance = SSP2332( MainGrad, FallbackGrad, mood_fun,
                     implicit_solver, relaxation_source,
-                    N_particles, N_total_kinetic_components
+                    N_total, N_total_kinetic_components
                 )
             elseif timestepper_name == "SSP3" # Default IMEX choice
                 system_method_instance = PareschiRussoIMEXSSP3( MainGrad, FallbackGrad, mood_fun,
                     implicit_solver, relaxation_source,
-                    N_particles, N_total_kinetic_components
+                    N_total, N_total_kinetic_components
                 )
             else
                 error("Unsupported system timestepper for 1D Euler relaxation: $timestepper_name")
@@ -529,7 +531,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
             if ts[end] != tmax
                 push!(ts, tmax)
             end
-            xs = [p.pos for p = base_particleGrid1D.grid]
+            xs = [p.pos for p = base_particleGrid1D.grid[interior_indices]]
             us = Vector{Matrix{Float64}}(undef,0)
             for t = ts
                 tmp = Matrix(undef, length(xs), 3)
@@ -569,13 +571,13 @@ SEED_value = (:const, Meshfree4ScalarEq.SEED)
 sim_config_euler1d_system = SimulationConfig(
     RunSystem1DEulerSimulation, 
     ParamDict(
-        "tmax" => 0.2, "N" => 500, 
-        "xmin" => -0.5, "xmax" => 1., 
+        "tmax" => 0.2, "N" => 500, "bc" => :outflow,
+        "xmin" => -0.5, "xmax" => .5, 
         "CFL" => 0.5, "save_frequency" => 5, 
         "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
         "init_func" => "eulerShockTube1D", 
         "init_params" => sod_euler_params, 
-        "randomness_factor" => 0.2, 
+        "randomness_factor" => 0., 
         "SEED" => SEED_value,
         "relax_velocities" => [ (2.0, -2.0), (3.0, -3.0), (4.0, -4.0) ], # Pairs for rho, m, E kinetic components
     ),
@@ -604,6 +606,14 @@ sim_config_euler1d_system = SimulationConfig(
             "MOOD" => "U2", "delta_relax" => false, 
             "relax_epsilon" => 1e-6
         ),
+        "Upwind" => ParamDict(
+            "timestepper" => "SSP2",
+            "main_flux" => "Rusanov",
+                    "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+            "main_gradient" => "Upwind", "order" => 1, # MUSCL(1) for 2nd order spatial
+            "MOOD" => "U2", "delta_relax" => false, 
+            "relax_epsilon" => 1e-6
+        ),
         "high Order" => ParamDict(
             "timestepper" => "ARS233",
                     "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
@@ -613,12 +623,11 @@ sim_config_euler1d_system = SimulationConfig(
             "relax_epsilon" => 1e-6
         ),
         "Analytic" => ParamDict(
-            "timestepper" => "Analytic",
             "randomness_factor" => (:const,0.)
              # No randomness_factor needed when regular=true
         )
     ),
-    ["Slope Limiter", "Regular MOOD", "Analytic"]
+    ["Slope Limiter", "Regular MOOD", "Analytic", "Upwind"]
 )
 
 # To run:

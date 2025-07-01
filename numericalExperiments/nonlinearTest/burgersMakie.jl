@@ -368,7 +368,8 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Extract REQUIRED Parameters (Direct Access) ---
         # --- Extract REQUIRED Parameters (Direct Access) ---
         tmax::Float64 = run_params["tmax"]
-        N::Int = run_params["N"]
+        N_particles::Int = run_params["N"]
+        bc::Symbol = run_params["bc"]
         xmin::Float64 = run_params["xmin"]
         xmax::Float64 = run_params["xmax"]
         initFunc_name::String = run_params["init_func"]
@@ -399,19 +400,23 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         # --- Derive regularity ---
         regular::Bool = (randomness_factor == 0.0)
+        N_ghost::Int64 = bc == :periodic ? 0 : convert(Int64, ceil(interp_range_factor))
 
+        N = N_particles + 2*N_ghost
+
+    
         println("  TimeStepper = $timestepper_name, Main Gradient = $main_grad_name ($order), Main Flux = $main_flux_name")
         println("  Fallback = $fallback_grad_name / $fallback_flux_name, MOOD = $mood_name (deltaRelax=$delta_relax)")
-        println("  IC = $initFunc_name, N = $N, Regular = $regular (randFactor=$randomness_factor), Order = $order")
+        println("  IC = $initFunc_name, N = $N_particles, Regular = $regular (randFactor=$randomness_factor), Order = $order")
         println("  tmax = $tmax, CFL = $cfl")
         println("----------------------------------------")
 
         # --- Grid Creation ---
-        dx_nominal = (xmax - xmin) / N
+        dx_nominal = (xmax - xmin) / N_particles
         local particleGrid
 
         randomness = randomness_factor * dx_nominal
-        particleGrid = ParticleGrid1D(xmin, xmax, N; randomness = randomness)
+        particleGrid = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc; randomness = randomness)
 
         # --- Calculate Dependent Parameters ---
         interp_range = interp_range_factor * particleGrid.dx
@@ -573,7 +578,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             if ts[end] != tmax
                 push!(ts, tmax)
             end
-            xs = [collect(range(xmin, xmax, N)) for _ = ts]
+            xs = [collect(range(xmin, xmax, N_particles)) for _ = ts]
             us =  Vector{Vector{Float64}}(undef, 0)
             for (i,t) in enumerate(ts)
                 u_tmp = map(x -> analytic_func(x,t), xs[i])
@@ -587,7 +592,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Post-processing ---
         if !isnothing(sim_data_result)
              # Add metadata to stats dictionary
-             calculateAllStats!(sim_data_result, analytic_func, (xmin = xmin, xmax = xmax), N; quad_tol = 10e-14, dierckx_k = 3)
+             calculateAllStats!(sim_data_result, analytic_func, (xmin = xmin, xmax = xmax), N_particles; quad_tol = 10e-14, dierckx_k = 3)
              if hasproperty(sim_data_result, :stats) && isa(sim_data_result.stats, Dict)
                  sim_data_result.stats["time"] = elapsed_time
                 #  sim_data_result.stats["dx_nominal"] = dx_nominal
@@ -619,14 +624,14 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 200, "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => .2, "save_frequency" => 50, "interp_alpha" => 1.0,
+        "tmax" => 20, "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "CFL" => .2, "save_frequency" => 10, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "gauss",
-        "init_params" => (1., 0, .5), #(1., 0., 1.)
+        "init_func" => "box",
+        "init_params" => (0., 1., -5., 0.), #(1., 0., 1.)
         "randomness_factor" => 0.2, # Provide default needed when regular=false
         "SEED" => SEED_value, 
-        "timestepper" => "Classic",
+        "timestepper" => "Classic", "bc" => :outflow,
         "order" => 1, "PDE" => "linear", "PDE_params" => .5
     ),
 
@@ -766,11 +771,11 @@ sim_config_burgers = SimulationConfig(
         )
 
     ),
-    "all" #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
+    "EulerUpwind" #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
 );
 
 # Pass this config to your IPlotPDESols functions
 show1DSolutionFig(sim_config_burgers);
-showDynamicDependence(sim_config_burgers)
-calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
-showConvergencePlot(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true, initial_calc = true)
+#showDynamicDependence(sim_config_burgers)
+#calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
+#showConvergencePlot(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true, initial_calc = true)

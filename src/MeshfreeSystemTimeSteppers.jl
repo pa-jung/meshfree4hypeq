@@ -57,7 +57,8 @@ function compute_explicit_tendency_with_mood!(
     component_grids::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.
     settings::SimSettings.SimSetting, # Added SimSettings.
     dt_for_mood_check::Real,
-    is_first_mood_stage_in_rk::Bool
+    is_first_mood_stage_in_rk::Bool,
+    interior_indices::UnitRange{Int64}
 )
     N_particles = size(U_state_sys, 1)
     N_components = length(scalar_equations)
@@ -79,11 +80,11 @@ function compute_explicit_tendency_with_mood!(
         end
         
         temp_rho_backup_k = [p.rho for p in scalar_grid_k.grid]
-        for p_idx_cv in 1:N_particles; scalar_grid_k.grid[p_idx_cv].rho = U_state_k_view[p_idx_cv]; end
+        for p_idx_cv in interior_indices; scalar_grid_k.grid[p_idx_cv].rho = U_state_k_view[p_idx_cv]; end
         
         copyCurvatures!(scalar_grid_k) 
 
-        for p_idx in 1:N_particles
+        for p_idx in interior_indices
             div_high_k_p = gradientInterpolator(
                 scalar_grid_k, p_idx, U_state_k_view, scalar_eq_k, settings; setCurvature=true
             )
@@ -98,10 +99,11 @@ function compute_explicit_tendency_with_mood!(
                 K_E_out_sys[p_idx, k_comp] = -div_fallback_k_p
             end
         end
-        for p_idx_cv in 1:N_particles; scalar_grid_k.grid[p_idx_cv].rho = temp_rho_backup_k[p_idx_cv]; end
+        for p_idx_cv in interior_indices; scalar_grid_k.grid[p_idx_cv].rho = temp_rho_backup_k[p_idx_cv]; end
     end
 end
 
+# DEPRECATED, use general time stepper
 # --- ARS2IMEX Time Stepper Struct ---
 struct ARS2IMEX{
     G1 <: GradientInterpolator, # Added Interpolations.
@@ -181,7 +183,7 @@ function (ars2::ARS2IMEX)(
     end
 
     for k_comp in 1:N_components
-        for p_idx in 1:N_particles
+        for p_idx in interior_indices
             ars2.U_n_sys[p_idx, k_comp] = system_pg[k_comp].grid[p_idx].rho
         end
     end
@@ -192,7 +194,7 @@ function (ars2::ARS2IMEX)(
     u_particle_iter_buffer = Vector{Float64}(undef, N_components)
     rhs_const_buffer       = Vector{Float64}(undef, N_components)
 
-    for p_idx in 1:N_particles
+    for p_idx in interior_indices
         particle_pos = system_pg[1].grid[p_idx].pos 
         u_particle_iter_buffer .= @view ars2.U_n_sys[p_idx, :] 
         rhs_const_buffer       .= @view ars2.U_n_sys[p_idx, :] 
@@ -204,7 +206,7 @@ function (ars2::ARS2IMEX)(
         ars2.U_stage1_sys[p_idx, :] .= u_particle_iter_buffer
     end
 
-    for p_idx in 1:N_particles
+    for p_idx in interior_indices
         particle_pos = system_pg[1].grid[p_idx].pos
         u_stage1_p_view = @view ars2.U_stage1_sys[p_idx, :]
         s_u_stage1_p_view = @view ars2.S_U_stage1_sys[p_idx, :]
@@ -217,7 +219,7 @@ function (ars2::ARS2IMEX)(
         scalar_equations, system_pg, settings, dt, true 
     )
 
-    for p_idx in 1:N_particles
+    for p_idx in interior_indices
         for k_comp in 1:N_components
             ars2.U_temp_sys[p_idx, k_comp] = ars2.U_n_sys[p_idx, k_comp] + 
                                             dt * (1.0 - 2.0*gamma) * ars2.K_E1_sys[p_idx, k_comp] +
@@ -228,7 +230,7 @@ function (ars2::ARS2IMEX)(
     time_s2_implicit_eval = time_n + dt 
     ars2.U_stage2_sys .= ars2.U_temp_sys
 
-    for p_idx in 1:N_particles
+    for p_idx in interior_indices
         particle_pos = system_pg[1].grid[p_idx].pos
         u_particle_iter_buffer .= @view ars2.U_temp_sys[p_idx, :]
         rhs_const_s2_view = @view ars2.U_temp_sys[p_idx, :]
@@ -240,7 +242,7 @@ function (ars2::ARS2IMEX)(
         ars2.U_stage2_sys[p_idx, :] .= u_particle_iter_buffer
     end
 
-    for p_idx in 1:N_particles
+    for p_idx in interior_indices
         particle_pos = system_pg[1].grid[p_idx].pos
         u_stage2_p_view = @view ars2.U_stage2_sys[p_idx, :]
         s_u_stage2_p_view = @view ars2.S_U_stage2_sys[p_idx, :]
@@ -253,7 +255,7 @@ function (ars2::ARS2IMEX)(
         scalar_equations, system_pg, settings, dt, false
     )
 
-    for p_idx in 1:N_particles
+    for p_idx in interior_indices
         for k_comp in 1:N_components
             u_np1_k_p = ars2.U_n_sys[p_idx, k_comp] + 
                         0.5 * dt * (ars2.K_E1_sys[p_idx, k_comp] + ars2.K_E2_sys[p_idx, k_comp]) +
@@ -369,125 +371,129 @@ function (imex_ts::GeneralIMEXTimeStepper)(
         dt::Real
     )
 
-    N_particles = length(system_pg[1].grid)
+    interior_indices = system_pg[1].interior_indices
+    N_total_particles = length(system_pg[1].grid)
     N_components = length(scalar_equations)
     s = imex_ts.num_stages
-    bt = imex_ts.butcher_tableau # A (implicit), At (explicit), c (implicit_times), ct (explicit_times), b (weights)
+    bt = imex_ts.butcher_tableau
 
-    if size(imex_ts.U_n_sys,1) != N_particles || size(imex_ts.U_n_sys,2) != N_components
-        error("GeneralIMEXTimeStepper buffers not sized correctly. Expected ($(N_particles)x$(N_components)). Re-initialize instance.")
+    if size(imex_ts.U_n_sys,1) != N_total_particles || size(imex_ts.U_n_sys,2) != N_components
+        error("GeneralIMEXTimeStepper buffers not sized correctly. Re-initialize instance.")
     end
 
     # --- 0. Store U^n from system_pg ---
+    # CORRECTED: This loop MUST iterate over ALL particles (1:N_total_particles)
+    # to correctly cache the state of interior AND ghost cells from the physical grid.
     for k_comp in 1:N_components
-        for p_idx in 1:N_particles
+        for p_idx in 1:N_total_particles
             imex_ts.U_n_sys[p_idx, k_comp] = system_pg[k_comp].grid[p_idx].rho
         end
     end
 
-    # Temporary particle-local vectors for implicit solve, reused across particles/stages
+    # Temporary particle-local vectors for implicit solve
     u_particle_iter_buffer = Vector{Float64}(undef, N_components)
-    # rhs_for_implicit_solve_particle was the problematic variable name
-    # Let's use a clear name for the RHS of Y_i - coeff*S(Y_i) = RHS_FORMULA
-    Y_i_base_particle = Vector{Float64}(undef, N_components)
+    Y_i_base_particle      = Vector{Float64}(undef, N_components)
 
 
     # --- Loop through stages i = 1 to s ---
     for i in 1:s
-        # current_Y_i_sys is an alias to imex_ts.Y_stages_sys[i]
-        # It will store the fully computed Y_i for the current stage.
-        current_Y_i_sys = imex_ts.Y_stages_sys[i]
+        current_Y_i_sys = imex_ts.Y_stages_sys[i] # Alias to the cache for Y_i
         
-        # Initialize Y_i_base = U^n for this stage's calculation
-        # This Y_i_base will accumulate U^n + explicit_sum + implicit_sum_prev
-        # (Note: Y_stages_sys[i] is being used as Y_i_base here before implicit solve)
-        current_Y_i_sys .= imex_ts.U_n_sys # Start with U^n
+        # Initialize Y_i_base = U^n for this stage's calculation.
+        # This copies the FULL state, including correct ghost cells from U_n_sys.
+        current_Y_i_sys .= imex_ts.U_n_sys
 
-        # Calculate explicit sum part for Y_i: Sum_E = dt * sum_{j=1}^{i-1} At[i,j] * K_E_stages_sys[j]
+        # --- Calculate Y_i_base for INTERIOR points ---
+        # Add contributions from previous stages only to the interior points
+        # Explicit sum part
         for j in 1:(i-1)
             if bt.At[i,j] != 0.0
-                for p_idx_loop in 1:N_particles, k_comp_loop in 1:N_components
+                for p_idx_loop in interior_indices, k_comp_loop in 1:N_components
                     current_Y_i_sys[p_idx_loop, k_comp_loop] += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][p_idx_loop, k_comp_loop]
                 end
             end
         end
-
-        # Calculate implicit sum from previous stages: Sum_I_prev = dt * sum_{j=1}^{i-1} A[i,j] * K_I_stages_sys[j]
+        # Implicit sum from previous stages
         for j in 1:(i-1)
             if bt.A[i,j] != 0.0
-                for p_idx_loop in 1:N_particles, k_comp_loop in 1:N_components
+                for p_idx_loop in interior_indices, k_comp_loop in 1:N_components
                     current_Y_i_sys[p_idx_loop, k_comp_loop] += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][p_idx_loop, k_comp_loop]
                 end
             end
         end
         
-        # current_Y_i_sys now holds U^n + Sum_E + Sum_I_prev, which is the RHS for the implicit solve part:
-        # Y_i - dt * A[i,i] * F_I(Y_i, t_n + c[i]*dt) = current_Y_i_sys_before_solve
-        
-        if abs(bt.A[i,i]) > 1e-14 # If stage i is implicitly dependent on F_I(Y_i)
+        # --- Implicit Solve for stage Y_i for INTERIOR points ---
+        if abs(bt.A[i,i]) > 1e-14
             time_implicit_eval = time_n + bt.c[i] * dt
-            
-            for p_idx in 1:N_particles
+            for p_idx in interior_indices
                 particle_pos = system_pg[1].grid[p_idx].pos
-                
-                # Initial guess for Y_i for this particle is what's in current_Y_i_sys
                 u_particle_iter_buffer .= @view current_Y_i_sys[p_idx, :] 
-                # The constant part for the solver is also what's currently in current_Y_i_sys
                 Y_i_base_particle      .= @view current_Y_i_sys[p_idx, :] 
                                           
                 ImplicitSolvers.solve!(imex_ts.implicit_solver,
-                    u_particle_iter_buffer,  # Initial guess & output for Y_i at this particle
-                    Y_i_base_particle,       # Base for the solve: U^n + Sum_E + Sum_I_prev
-                    dt * bt.A[i,i],          # dt_coefficient_for_S = dt * a_ii
-                    imex_ts.source_term_object,
-                    particle_pos, time_implicit_eval, N_components
+                    u_particle_iter_buffer, Y_i_base_particle, dt * bt.A[i,i],
+                    imex_ts.source_term_object, particle_pos, time_implicit_eval, N_components
                 )
-                current_Y_i_sys[p_idx, :] .= u_particle_iter_buffer # Store solved Y_i back
+                current_Y_i_sys[p_idx, :] .= u_particle_iter_buffer
             end
         end
-        # If A[i,i] == 0, then current_Y_i_sys (which is imex_ts.Y_stages_sys[i]) 
-        # already holds the final Y_i for this stage.
+        
+        # --- Ghost Cell Update for Intermediate Stage Y_i ---
+        # Before computing K_E(Y_i), we need Y_i to have correct ghost values.
+        for k_comp in 1:N_components
+            # Temporarily put the computed interior Y_i state into its particle grid
+            first_index = first(interior_indices)
+            system_pg[k_comp].grid[first_index].rho = current_Y_i_sys[first_index, k_comp]
+            last_index = last(interior_indices)
+            system_pg[k_comp].grid[last_index].rho = current_Y_i_sys[last_index, k_comp]
+            # Apply boundary conditions, which will update the ghost cell .rho values
+            apply_boundary_conditions!(system_pg[k_comp])
+            # Copy the updated ghost cell values back to our cache matrix
+            for p_idx in 1:N_total_particles
+                if !(p_idx in interior_indices)
+                    current_Y_i_sys[p_idx, k_comp] = system_pg[k_comp].grid[p_idx].rho
+                end
+            end
+        end
+        # Now current_Y_i_sys (imex_ts.Y_stages_sys[i]) is fully correct for this stage.
 
-        # Evaluate and store K_Ei = F_E(Y_i, t_n + ct[i]*dt)
-        # The explicit tendency is evaluated using the fully formed Y_i (current_Y_i_sys) from this stage.
+        # --- Evaluate and store tendencies K_Ei and K_Ii using the full Y_i state ---
         time_explicit_eval = time_n + bt.ct[i] * dt
-        compute_explicit_tendency_with_mood!( # Ensure this helper is accessible
+        compute_explicit_tendency_with_mood!(
             imex_ts.K_E_stages_sys[i], current_Y_i_sys, 
             imex_ts.gradientInterpolator, imex_ts.fallbackInterpolator, imex_ts.mood,
-            scalar_equations, system_pg, settings, dt, (i==1) 
+            scalar_equations, system_pg, settings, dt, (i==1), interior_indices
         )
 
-        # Evaluate and store K_Ii = F_I(Y_i, t_n + c[i]*dt)
         time_implicit_eval_for_KI = time_n + bt.c[i] * dt 
-        for p_idx in 1:N_particles
+        for p_idx in 1:N_total_particles # Evaluate source over all points for the sum
             particle_pos = system_pg[1].grid[p_idx].pos
-            Y_i_p_view = @view current_Y_i_sys[p_idx, :]       # Input is the solved Y_i
-            K_Ii_p_view = @view imex_ts.K_I_stages_sys[i][p_idx, :] # Output buffer
+            Y_i_p_view = @view current_Y_i_sys[p_idx, :]
+            K_Ii_p_view = @view imex_ts.K_I_stages_sys[i][p_idx, :]
             imex_ts.source_term_object(K_Ii_p_view, Y_i_p_view, particle_pos, time_implicit_eval_for_KI)
         end
     end # End of stages loop
 
     # --- Final Update ---
-    # U^{n+1} = U^n + dt * sum_{i=1 to s} (b_i * K_Ei + b_i * K_Ii)
     U_np1_sys_temp = copy(imex_ts.U_n_sys) 
-
     for i in 1:s
-        if bt.b[i] != 0.0 
-            for p_idx_loop in 1:N_particles, k_comp_loop in 1:N_components
+        if abs(bt.bt[i]) > 1e-14 || abs(bt.b[i]) > 1e-14 # Check both weights
+            for p_idx_loop in interior_indices, k_comp_loop in 1:N_components
                 U_np1_sys_temp[p_idx_loop, k_comp_loop] += 
                     dt * (bt.bt[i] * imex_ts.K_E_stages_sys[i][p_idx_loop, k_comp_loop] + 
-                           bt.b[i] * imex_ts.K_I_stages_sys[i][p_idx_loop, k_comp_loop])
+                          bt.b[i] * imex_ts.K_I_stages_sys[i][p_idx_loop, k_comp_loop])
             end
         end
     end
 
-    # Update physical particleGrid
+    # Update physical particleGrid (only interior points)
     for k_comp in 1:N_components
-        for p_idx in 1:N_particles
+        for p_idx in interior_indices
             system_pg[k_comp].grid[p_idx].rho = U_np1_sys_temp[p_idx, k_comp]
         end
     end
     
+    # Reset moodEvent flags on all particles for the next step
     for k_comp in 1:N_components
         for p_obj in system_pg[k_comp].grid
             p_obj.moodEvent = false 

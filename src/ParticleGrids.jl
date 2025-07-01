@@ -14,7 +14,7 @@ using ..ScalarHyperbolicEquations
 import Meshfree4ScalarEq
 
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, getPeriodicDistance, saveGrid, plotDensity, animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!
-export gridToLinearIndex, linearIndexToGrid, findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, determineVolumes!
+export gridToLinearIndex, linearIndexToGrid, findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, determineVolumes!, getDistance, apply_boundary_conditions!
 
 abstract type ParticleGrid end
 
@@ -25,13 +25,15 @@ struct ParticleGrid1D <: ParticleGrid
     N::Int64  # Amount of particles in grid (= length(grid))
     dx::Float64  # (Average) grid spacing 
     regular::Bool  # Bool to indiciate if grid is regular or not
+    bc::Symbol
+    interior_indices::UnitRange{Int}
     temp::Vector{Float64}  # Used for storing curvatures during time integration
 
     """
         ParticleGrid1D(xmin<:Real, xmax<:Real, N::Integer; randomness<:Real)
 
     Construct a ParticleGrid object. This function will generate a periodic grid (particle at the right edge not stored) of N points in [xmin, xmax).
-
+    creator for periodic boundary conditions
     -   An unstructured grid can be created by setting randomness (uniform variance on position). Particle points are then generated as x_{k+1} = x_k + dx + randomness*(rand(rng, Float64)*2 - 1)
     -   Regular grids can be created by setting randomnes to 0.0
     -   A unstructured grid can also be created by setting randomnes to something negative. In that case, the grid is created by sorting rand(N) numbers between xmin and xmax.
@@ -56,7 +58,8 @@ struct ParticleGrid1D <: ParticleGrid
         else
             if randomness >= 0.0
                 @assert randomness <= 0.5*dx "Randomness too large. Faulty grids could be generated."
-                for i = 1:N
+                grid[1] = Particle1D(xmin, 0.5, false)
+                for i = 2:N
                     pos = xmin + dx*(i-0.5) + randomness*(rand(rng, Float64)*2 - 1)
                     grid[i] = Particle1D(pos, 0.5, false)
                 end
@@ -88,7 +91,7 @@ struct ParticleGrid1D <: ParticleGrid
             particle.volume = (deltaPosL + deltaPosR)/2
         end
 
-        new(grid, convert(Float64, xmin), convert(Float64, xmax), convert(Int64, N), dx, regular, Vector{Float64}(undef, N))
+        new(grid, convert(Float64, xmin), convert(Float64, xmax), convert(Int64, N), dx, regular, :periodic, 1:N, Vector{Float64}(undef, N))
     end
 
     """
@@ -96,12 +99,80 @@ struct ParticleGrid1D <: ParticleGrid
     
     The default constructor. 
     """
-    function ParticleGrid1D(grid::Vector{Particle1D}, xmin::Real, xmax::Real, dx::Real, regular::Bool)
+    function ParticleGrid1D(grid::Vector{Particle1D}, xmin::Real, xmax::Real, dx::Real, bc::Symbol, interior_indices::UnitRange{Int}, regular::Bool)
         @assert length(grid) >= 2
         @assert issorted(grid, by=particle->particle.pos) "Grid is not sorted."
         @assert count(map(particle -> particle.boundary, grid)) == 1 "Only the leftmost particle is allowed to be a boundary particle."
-        new(grid, convert(Float64, xmin), convert(Float64, xmax), length(grid), convert(Float64, dx), regular, Vector{Float64}(undef, length(grid)))
+        new(grid, convert(Float64, xmin), convert(Float64, xmax), length(grid), convert(Float64, dx), regular, bc, interior_indices , Vector{Float64}(undef, length(grid)))
     end
+
+
+    function ParticleGrid1D(
+        xmin::Real, 
+        xmax::Real, 
+        N_interior::Integer, 
+        N_ghost::Integer,
+        bc::Symbol; 
+        randomness::Real = 0.0, 
+        rng = Meshfree4ScalarEq.rng # Assuming rng is accessible
+    )
+        if bc == :periodic
+            @assert N_ghost == 0 "Periodic boundary conditions need no ghost cells"
+            return ParticleGrid1D(xmin, xmax, N_interior; randomness = randomness, rng = Meshfree4ScalarEq.rng)
+        end
+        if N_ghost <= 0
+            error("Number of ghost particles (N_ghost) must be positive for fixed BCs.")
+        end
+        
+        N_total = N_interior + 2 * N_ghost
+        # Spacing is based on the interior physical domain
+        dx_nominal = (xmax - xmin) / (N_interior > 1 ? (N_interior - 1) : 1.0)
+        
+        grid = Vector{Particle1D}(undef, N_total)
+        
+        # --- Create Ghost Particles (Left) ---
+        # These are placed regularly outside the domain.
+        for i in 1:N_ghost
+            pos = xmin - (N_ghost - i + 1) * dx_nominal
+            # Initial rho is a placeholder; it will be set by setInitialConditions!
+            grid[i] = Particles.Particle1D(pos, 0.0, true) # Mark as boundary particle
+        end
+        
+        # --- Create Interior Physical Particles ---
+        # Apply the same randomness logic as your periodic constructor.
+        if randomness >= 0.0
+            @assert randomness <= 0.5*dx_nominal "Randomness too large. Faulty grids could be generated."
+            for i in 1:N_interior
+                # Base position on a regular grid within [xmin, xmax]
+                base_pos = (N_interior == 1) ? (xmin+xmax)/2.0 : xmin + (i-1) * dx_nominal
+                # Add random perturbation
+                pos = base_pos + randomness*(rand(rng, Float64)*2 - 1)
+                # Add to the main grid vector after the left ghosts
+                grid[N_ghost + i] = Particles.Particle1D(pos, 0.0, false) 
+            end
+        else # Fully random placement for interior points
+            interior_positions = [prevfloat(convert(Float64, xmax-xmin))*(1-rand(rng, Float64)) + xmin for _ in 1:N_interior]
+            sort!(interior_positions)
+            grid[N_ghost + 1] = Particle1D(xmin, 0., false)
+            for i in 2:N_interior-1
+                grid[N_ghost + i] = Particles.Particle1D(interior_positions[i], 0.0, false)
+            end
+            grid[N_ghost + N_interior] = Particle1D(xmax, 0., false)
+        end
+
+        # --- Create Ghost Particles (Right) ---
+        for i in 1:N_ghost
+            pos = xmax + i * dx_nominal
+            grid[N_ghost + N_interior + i] = Particles.Particle1D(pos, 0.0, true)
+        end
+
+        interior_indices = (N_ghost + 1):(N_ghost + N_interior)
+
+        # For now, let's assume a basic constructor call
+        regular = (randomness == 0.0)
+        # The ParticleGrid1D struct needs to be updated to hold bc_type and interior_indices
+        new(grid, convert(Float64, xmin), convert(Float64, xmax), convert(Int64, N_total), dx_nominal, regular, bc, interior_indices, Vector{Float64}(undef, N_total))
+    end    
 end
 
 struct ParticleGrid2D <: ParticleGrid
@@ -171,15 +242,18 @@ Return the maximum time step for which the first-order euler & upwind method is 
 function getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection, interpAlpha::Real, interpRange::Real)
     dtMax = Inf
     updateNeighbours!(particleGrid, interpRange)
-    for (particleIndex, particle) in enumerate(particleGrid.grid)
+    for particleIndex in particleGrid.interior_indices
+        particle = particleGrid.grid[particleIndex]
         num = 0.0
         denum = 0.0
         for nbIndex in particle.neighbourIndices
-            dx = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+            dx = getDistance(particleGrid, particleIndex, nbIndex)
+            
             if ((eq.vel >= 0.0) && (dx <= 0.0)) || ((eq.vel <= 0.0) && (dx >= 0.0))
                 w = exp(-interpAlpha*((dx)^2))
                 num += w*dx
                 denum += w*dx*dx
+
             end
         end
         dtMax = min(-denum/(eq.vel*num), dtMax)
@@ -200,7 +274,7 @@ function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection, interpAl
         # Create 2x2 LS system
         A11 = A12 = A22 = 0.0
         for nbIndex in particle.neighbourIndices
-            deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+            deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
             w = exp(-interpAlpha*(deltaX^2 + deltaY^2)/(interpRange^2))
             A11 += w*(deltaX^2) 
             A12 += w*deltaX*deltaY
@@ -212,7 +286,7 @@ function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection, interpAl
         for nbIndex in particle.neighbourIndices
 
             # Solve 2x2 LS system
-            deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+            deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
             w = exp(-interpAlpha*(deltaX^2 + deltaY^2)/(interpRange^2))
             coeff = ((A22*w*deltaX - A12*w*deltaY)/D, (A11*w*deltaY - A12*w*deltaX)/D)
 
@@ -232,13 +306,23 @@ function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection, interpAl
 end
 
 """
-    setInitialConditions!(particleGrid::ParticleGrid1D, initFunc::Function)
+    setInitialConditions!(particleGrid::ParticleGrid, initFunc::Function)
 
-Given initFunc, a function that takes a Real number and returns the initial value at that point, this function will populate paricleGrid.grid[i].rho.
+Sets the initial state for all particles in the grid, including ghost cells.
+This function is called ONCE at the beginning of a simulation.
 """
-function setInitialConditions!(particleGrid::ParticleGrid1D, initFunc::Function)
-    for i in eachindex(particleGrid.grid)
-        particleGrid.grid[i].rho = initFunc(particleGrid.grid[i].pos)
+function setInitialConditions!(particleGrid::ParticleGrid, initFunc::Function)
+    # For ANY grid type, we initialize all particles (including ghosts)
+    # based on their position. This gives a correct state at t=0.
+    # The `apply_boundary_conditions!` function will then be responsible
+    # for updating ghost cells at t > 0 if needed.
+    for p in particleGrid.grid
+        # This assumes initFunc is defined for the dimensionality of p.pos
+        if p.pos isa NTuple{2, Float64} # 2D
+            p.rho = initFunc(p.pos...)
+        else # 1D
+            p.rho = initFunc(p.pos)
+        end
     end
 end
 
@@ -266,6 +350,57 @@ function setInitialConditions!(particleGrids::Vector{T}, initFunc::Function) whe
         setInitialConditions!(particleGrids[i], initFunc)
     end
 end
+
+
+"""
+    apply_boundary_conditions!(particleGrid::ParticleGrid)
+
+Updates the values in the ghost cells based on the grid's `bc_type`.
+This should be called at the beginning of each time step or RK stage.
+"""
+function apply_boundary_conditions!(particleGrid::ParticleGrid)
+    # No action needed for periodic grids
+    if particleGrid.bc == :periodic
+        return
+    
+    # For fixed Dirichlet, the values are constant. They are set once by
+    # setInitialConditions! and do not need to be updated.
+    elseif particleGrid.bc == :fixed_dirichlet
+        return
+
+    # For outflow, we must update ghost cells at each stage
+    elseif particleGrid.bc == :outflow
+        # This logic works for both 1D and 2D grids
+        N_total = length(particleGrid.grid)
+        interior = particleGrid.interior_indices
+        
+        if isempty(interior)
+            return # No interior points to extrapolate from
+        end
+
+        first_interior_idx = first(interior)
+        last_interior_idx = last(interior)
+
+        # Get the state of the nearest physical particle
+        val_at_left_boundary = particleGrid.grid[first_interior_idx].rho
+        val_at_right_boundary = particleGrid.grid[last_interior_idx].rho
+
+        # Set left ghost particles
+        num_ghosts_left = first_interior_idx - 1
+        for i in 1:num_ghosts_left
+            particleGrid.grid[i].rho = val_at_left_boundary
+        end
+        
+        # Set right ghost particles
+        for i in (last_interior_idx + 1):N_total
+            particleGrid.grid[i].rho = val_at_right_boundary
+        end
+
+    else
+        error("Unsupported boundary condition type: $(particleGrid.bc_type)")
+    end
+end
+
 """
     getPeriodicDistance(particleGrid::ParticleGrid1D, particleIndex::Integer, nbParticle::Integer)
 
@@ -290,12 +425,19 @@ function getPeriodicDistance(particleGrid::ParticleGrid2D, particleIndex::Intege
     distY = particleGrid.grid[nbParticle].pos[2] - particleGrid.grid[particleIndex].pos[2]
     return (distX - round(distX/domainSizeX)*domainSizeX, distY - round(distY/domainSizeY)*domainSizeY)
 end
-
+# Create a general getDistance function that dispatches
+function getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)::Float64
+    if pg.bc == :periodic
+        return getPeriodicDistance(pg, i, j)
+    else # For :fixed_dirichlet or other non-periodic types
+        return pg.grid[j].pos - pg.grid[i].pos
+    end
+end
 function getEuclideanDistance(particleGrid::ParticleGridType, particleIndex::Integer, nbParticle::Integer) where {ParticleGridType <: ParticleGrid}
     if ParticleGridType == ParticleGrid1D
-        return abs(getPeriodicDistance(particleGrid, particleIndex, nbParticle))
+        return abs(getDistance(particleGrid, particleIndex, nbParticle))
     elseif ParticleGridType == ParticleGrid2D
-        dx, dy = getPeriodicDistance(particleGrid, particleIndex, nbParticle)
+        dx, dy = getDistance(particleGrid, particleIndex, nbParticle)
         return sqrt(dx^2 + dy^2)
     else
         error("Not implemented.")
@@ -677,26 +819,35 @@ function determineVolumes!(particleGrid::ParticleGrid1D)
         particleGrid.grid[1].volume = domain_length
         return
     end
+    if particleGrid.bc == :periodic
+        for i in 1:N
+            particle_i = particleGrid.grid[i]
+            
+            local deltaPosL, deltaPosR
 
-    for i in 1:N
-        particle_i = particleGrid.grid[i]
-        
-        local deltaPosL, deltaPosR
+            if i == 1
+                deltaPosL = (particle_i.pos - particleGrid.xmin) + (particleGrid.xmax - particleGrid.grid[N].pos)
+            else
+                deltaPosL = particle_i.pos - particleGrid.grid[i-1].pos
+            end
 
-        if i == 1
-            deltaPosL = (particle_i.pos - particleGrid.xmin) + (particleGrid.xmax - particleGrid.grid[N].pos)
-        else
-            deltaPosL = particle_i.pos - particleGrid.grid[i-1].pos
+            if i == N
+                deltaPosR = (particleGrid.xmax - particle_i.pos) + (particleGrid.grid[1].pos - particleGrid.xmin)
+            else
+                deltaPosR = particleGrid.grid[i+1].pos - particle_i.pos
+            end
+            particle_i.volume = (deltaPosL + deltaPosR) / 2.0
         end
-
-        if i == N
-            deltaPosR = (particleGrid.xmax - particle_i.pos) + (particleGrid.grid[1].pos - particleGrid.xmin)
-        else
-            deltaPosR = particleGrid.grid[i+1].pos - particle_i.pos
+    elseif particleGrid.bc == :fixed
+                for i in particleGrid.interior_indices
+            # We only need to calculate volumes for physical particles.
+            # Ghost particle volumes are not used in the time integration.
+            x_current = particleGrid.grid[i].pos
+            x_prev = particleGrid.grid[i-1].pos # Will be a ghost if i is the first interior particle
+            x_next = particleGrid.grid[i+1].pos # Will be a ghost if i is the last interior particle
+            particleGrid.grid[i].volume = (x_next - x_prev) / 2.0
         end
-        particle_i.volume = (deltaPosL + deltaPosR) / 2.0
     end
-
     # Optional: Normalize volumes to ensure they sum exactly to domain_length
     # current_total_volume = sum(p.volume for p in particleGrid.grid)
     # if abs(current_total_volume - domain_length) > 1e-9 * domain_length

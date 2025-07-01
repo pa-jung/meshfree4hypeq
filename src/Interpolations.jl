@@ -284,7 +284,7 @@ function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::I
     dxVec = Vector{Float64}(undef, nbNeighbours)
     dfVec = Vector{Float64}(undef, nbNeighbours)
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-        deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
         fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
         dxVec[index] = deltaPos/settings.interpRange
         dfVec[index] = upwind.numericalFlux(fm, fp, eq) - flux(eq, fVec[particleIndex])
@@ -317,7 +317,7 @@ end
 #     dfVec = Vector{Float64}(undef, nbNeighbours)
 #     maxFlux = maximum(map(particle -> velocity(eq, particle.rho), particleGrid.grid))
 #     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-#         deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+#         deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
 #         fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
 #         dxVec[index] = deltaPos/settings.interpRange
 #         dfVec[index] = laxFriedrichs.numericalFlux(fm, fp, eq, maxFlux) - flux(eq, fVec[particleIndex])
@@ -343,7 +343,7 @@ function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D,
     yWindow = Vector{Bool}(undef, nbNeighbours)  # True if point should be used for d/dx
 
     for (i, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         dxVec[i] = deltaX/settings.interpRange
         dyVec[i] = deltaY/settings.interpRange
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
@@ -379,7 +379,7 @@ function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D
     dyVec = Vector{Float64}(undef, 0)
     dfVec = Vector{Float64}(undef, 0)    
     for nbIndex in particleGrid.grid[particleIndex].neighbourIndices
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         if deltaX*vel[1] + deltaY*vel[2] < 0
             push!(dxVec, deltaX/settings.interpRange)
             push!(dyVec, deltaY/settings.interpRange)
@@ -411,7 +411,7 @@ function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D
     # Create 2x2 LS system
     A11 = A12 = A22 = 0.0
     for nbIndex in particle.neighbourIndices
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
         A11 += w*(deltaX^2) 
         A12 += w*deltaX*deltaY
@@ -423,7 +423,7 @@ function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D
     for nbIndex in particle.neighbourIndices
 
         # Solve 2x2 LS system
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
         coeff = ((A22*w*deltaX - A12*w*deltaY)/D, (A11*w*deltaY - A12*w*deltaX)/D)
 
@@ -452,7 +452,7 @@ function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(particleGrid::Parti
     # Create 2x2 LS system
     A11 = A12 = A22 = 0.0
     for nbIndex in particle.neighbourIndices
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
         A11 += w*(deltaX^2) 
         A12 += w*deltaX*deltaY
@@ -469,7 +469,7 @@ function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(particleGrid::Parti
         uj = fVec[nbIndex]
 
         # Solve 2x2 LS system
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
         coeff = ((A22*w*deltaX - A12*w*deltaY)/D, (A11*w*deltaY - A12*w*deltaX)/D)
 
@@ -526,7 +526,7 @@ function (central::CentralGradient)(particleGrid::ParticleGrid2D, particleIndex:
 
     for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
         nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         dxVec[i] = deltaX/particleGrid.dx
         dyVec[i] = deltaY/particleGrid.dx
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
@@ -553,7 +553,7 @@ function (central::CentralGradient)(particleGrid::ParticleGrid1D, particleIndex:
 
     for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
         nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
-        deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
         dxVec[i] = deltaPos/particleGrid.dx
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
     end
@@ -594,7 +594,7 @@ function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec
     leftWindow = Vector{Bool}(undef, Npts)
     for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
         nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
-        deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
         dxVec[i] = deltaPos
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
         leftWindow[i] = deltaPos > 0.0 ? false : true
@@ -644,7 +644,7 @@ function (weno::WENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec
     topWindow = Vector{Bool}(undef, Npts)
     for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
         nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         dxVec[i] = deltaX/settings.interpRange
         dyVec[i] = deltaY/settings.interpRange
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
@@ -745,7 +745,7 @@ function (weno::DumbserWENO)(particleGrid::ParticleGrid2D, particleIndex::Intege
 
     for i in eachindex(particle.neighbourIndices)
         nbIndex = particle.neighbourIndices[i]
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         particle.dxVec[i] = deltaX/settings.interpRange
         particle.dyVec[i] = deltaY/settings.interpRange
         particle.dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
@@ -832,7 +832,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid1D, interpA
     for (particleIndex, particle) in enumerate(particleGrid.grid)
 
         for (i, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-            deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+            deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
             particle.dxVec[i] = deltaPos
         end
         particle.wVec .= muscl.weightFunction(particle.dxVec; param=interpAlpha, normalisation=particleGrid.dx)
@@ -892,7 +892,7 @@ function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid1D, particleIndex::Inte
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-        deltaPos = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
         nbParticle = particleGrid.grid[nbIndex]
 
         if ORDER == MUSCLORDER1
@@ -954,7 +954,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid2D, interpA
     for (particleIndex, particle) in enumerate(particleGrid.grid)
 
         for (i, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-            deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+            deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
             particle.dxVec[i] = deltaX
             particle.dyVec[i] = deltaY
         end
@@ -998,7 +998,7 @@ function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid2D, particleIndex::Inte
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-        deltaX, deltaY = getPeriodicDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         nbParticle = particleGrid.grid[nbIndex]
 
         if ORDER == MUSCLORDER1  # Linear reconstruction from particleIndex and neighbour at center point 
@@ -1048,7 +1048,7 @@ function setCurvatures!(particleGrid::ParticleGrid1D, settings::SimSetting)
     central = CentralGradient(2)
     eq = LinearAdvection(0.0)
     map!(particle -> particle.rho, particleGrid.temp, particleGrid.grid)
-    for particleIndex in eachindex(particleGrid.grid)
+    for particleIndex in particleGrid.interior_indices
         central(particleGrid, particleIndex, particleGrid.temp, eq, settings)
     end
 end
@@ -1111,7 +1111,7 @@ function find_closest_lr_neighbors_1D(particleGrid::ParticleGrid1D, p_idx::Integ
     min_abs_dist_L, min_dist_R = Inf, Inf
 
     for nb_actual_idx in particle_i.neighbourIndices
-        dx_ij = getPeriodicDistance(particleGrid, p_idx, nb_actual_idx)
+        dx_ij = getDistance(particleGrid, p_idx, nb_actual_idx)
         if dx_ij > 1e-9
             if dx_ij < min_dist_R
                 min_dist_R = dx_ij; best_idx_R = nb_actual_idx;
@@ -1171,7 +1171,7 @@ function initTimeStep(
         if length(particle_outer.dxVec) != num_neighbors; resize!(particle_outer.dxVec, num_neighbors); end
         if length(particle_outer.wVec) != num_neighbors; resize!(particle_outer.wVec, num_neighbors); end
         if length(particle_outer.alfaij) != num_neighbors; resize!(particle_outer.alfaij, num_neighbors); end
-        for (i, nbIndex) in enumerate(particle_outer.neighbourIndices); particle_outer.dxVec[i] = getPeriodicDistance(particleGrid, particleIndex_outer, nbIndex); end
+        for (i, nbIndex) in enumerate(particle_outer.neighbourIndices); particle_outer.dxVec[i] = getDistance(particleGrid, particleIndex_outer, nbIndex); end
         try muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx, wVec_out=particle_outer.wVec)
         catch e; if isa(e, MethodError); particle_outer.wVec .= muscl.weightFunction(particle_outer.dxVec; param=interpAlpha, normalisation=particleGrid.dx); else; rethrow(e); end; end
         wVec_times_dx = particle_outer.wVec .* particle_outer.dxVec
@@ -1282,7 +1282,7 @@ function limit_slope!(
 
         phi_i = 1.0
         for nb_idx in particle_i.neighbourIndices
-            dx_ij = getPeriodicDistance(particleGrid, i, nb_idx)
+            dx_ij = getDistance(particleGrid, i, nb_idx)
             delta_recon = sigma_i_unlimited * dx_ij 
             
             if abs(delta_recon) < 1e-12; continue; end
@@ -1325,7 +1325,7 @@ function (muscl::MUSCLlimited{MUSCLORDER1})(
     if setCurvature; particle_i_data.curvature = 0.0; end
 
     for (idx_in_stencil, actual_nb_idx) in enumerate(particle_i_data.neighbourIndices)
-        deltaPos_ij = getPeriodicDistance(particleGrid, particleIndex, actual_nb_idx)
+        deltaPos_ij = getDistance(particleGrid, particleIndex, actual_nb_idx)
         uj = fVec[actual_nb_idx]
         sigma_j_lim = muscl.limited_slopes_cache[actual_nb_idx]
         fij = ui + (deltaPos_ij / 2.0) * sigma_i_lim
@@ -1365,7 +1365,7 @@ end
 #     # Iterate through the pre-identified neighbors of particle 'p_idx'
 #     # neighbourIndices should contain the actual grid indices
 #     for nb_actual_idx in particle_i.neighbourIndices
-#         dx_ij = getPeriodicDistance(particleGrid, p_idx, nb_actual_idx)
+#         dx_ij = getDistance(particleGrid, p_idx, nb_actual_idx)
 #         if dx_ij > 1e-9 # Potential right neighbor
 #             if dx_ij < min_dist_R
 #                 min_dist_R = dx_ij
@@ -1444,7 +1444,7 @@ end
 #         if length(particle_outer.alfaij) != num_neighbors resize!(particle_outer.alfaij, num_neighbors) end
 
 #         for (i, nbIndex) in enumerate(current_neighbors)
-#             particle_outer.dxVec[i] = getPeriodicDistance(particleGrid, particleIndex_outer, nbIndex)
+#             particle_outer.dxVec[i] = getDistance(particleGrid, particleIndex_outer, nbIndex)
 #         end
         
 #         # Calculate weights (wVec)
@@ -1545,7 +1545,7 @@ end
 #     end
 
 #     for (idx_in_stencil, actual_nb_idx) in enumerate(particle_i_data.neighbourIndices)
-#         deltaPos_ij = getPeriodicDistance(particleGrid, particleIndex, actual_nb_idx)
+#         deltaPos_ij = getDistance(particleGrid, particleIndex, actual_nb_idx)
 #         uj = fVec[actual_nb_idx]
 
 #         # Retrieve the limited slope for the neighbor particle 'actual_nb_idx'

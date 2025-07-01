@@ -108,11 +108,12 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
 
     # Initialize grid
     updateNeighbours!(particleGrid, settings.interpRange)
-
+    xType = typeof(particleGrid.grid[1].pos)
     # Initialize vectors for simulation data
-    xs = [map(particle -> particle.pos, particleGrid.grid)]
-    us = [map(particle -> particle.rho, particleGrid.grid)]
-    ts = [0.0]
+    xs = Vector{Vector{xType}}(undef, 0)
+    us = Vector{Vector{Float64}}(undef, 0)
+    ts = Vector{Float64}(undef, 0)
+    appendData!(xs, us, ts, particleGrid, 0)
     #grids = [deepcopy(particleGrid.grid)]
 
     #saveGrid(settings, particleGrid, 0.0)
@@ -131,18 +132,16 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
         # Save data every savefreq steps
         if mod(k, settings.saveFreq) == 0
             #saveGrid(settings, particleGrid, t)
-            push!(xs, map(particle -> particle.pos, particleGrid.grid))
-            push!(us, map(particle -> particle.rho, particleGrid.grid))
-            push!(ts, t)
+            appendData!(xs, us, ts, particleGrid, t)
             #push!(grids, deepcopy(particleGrid.grid))
         end
         
         k += 1
     end
     #saveGrid(settings, particleGrid, t)
-    push!(xs, map(particle -> particle.pos, particleGrid.grid))
-    push!(us, map(particle -> particle.rho, particleGrid.grid))
-    push!(ts, t)
+    if ts[end] != settings.tmax
+        appendData!(xs, us, ts, particleGrid, t)
+    end
     # push!(grids, deepcopy(particleGrid.grid))
     #saveSettings(settings)
     #sim_data = createSimData(xs, us, ts, params)#, ParamDict("saved_grids" => grids))
@@ -157,18 +156,19 @@ Appends data from a SCALAR `ParticleGrid1D` to storage vectors.
 `us_storage` will store vectors of rho values (Vector{Float64}).
 """
 function appendData!(
-    xs_storage::Vector{Vector{T}} where T <: Union{Float64,Tuple}, 
+    xs_storage::Vector{<:Vector{<:Any}}, 
     us_storage::Vector{Vector{Float64}}, # For scalar, this is Vector{Vector{Float64}}
     ts_storage::Vector{Float64}, 
     particle_grid::T where T <: ParticleGrid, 
     current_t::Real
 )
+    interior_indices = particle_grid.interior_indices
     # Positions: Vector{Float64} for this time step
-    current_xs = [p.pos for p in particle_grid.grid] # More efficient than map
+    current_xs = [p.pos for p in particle_grid.grid[interior_indices]] # More efficient than map
     push!(xs_storage, current_xs)
 
     # Solution values: Vector{Float64} for this time step
-    current_us = [p.rho for p in particle_grid.grid]
+    current_us = [p.rho for p in particle_grid.grid[interior_indices]]
     push!(us_storage, current_us)
     
     push!(ts_storage, current_t)
@@ -195,7 +195,7 @@ function appendData!(
         return
     end
 
-    N_particles = length(system_pg[1].grid)
+    N_particles = length(system_pg[1].interior_indices)
     N_components = length(system_pg)
 
     if N_particles == 0
@@ -208,14 +208,14 @@ function appendData!(
     end
     
     # Positions (from the first component grid, assumed consistent)
-    current_xs = [p.pos for p in system_pg[1].grid]
+    current_xs = [p.pos for p in system_pg[1].grid[system_pg[1].interior_indices]]
     push!(xs_storage, current_xs)
     push!(ts_storage, current_t)
 
     current_step_us = Matrix{Float64}(undef, N_particles, N_components)
 
     for c_idx in 1:N_components
-        current_step_us[:,c_idx] = [p.rho for p in system_pg[c_idx].grid]
+        current_step_us[:,c_idx] = [p.rho for p in system_pg[c_idx].grid[system_pg[c_idx].interior_indices]]
     end
     push!(us_storage_sys, current_step_us)
 end
@@ -233,6 +233,8 @@ function mainTimeIntegrator2!(
 
     for particleGrid in system_pg
         updateNeighbours!(particleGrid, settings.interpRange)
+        apply_boundary_conditions!(particleGrid)
+        setCurvatures!(particleGrid, settings)
     end
 
     ts_data = Vector{Float64}()
@@ -240,23 +242,22 @@ function mainTimeIntegrator2!(
     # Call the new appendData!
     appendData!(xs_data, us_data_sys, ts_data, system_pg, 0.0)
 
-    # ... (initTimeStepper and setCurvatures for system as before) ...
-    for scalar_grid_k in system_pg
-        setCurvatures!(scalar_grid_k, settings) 
-    end
     initTimeStepper(system_timestepper, system_pg, settings)
 
     t = 0.0
     k_step = 0
     elapsed_time = @elapsed while t < settings.tmax
         actual_dt = min(settings.dt, settings.tmax - t)
-
+        for particleGrid in system_pg
+            apply_boundary_conditions!(particleGrid)
+        end
         system_timestepper(system_eq, system_pg, settings, t, actual_dt)
         t += actual_dt
         k_step += 1
 
         if mod(k_step, settings.saveFreq) == 0 || t >= settings.tmax
             appendData!(xs_data, us_data_sys, ts_data, system_pg, t)
+            
         end
     end
     return elapsed_time, xs_data, us_data_sys, ts_data
