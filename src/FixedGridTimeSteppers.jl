@@ -60,36 +60,83 @@ struct ClassicalTimeStepper <: FixedGridTimeStepper
     end
 end
 
-function (cts::ClassicalTimeStepper)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+# In your TimeIntegration.jl or FixedGridTimeSteppers.txt file
+
+# (Keep the ClassicalTimeStepper struct definition as is)
+# struct ClassicalTimeStepper <: FixedGridTimeStepper ... end
+
+"""
+    (cts::ClassicalTimeStepper)(eq, particleGrid, settings, time, dt)
+
+Functor for the Classical Finite Volume (Fixed Grid) Time Stepper.
+Handles both periodic and fixed boundary conditions.
+"""
+function (cts::ClassicalTimeStepper)(
+    eq::ScalarHyperbolicEquation, 
+    particleGrid::ParticleGrid1D, 
+    settings::SimSetting, 
+    time::Real, 
+    dt::Real
+)
+    # This timestepper is designed for regular grids.
+    if !particleGrid.regular
+        @warn "ClassicalTimeStepper is designed for regular grids but was called with a non-regular one. Results may be inaccurate."
+    end
+
+    # Copy the initial state for all particles (including ghosts) into the buffer
     map!(particle -> particle.rho, cts.rhoOld, particleGrid.grid)
-    N = particleGrid.N
+    
     dx = particleGrid.dx
     dtdx = dt / dx
 
-    # Temporary arrays for interface fluxes F*_{i-1/2} and F*_{i+1/2} for each cell i
-    # Or, calculate them on the fly. For clarity, let's pre-calculate all F*_{k+1/2}
-    
-    # flux_at_interfaces will store F*_{k+1/2} at index k
-    # So, flux_at_interfaces[i] is F*_{i+1/2}
-    # and flux_at_interfaces[mod1(i-1,N)] is F*_{i-1/2}
-    flux_at_interfaces = Vector{Float64}(undef, N)
-
-    # Calculate all interface fluxes F*_{k+1/2}
-    # The interface k+1/2 is between cell k and cell k+1
-    for k in 1:N
-        u_L = cts.rhoOld[k]
-        u_R = cts.rhoOld[mod1(k + 1, N)] # Periodic neighbor for U_R
+    if particleGrid.bc == :periodic
+        # --- Periodic Boundary Condition Logic (Original Code) ---
+        N = particleGrid.N # Number of physical particles
         
-        # Call the provided numerical flux function (e.g., RusanovFlux, UpwindFlux, LaxWendroffFlux)
-        flux_at_interfaces[k] = cts.numericalFlux(u_L, u_R, eq)
-    end
+        # flux_at_interfaces[k] will store F*_{k+1/2}
+        flux_at_interfaces = Vector{Float64}(undef, N)
 
-    # Update rule: U_i^{n+1} = U_i^n - (dt/dx) * ( F*_{i+1/2} - F*_{i-1/2} )
-    for i in 1:N
-        F_star_i_plus_half = flux_at_interfaces[i] # Flux at the right interface of cell i
-        F_star_i_minus_half = flux_at_interfaces[mod1(i - 1, N)] # Flux at the left interface of cell i
+        for k in 1:N
+            u_L = cts.rhoOld[k]
+            u_R = cts.rhoOld[mod1(k + 1, N)] # Periodic neighbor
+            flux_at_interfaces[k] = cts.numericalFlux(u_L, u_R, eq)
+        end
+
+        for i in 1:N
+            F_star_i_plus_half = flux_at_interfaces[i]
+            F_star_i_minus_half = flux_at_interfaces[mod1(i - 1, N)] # Periodic neighbor
+            particleGrid.grid[i].rho = cts.rhoOld[i] - dtdx * (F_star_i_plus_half - F_star_i_minus_half)
+        end
+
+    else # --- Fixed Boundary Condition Logic (e.g., :fixed_dirichlet, :outflow) ---
+        N_total = length(particleGrid.grid)
+        interior_indices = particleGrid.interior_indices
         
-        particleGrid.grid[i].rho = cts.rhoOld[i] - dtdx * (F_star_i_plus_half - F_star_i_minus_half)
+        # We need to calculate fluxes at N_interior + 1 interfaces.
+        # These are the interfaces bounding the interior cells.
+        # Let's calculate all N_total - 1 interface fluxes for simplicity.
+        flux_at_interfaces = Vector{Float64}(undef, N_total - 1)
+
+        # Calculate all interface fluxes F*_{i+1/2} for i = 1 to N_total-1
+        for i in 1:(N_total - 1)
+            u_L = cts.rhoOld[i]
+            u_R = cts.rhoOld[i + 1]
+            flux_at_interfaces[i] = cts.numericalFlux(u_L, u_R, eq)
+        end
+
+        # Update rule: U_i^{n+1} = U_i^n - (dt/dx) * ( F*_{i+1/2} - F*_{i-1/2} )
+        # Loop ONLY over the interior physical particles
+        for i in interior_indices
+            # F*_{i+1/2} is the flux at the right interface of cell i.
+            # In our 0-based thinking, this is interface `i`.
+            F_star_i_plus_half = flux_at_interfaces[i]
+            
+            # F*_{i-1/2} is the flux at the left interface of cell i.
+            # This is interface `i-1`.
+            F_star_i_minus_half = flux_at_interfaces[i - 1]
+            
+            particleGrid.grid[i].rho = cts.rhoOld[i] - dtdx * (F_star_i_plus_half - F_star_i_minus_half)
+        end
     end
 end
 

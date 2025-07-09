@@ -351,17 +351,6 @@ function initTimeStepper(
     end
 end
 
-# In MeshfreeTimeSteppers.jl or SystemIMEXTimeSteppers.jl or TimeIntegration.jl
-# (Ensure all necessary `using` statements for types from other modules are present)
-
-# struct GeneralIMEXTimeStepper{...} <: TimeIntegration.TimeStepper
-#   ... (fields as defined before) ...
-# end
-
-# function TimeIntegration.initTimeStepper(imex_ts::GeneralIMEXTimeStepper, ...)
-#   ... (as defined before) ...
-# end
-
 # --- Corrected Functor for GeneralIMEXTimeStepper ---
 function (imex_ts::GeneralIMEXTimeStepper)(
         scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation},

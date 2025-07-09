@@ -89,6 +89,7 @@ struct ParticleGrid1D <: ParticleGrid
                 deltaPosR = grid[particleIndex + 1].pos - particle.pos
             end
             particle.volume = (deltaPosL + deltaPosR)/2
+
         end
 
         new(grid, convert(Float64, xmin), convert(Float64, xmax), convert(Int64, N), dx, regular, :periodic, 1:N, Vector{Float64}(undef, N))
@@ -838,7 +839,7 @@ function determineVolumes!(particleGrid::ParticleGrid1D)
             end
             particle_i.volume = (deltaPosL + deltaPosR) / 2.0
         end
-    elseif particleGrid.bc == :fixed
+    else
                 for i in particleGrid.interior_indices
             # We only need to calculate volumes for physical particles.
             # Ghost particle volumes are not used in the time integration.

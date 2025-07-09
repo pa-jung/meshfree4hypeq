@@ -125,22 +125,27 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
     k = 1
     time = @elapsed while t < settings.tmax
         dt = min(settings.dt, settings.tmax-t)
-
+        # Check for termination condition BEFORE taking the step
+        if dt <= 1e-12 # If the remaining time is negligible, stop.
+            break
+        end
         timeStepper(eq, particleGrid, settings, t, dt)
+        
         t += dt
-
         # Save data every savefreq steps
-        if mod(k, settings.saveFreq) == 0
+        if mod(k, settings.saveFreq) == 0 || t >= settings.tmax
             #saveGrid(settings, particleGrid, t)
             appendData!(xs, us, ts, particleGrid, t)
             #push!(grids, deepcopy(particleGrid.grid))
         end
         
         k += 1
+        
     end
-    #saveGrid(settings, particleGrid, t)
-    if ts[end] != settings.tmax
-        appendData!(xs, us, ts, particleGrid, t)
+    
+    # #saveGrid(settings, particleGrid, t)
+    if abs(settings.tmax - settings.tmax) > 1e-9
+        appendData!(xs, us, ts, particleGrid, settings.tmax)
     end
     # push!(grids, deepcopy(particleGrid.grid))
     #saveSettings(settings)
@@ -248,6 +253,10 @@ function mainTimeIntegrator2!(
     k_step = 0
     elapsed_time = @elapsed while t < settings.tmax
         actual_dt = min(settings.dt, settings.tmax - t)
+        # Check for termination condition BEFORE taking the step
+        if actual_dt <= 1e-12 # If the remaining time is negligible, stop.
+            break
+        end
         for particleGrid in system_pg
             apply_boundary_conditions!(particleGrid)
         end
@@ -255,10 +264,15 @@ function mainTimeIntegrator2!(
         t += actual_dt
         k_step += 1
 
-        if mod(k_step, settings.saveFreq) == 0 || t >= settings.tmax
+        if mod(k_step, settings.saveFreq) == 0
             appendData!(xs_data, us_data_sys, ts_data, system_pg, t)
             
         end
+    end
+    if isempty(ts_data) || abs(ts_data[end] - settings.tmax) > 1e-9
+        # The last saved time is not tmax, so save the final state.
+        # Note: The state in system_pg is already at t=tmax from the last loop iteration.
+        appendData!(xs_data, us_data_sys, ts_data, system_pg, settings.tmax) # Save with the exact final time
     end
     return elapsed_time, xs_data, us_data_sys, ts_data
 end

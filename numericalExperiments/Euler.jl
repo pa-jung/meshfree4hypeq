@@ -366,7 +366,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         if !isnothing(timestepper_name)
             # --- Build Scalar Method Components ---
             MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() else error("Flux $main_flux_name NYI"); end
-            FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux() else error("Flux $fallback_flux_name NYI"); end
+            FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux() elseif !isnothing(fallback_flux_name); error("Flux $fallback_flux_name NYI"); end
             
             MainGrad = if main_grad_name == "MUSCL"
                         MUSCL(muscl_order_param-1; numericalFlux=MainFlux, weightFunction=exponentialWeightFunction())
@@ -571,10 +571,10 @@ SEED_value = (:const, Meshfree4ScalarEq.SEED)
 sim_config_euler1d_system = SimulationConfig(
     RunSystem1DEulerSimulation, 
     ParamDict(
-        "tmax" => 0.2, "N" => 500, "bc" => :outflow,
+        "tmax" => 0.2, "N" => 100, "bc" => :outflow,
         "xmin" => -0.5, "xmax" => .5, 
         "CFL" => 0.5, "save_frequency" => 5, 
-        "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
+        "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
         "init_func" => "eulerShockTube1D", 
         "init_params" => sod_euler_params, 
         "randomness_factor" => 0., 
@@ -582,44 +582,58 @@ sim_config_euler1d_system = SimulationConfig(
         "relax_velocities" => [ (2.0, -2.0), (3.0, -3.0), (4.0, -4.0) ], # Pairs for rho, m, E kinetic components
     ),
     MethodDict( 
-        "Slope Limiter" => ParamDict(
+        "ARS222MUSCL2limiter" => ParamDict(
             "timestepper" => "ARS222",
             "main_gradient" => "MUSCLlimit", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
             "main_flux" => "Rusanov",
             "MOOD" => "none",
-                    "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
             "relax_epsilon" => 1e-6
         ),
-        "Regular MOOD" => ParamDict(
+        "ARS222MUSCL2MOOD" => ParamDict(
             "timestepper" => "ARS222",
             "main_flux" => "Rusanov",
             "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
-            "MOOD" => "U2", "delta_relax" => false, 
+            "MOOD" => "U2", "delta_relax" => 0., 
+            "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+            "relax_epsilon" => 1e-6
+        ),
+        "ARS222MUSCL2MOOD" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_flux" => "Rusanov",
+            "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
+            "MOOD" => "U2", "delta_relax" => 0., 
                     "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
             "relax_epsilon" => 1e-6
         ),
-        "SSP" => ParamDict(
+        "SSP2MUSCL2MOOD" => ParamDict(
             "timestepper" => "SSP2",
             "main_flux" => "Rusanov",
                     "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
             "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
-            "MOOD" => "U2", "delta_relax" => false, 
+            "MOOD" => "U2", "delta_relax" => 0., 
             "relax_epsilon" => 1e-6
         ),
-        "Upwind" => ParamDict(
-            "timestepper" => "SSP2",
+        "ARS222Upwind" => ParamDict(
+            "timestepper" => "ARS222",
             "main_flux" => "Rusanov",
-                    "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
             "main_gradient" => "Upwind", "order" => 1, # MUSCL(1) for 2nd order spatial
-            "MOOD" => "U2", "delta_relax" => false, 
+            "MOOD" => "none",
             "relax_epsilon" => 1e-6
         ),
-        "high Order" => ParamDict(
+        "ARS233MUSCL5MOOD" => ParamDict(
             "timestepper" => "ARS233",
                     "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
             "main_flux" => "Rusanov",
             "main_gradient" => "MUSCL", "order" => 5, # MUSCL(1) for 2nd order spatial
-            "MOOD" => "U2", "delta_relax" => false, # More aggressive MOOD
+            "MOOD" => "U2", "delta_relax" => 0., # More aggressive MOOD
+            "relax_epsilon" => 1e-6
+        ),
+        "SSP3MUSCL5MOOD" => ParamDict(
+            "timestepper" => "SSP3",
+                    "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+            "main_flux" => "Rusanov",
+            "main_gradient" => "MUSCL", "order" => 5, # MUSCL(1) for 2nd order spatial
+            "MOOD" => "U2", "delta_relax" => 0., # More aggressive MOOD
             "relax_epsilon" => 1e-6
         ),
         "Analytic" => ParamDict(
@@ -627,7 +641,7 @@ sim_config_euler1d_system = SimulationConfig(
              # No randomness_factor needed when regular=true
         )
     ),
-    ["Slope Limiter", "Regular MOOD", "Analytic", "Upwind"]
+    "ARS222MUSCL2MOOD"
 )
 
 # To run:
