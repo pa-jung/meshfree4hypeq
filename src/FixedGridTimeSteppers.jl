@@ -1,4 +1,4 @@
-export Upwind, LaxFriedrich, ClassicalTimeStepper, ClassicalRK2LWTimeStepper
+export Upwind, LaxFriedrich, ClassicalTimeStepper, ClassicalRK2LWTimeStepper, ClassicalRichtmyerLWMOOD
 using ..Meshfree4ScalarEq.FluxFunctions
 
 struct Upwind <: FixedGridTimeStepper 
@@ -189,5 +189,129 @@ function (crk2::ClassicalRK2LWTimeStepper)(eq::ScalarHyperbolicEquation, particl
         F_star_im_half = flux_of_predicted_interface_states[idx_minus_1]   # This is F(U_{(i-1)+1/2}^{n+1/2}) = F(U_{i-1/2}^{n+1/2})
         
         particleGrid.grid[i].rho = crk2.rhoOld[i] - (dt / dx) * (F_star_ip_half - F_star_im_half)
+    end
+end
+
+
+# --- Helper function for Lax-Friedrichs dissipation ---
+# This can be a local helper function if only used here.
+"""
+    _max_abs_speed_classical(eq, uL, uR)
+
+Calculates the maximum absolute wavespeed for the state between uL and uR.
+Used as the dissipation coefficient for the Lax-Friedrichs flux.
+"""
+function _max_abs_speed_classical(eq::LinearAdvection, uL::Real, uR::Real)
+    return abs(eq.vel)
+end
+
+function _max_abs_speed_classical(eq::BurgersEquation, uL::Real, uR::Real)
+    # For Burger's equation, the characteristic speed is u.
+    return max(abs(uL), abs(uR))
+end
+# Add methods for other equations like Euler if needed.
+
+
+# --- NEW: Classical Richtmyer Lax-Wendroff with MOOD ---
+
+struct ClassicalRichtmyerLWMOOD{M <: MOODCriterion} <: FixedGridTimeStepper
+    mood::M
+    rhoOld::Vector{Float64}
+    rhoCandidate::Vector{Float64}         # Buffer for the high-order candidate solution
+    rhoPredict_interface::Vector{Float64} # Buffer for U_{i+1/2}^{n+1/2}
+
+    function ClassicalRichtmyerLWMOOD(Nx_total::Integer; mood::M = NoMOOD()) where {M <: MOODCriterion}
+        # Buffers need to be sized for the total grid size, including ghosts
+        new{M}(mood, Vector{Float64}(undef, Nx_total), Vector{Float64}(undef, Nx_total), Vector{Float64}(undef, Nx_total))
+    end
+end
+
+function initTimeStepper(cts_mood::ClassicalRichtmyerLWMOOD, particleGrid::ParticleGrid, settings::SimSetting)
+    # Resize buffers if grid size changes between runs
+    N_total = length(particleGrid.grid)
+    if length(cts_mood.rhoOld) != N_total
+        resize!(cts_mood.rhoOld, N_total)
+        resize!(cts_mood.rhoCandidate, N_total)
+        resize!(cts_mood.rhoPredict_interface, N_total)
+    end
+    return
+end
+
+function (cts_mood::ClassicalRichtmyerLWMOOD)(
+    eq::ScalarHyperbolicEquation, 
+    particleGrid::ParticleGrid1D, 
+    settings::SimSetting, 
+    time::Real, 
+    dt::Real
+)
+    if !particleGrid.regular
+        @warn "Classical timesteppers are designed for regular grids. Results may be inaccurate."
+    end
+
+    # Copy the initial state for all particles (including ghosts) into the buffer
+    map!(particle -> particle.rho, cts_mood.rhoOld, particleGrid.grid)
+    
+    dx = particleGrid.dx
+    dtdx = dt / dx
+    
+    interior_indices = particleGrid.interior_indices
+    N_total = length(particleGrid.grid)
+
+    # --- 1. Predictor Step (Lax-Wendroff): Calculate U_{i+1/2}^{n+1/2} ---
+    # This is done for all interfaces, including those involving ghost cells.
+    if particleGrid.bc == :periodic
+        for i in 1:N_total
+            idx_plus_1 = mod1(i + 1, N_total)
+            Ui_n = cts_mood.rhoOld[i]; Uip1_n = cts_mood.rhoOld[idx_plus_1]
+            F_Ui_n = flux(eq, Ui_n); F_Uip1_n = flux(eq, Uip1_n)
+            cts_mood.rhoPredict_interface[i] = 0.5 * (Ui_n + Uip1_n) - (dt / (2.0 * dx)) * (F_Uip1_n - F_Ui_n)
+        end
+    else # Fixed BC
+        for i in 1:(N_total - 1)
+            Ui_n = cts_mood.rhoOld[i]; Uip1_n = cts_mood.rhoOld[i+1]
+            F_Ui_n = flux(eq, Ui_n); F_Uip1_n = flux(eq, Uip1_n)
+            cts_mood.rhoPredict_interface[i] = 0.5 * (Ui_n + Uip1_n) - (dt / (2.0 * dx)) * (F_Uip1_n - F_Ui_n)
+        end
+    end
+
+    # --- 2. Corrector Step (Candidate Solution) ---
+    # Calculate a high-order candidate solution for all INTERIOR cells.
+    flux_of_predicted_states = [flux(eq, val) for val in cts_mood.rhoPredict_interface]
+
+    for i in interior_indices
+        F_star_ip_half = particleGrid.bc == :periodic ? flux_of_predicted_states[i] : flux_of_predicted_states[i]
+        F_star_im_half = particleGrid.bc == :periodic ? flux_of_predicted_states[mod1(i - 1, N_total)] : flux_of_predicted_states[i - 1]
+        
+        cts_mood.rhoCandidate[i] = cts_mood.rhoOld[i] - dtdx * (F_star_ip_half - F_star_im_half)
+    end
+
+    # --- 3. MOOD Detection and Final Update ---
+    # Loop through interior cells, check the candidate, and apply final update.
+    for i in interior_indices
+        # The mood function needs the full old state vector to find local extrema.
+        if cts_mood.mood(particleGrid, i, cts_mood.rhoOld, cts_mood.rhoCandidate[i])
+            # MOOD triggered! Recalculate update for this cell using Lax-Friedrichs fallback.
+            
+            # Get states for left and right interfaces of cell i
+            u_L_left_interface = cts_mood.rhoOld[particleGrid.bc == :periodic ? mod1(i-1, N_total) : i-1]
+            u_R_left_interface = cts_mood.rhoOld[i]
+            
+            u_L_right_interface = cts_mood.rhoOld[i]
+            u_R_right_interface = cts_mood.rhoOld[particleGrid.bc == :periodic ? mod1(i+1, N_total) : i+1]
+            
+            # Lax-Friedrichs flux at i-1/2
+            alpha_minus = _max_abs_speed_classical(eq, u_L_left_interface, u_R_left_interface)
+            F_star_im_half_LF = 0.5 * (flux(eq, u_L_left_interface) + flux(eq, u_R_left_interface)) - 0.5 * alpha_minus * (u_R_left_interface - u_L_left_interface)
+
+            # Lax-Friedrichs flux at i+1/2
+            alpha_plus = _max_abs_speed_classical(eq, u_L_right_interface, u_R_right_interface)
+            F_star_ip_half_LF = 0.5 * (flux(eq, u_L_right_interface) + flux(eq, u_R_right_interface)) - 0.5 * alpha_plus * (u_R_right_interface - u_L_right_interface)
+            
+            # Apply the low-order, stable update
+            particleGrid.grid[i].rho = cts_mood.rhoOld[i] - dtdx * (F_star_ip_half_LF - F_star_im_half_LF)
+        else
+            # Candidate is good, accept it.
+            particleGrid.grid[i].rho = cts_mood.rhoCandidate[i]
+        end
     end
 end

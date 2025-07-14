@@ -382,11 +382,11 @@ struct RK4{G1 <: GradientInterpolator, G2 <: Union{GradientInterpolator,Nothing}
     div2::Vector{Float64}
     div3::Vector{Float64}
     function RK4(gradientInterpolator::GradientInterpolator, Nx::Integer; fallbackInterpolator::Union{GradientInterpolator,Nothing} = nothing, mood::MOODCriterion = NoMOOD())
-        @assert mood isa NoMOOD "No fallback interpolator can only be combined with no MOOD!"
+        if isnothing(fallbackInterpolator) @assert mood isa NoMOOD "No fallback interpolator can only be combined with no MOOD!" end
         new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx), Vector{Float64}(undef, Nx))
     end
     function RK4(gradientInterpolator::GradientInterpolator, Nx::Integer, Ny::Integer; fallbackInterpolator::Union{GradientInterpolator,Nothing} = nothing, mood::MOODCriterion = NoMOOD())
-        @assert mood isa NoMOOD "No fallback interpolator can only be combined with no MOOD!"
+        if isnothing(fallbackInterpolator) @assert mood isa NoMOOD "No fallback interpolator can only be combined with no MOOD!" end
         new{typeof(gradientInterpolator), typeof(fallbackInterpolator), typeof(mood)}(gradientInterpolator, fallbackInterpolator, mood, Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny), Vector{Float64}(undef, Nx*Ny))
     end
 end

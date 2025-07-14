@@ -47,8 +47,8 @@ function initTimeStepper(method::MeshfreeSystemTimeStepper, particleGrids::Vecto
     @warn "Timestepper detected as a system timestepper, however, no initialization is used for this Timestepper."
 end
 
-include("FixedGridTimeSteppers.jl")
 include("MeshfreeTimeSteppers.jl")
+include("FixedGridTimeSteppers.jl")
 include("MeshfreeSystemTimeSteppers.jl")
 
 
@@ -108,6 +108,7 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
 
     # Initialize grid
     updateNeighbours!(particleGrid, settings.interpRange)
+    #println(particleGrid.grid[1].neighbourIndices, particleGrid.grid[2].neighbourIndices, particleGrid.grid[3].neighbourIndices, particleGrid.grid[end].neighbourIndices)
     xType = typeof(particleGrid.grid[1].pos)
     # Initialize vectors for simulation data
     xs = Vector{Vector{xType}}(undef, 0)

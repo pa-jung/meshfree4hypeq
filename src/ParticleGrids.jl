@@ -58,8 +58,8 @@ struct ParticleGrid1D <: ParticleGrid
         else
             if randomness >= 0.0
                 @assert randomness <= 0.5*dx "Randomness too large. Faulty grids could be generated."
-                grid[1] = Particle1D(xmin, 0.5, false)
-                for i = 2:N
+                #grid[1] = Particle1D(xmin, 0.5, false)
+                for i = 1:N
                     pos = xmin + dx*(i-0.5) + randomness*(rand(rng, Float64)*2 - 1)
                     grid[i] = Particle1D(pos, 0.5, false)
                 end
