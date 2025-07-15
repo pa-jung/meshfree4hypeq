@@ -465,7 +465,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Post-processing ---
         if !isnothing(sim_data_result)
              # Add metadata to stats dictionary
-             calculateAllStats!(sim_data_result, IC, eq, particleGrid; quad_tol = 10e-9, dierckx_k = 3)
+             calculateAllStats!(sim_data_result, IC, eq, particleGrid; quad_tol = 10e-9, dierckx_k = 4)
              if hasproperty(sim_data_result, :stats) && isa(sim_data_result.stats, Dict)
                  sim_data_result.stats["time"] = elapsed_time
                 #  sim_data_result.stats["dx_nominal"] = dx_nominal
@@ -479,11 +479,10 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
              # If mainTimeIntegrator! modified run_params_for_integrator, copy original params back
              # sim_data_result.params = params # Check if necessary based on mainTimeIntegrator! behavior
         end
-        println("Length of t",length(ts))
         return sim_data_result # Return the SimData object
 
     catch e
-        rethrow(e)
+         e
          if isa(e, KeyError); @error "Missing required parameter!" key=e.key params=params
          else; @error "Error during Burgers simulation setup or execution!" params=params exception=(e, catch_backtrace()); end
          return nothing # Return nothing on error
@@ -498,15 +497,15 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 50, "N" => 400, "xmin" => -5.0, "xmax" => 40.0,
-        "CFL" => .2, "save_frequency" => 10, "interp_alpha" => 1.0,
+        "tmax" => 10, "N" => 200, "xmin" => -5.0, "xmax" => 10.0,
+        "CFL" => .2, "save_frequency" => 100, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "riemann",
-        "init_params" => (1.,0.,-2.),#(0., 1., -3., -1.),#(0., 1., -4., -2.), #
+        "init_params" => (1., 0., 0.),#(0., 1., -4., -2.), #
         "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => SEED_value, 
         "timestepper" => "Classic", "bc" => :outflow,
-        "order" => 1, "PDE" => "linear", "PDE_params" => (.49,)
+        "order" => 1, "PDE" => "linear", "PDE_params" => (.5,)
     ),
 
     MethodDict(
@@ -638,8 +637,8 @@ sim_config_burgers = SimulationConfig(
         "Analytic Solution" => ParamDict(
             "timestepper" => "Analytic",
             "randomness_factor" => (:const,0.),
-            "N" => (:const, 10000), 
-            "save_frequency" => 500
+            "N" => (:const, 1000), 
+            "save_frequency" => 50
              # No randomness_factor needed when regular=true
         ),
         "LLF(uniform grid)" => ParamDict(
@@ -690,7 +689,7 @@ sim_config_burgers = SimulationConfig(
         "LWMOOD" => ParamDict(
             "timestepper" => "LW",
             "order" => 2,
-            "MOOD" => "U2", "delta_relax" => 0.,
+            "MOOD" => "U1", "delta_relax" => 0.,
             "randomness_factor" => (:const, 0.)
         ),
         "LW" => ParamDict(
@@ -722,13 +721,16 @@ sim_config_burgers = SimulationConfig(
         # )
 
     ),
-    ["LWMOOD", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
+    "all"
+    #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
+    #["RK2MUSCL2Smooth", "Analytic Solution"]
+    #["RK2MUSCL2MOOD(U1)", "Analytic Solution"]
 );
 
 # Pass this config to your IPlotPDESols functions
-#show1DSolutionFig(sim_config_burgers; ui_options = :default);
-showDynamicDependence(sim_config_burgers; ui_options = :publication)
+#show1DSolutionFig(sim_config_burgers; ui_options = :publication);
+#showDynamicDependence(sim_config_burgers; ui_options = :publication)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
-#showConvergencePlot(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true, initial_calc = true)
-#showConvergencePlot(sim_config_burgers, "delta_relax", 0:10^-101:10^-100; force_int_param = false, initial_calc = false)
-#showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false)
+showConvergencePlot(sim_config_burgers, "N", 10. .^(1.6:.2:3); force_int_param = true, initial_calc = true, ui_options = :default)
+#showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
+#showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)

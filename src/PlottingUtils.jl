@@ -122,7 +122,7 @@ function _create_piecewise_spline_function(
 
         try
             # Create a spline for this smooth piece of the domain
-            spl = Dierckx.Spline1D(x_piece, y_piece; k=current_k, s=0.0, bc="extrapolate")
+            spl = Dierckx.Spline1D(x_piece, y_piece; k=current_k, s=0., bc="nearest")
             push!(splines, spl)
         catch e
             @warn "Dierckx spline creation failed for sub-interval [$xa, $xb]: $e. Adding a zero-spline."
@@ -180,8 +180,8 @@ function _calculate_stats_at_timestep(
     breakpoints = unique([xmin; discontinuity_points; xmax])
 
     # Insert discontinuity points
-    # x_coords_aug, u_aug_num = _augment_data_for_spline(x_coords, u_numerical, discontinuity_points)
-    # _, err_aug = _augment_data_for_spline(x_coords, errors_at_particles, discontinuity_points)
+    x_coords_aug, u_aug_num = _augment_data_for_spline(x_coords, u_numerical, discontinuity_points)
+    _, err_aug = _augment_data_for_spline(x_coords, errors_at_particles, discontinuity_points)
     # --- 2. Calculate High-Accuracy Analytical Norms/Mass via QuadGK ---
     ana_l1_norm, _ = QuadGK.quadgk(x -> abs(analytical_func_at_t(x)), breakpoints...; rtol=quad_tol)
     ana_l2_sq_norm, _ = QuadGK.quadgk(x -> analytical_func_at_t(x)^2, breakpoints...; rtol=quad_tol)
@@ -191,8 +191,10 @@ function _calculate_stats_at_timestep(
     # --- 3. Create Splines from Discrete Data ---
     perm = sortperm(x_coords)
     x_sorted = x_coords[perm]
-    spl_error = _create_piecewise_spline_function(x_sorted, errors_at_particles[perm], breakpoints, dierckx_k)#Dierckx.Spline1D(x_sorted, err_aug[perm]; k=dierckx_k, s=0.0, bc="nearest")
-    spl_u_num = _create_piecewise_spline_function(x_sorted, u_numerical[perm], breakpoints, dierckx_k)#Dierckx.Spline1D(x_sorted, u_aug_num[perm]; k=dierckx_k, s=0.0, bc="nearest")
+    spl_error = _create_piecewise_spline_function(x_sorted, errors_at_particles[perm], breakpoints, dierckx_k)#
+    #spl_error = Dierckx.Spline1D(x_coords_aug, err_aug; k=dierckx_k, s=0.0, bc="nearest")
+    spl_u_num = _create_piecewise_spline_function(x_sorted, u_numerical[perm], breakpoints, dierckx_k)#
+    #spl_u_num = Dierckx.Spline1D(x_coords_aug, u_aug_num; k=dierckx_k, s=0.0, bc="nearest")
 
     # --- 4. Calculate All Requested Statistics using Splines and Analytical Norms ---
     
