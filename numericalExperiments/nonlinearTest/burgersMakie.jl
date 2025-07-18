@@ -14,192 +14,6 @@ using Meshfree4ScalarEq.InitialConditions
 using Random                    # For RNG state copy
 using IPlotPDESols
 using Meshfree4ScalarEq
-# # --- Keep initial condition function definitions ---
-# function sineInit(x::Real, a::Real, b::Real, c::Real) return a*sin(2*pi*x/b) + c end # Adjusted from burgers.txt
-# function gaussInit(x::Real, a::Real, b::Real, width::Real) return a*exp(-((x-b)/width)^2) end
-# function riemannInit(x::Real, uL::Real, uR::Real, x0::Real)::Float64
-#     return x < x0 ? uL : uR
-# end
-
-# """
-#     boxInit(x::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
-
-# Generates a box-like initial condition.
-# Returns `u_box` if `x_box_start <= x <= x_box_end`, and `u_background` otherwise.
-# """
-# function boxInit(x::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
-#     if x_box_start <= x <= x_box_end
-#         return u_box
-#     else
-#         return u_background
-#     end
-# end
-
-# # For Linear Advection (handles both periodic and fixed/outflow BCs)
-# function linearSolution(x::Real, t::Real, eq::LinearAdvection, initFunc::Function, init_params::Tuple, xmin::Real, xmax::Real; bc::Symbol = :periodic)
-#     # Find the characteristic foot x0 = x - a*t
-#     x0 = x - eq.vel * t
-    
-#     if bc == :periodic
-#         # Map the characteristic foot back into the periodic domain
-#         domain_length = xmax - xmin
-#         x0_mapped = xmin + mod(x0 - xmin, domain_length)
-#         return initFunc(x0_mapped, init_params...)
-#     else # :fixed or :outflow
-#         # For an infinite domain assumption, just evaluate at the shifted position
-#         return initFunc(x0, init_params...)
-#     end
-# end
-
-
-
-# """
-#     riemannInitAna(x::Real, t::Real, uL::Real, uR::Real, x0::Real, eq::BurgersEquation)
-
-# Provides the exact solution to the 1D Burger's Riemann problem.
-# It automatically handles both shock (uL > uR) and rarefaction (uL < uR) cases.
-# """
-# function riemannInitAna(eq::BurgersEquation, x::Real, t::Real, uL::Real, uR::Real, x0::Real)::Float64
-#     if t <= 1e-12 # Return initial condition for t=0
-#         return riemannInit(x, uL, uR, x0)
-#     end
-
-#     if uL > uR
-#         # --- Shock Wave Case ---
-#         # Shock speed 's' from Rankine-Hugoniot condition for F(u) = u^2/2
-#         s = (uL + uR) / 2.0
-#         shock_position = x0 + s * t
-        
-#         return x < shock_position ? uL : uR
-
-#     elseif uL < uR
-#         # --- Rarefaction Wave Case ---
-#         # Fan is bounded by characteristics starting from x0 with speeds uL and uR
-#         x_fan_tail = x0 + uL * t
-#         x_fan_head = x0 + uR * t
-
-#         if x < x_fan_tail
-#             return uL
-#         elseif x > x_fan_head
-#             return uR
-#         else # Inside the rarefaction fan
-#             return (x - x0) / t
-#         end
-#     else # uL == uR
-#         # --- Constant State Case ---
-#         return uL
-#     end
-# end
-
-
-# """
-#     boxInitAna(x, t, u_background, u_box, x_start, x_end, eq::BurgersEquation)
-
-# Provides the analytical solution for Burger's equation for a box-like initial condition.
-# Handles both the "top-hat" (u_box > u_background) and "well" (u_box < u_background) cases
-# before the waves interact.
-# """
-# function boxInitAna(eq::BurgersEquation, x::Real, t::Real, u_background::Real, u_box::Real, x_box_start::Real, x_box_end::Real)::Float64
-#     if t <= 1e-12; return boxInit(x, u_background, u_box, x_box_start, x_box_end); end
-
-#     if u_box > u_background # Top-hat case: Rarefaction at left, Shock at right
-#         s_shock = (u_box + u_background) / 2.0
-#         x_shock_front = x_box_end + s_shock * t
-#         x_fan_head = x_box_start + u_box * t
-        
-#         # Check for wave interaction
-#         if x_fan_head >= x_shock_front
-#              # Post-interaction solution is more complex. Return NaN as a signal.
-#              return NaN
-#         end
-
-#         if x < x_box_start + u_background * t
-#             return u_background
-#         elseif x < x_fan_head
-#             return (x - x_box_start) / t
-#         elseif x < x_shock_front
-#             return u_box
-#         else
-#             return u_background
-#         end
-
-#     elseif u_box < u_background # Well case: Shock at left, Rarefaction at right
-#         s_shock = (u_background + u_box) / 2.0
-#         x_shock_front = x_box_start + s_shock * t
-#         x_fan_tail = x_box_end + u_box * t
-
-#         # Check for wave interaction (shock hits rarefaction tail)
-#         if x_shock_front >= x_fan_tail
-#             return NaN # Post-interaction solution is more complex.
-#         end
-
-#         if x < x_shock_front
-#             return u_background
-#         elseif x < x_fan_tail
-#             return u_box
-#         elseif x < x_box_end + u_background * t
-#             return (x - x_box_end) / t
-#         else
-#             return u_background
-#         end
-#     else # u_box == u_background
-#         return u_background
-#     end
-# end
-# # For Burger's Equation
-# function sineInitAna(eq::BurgersEquation, x::Real, t::Real, a::Real, b_period::Real, c_offset::Real; tol::Real = 1e-10, max_iter::Int = 100)::Float64
-#     if t <= 1e-12; return sineInit(x, a, b_period, c_offset); end
-#     u_current::Float64 = sineInit(x, a, b_period, c_offset)
-#     for _ in 1:max_iter
-#         u_next = a * sin(2.0 * pi * (x - u_current * t) / b_period) + c_offset
-#         if abs(u_next - u_current) < tol; return u_next; end
-#         u_current = u_next
-#     end
-#     @warn "sineInitAna: Fixed-point iteration did not converge at x=$x, t=$t."
-#     return u_current
-# end
-# """
-#     getInitFunc(eq, name, params, domain_params; bc=:periodic)
-
-# Returns a pair of functions: `(init_func_handle, analytic_func_handle)`
-# based on the equation type and initial condition name.
-# """
-# function getInitFunc(
-#     eq::ScalarHyperbolicEquation, 
-#     name::String, 
-#     params::Tuple, 
-#     domain_params::NamedTuple; 
-#     bc::Symbol = :periodic
-# )
-#     # --- Select the base initial condition function ---
-#     base_init_func = if name == "gauss"; gaussInit
-#                      elseif name == "box"; boxInit
-#                      elseif name == "sine"; sineInit
-#                      elseif name == "riemann"; riemannInit
-#                      else error("Unknown initFunc name: $name"); end
-    
-#     init_func_handle = x -> base_init_func(x, params...)
-
-#     # --- Select the analytical solution function ---
-#     local analytic_func_handle::Function
-#     if eq isa LinearAdvection
-#         analytic_func_handle = (x, t) -> linearSolution(x, t, eq, base_init_func, params, domain_params.xmin, domain_params.xmax; bc=bc)
-#     else
-#         # For non-linear equations, select the specific analytical solver by name.
-#         # Julia's multiple dispatch will call the correct version based on the `eq` type.
-#         ana_solver_func = if name == "sine"; sineInitAna
-#                           elseif name == "box"; boxInitAna
-#                           elseif name == "riemann"; riemannInitAna
-#                           else (eq, x, t, p...) -> NaN; end # Fallback returns NaN
-        
-#         analytic_func_handle = (x, t) -> ana_solver_func(eq, x, t, params...)
-#     end
-
-#     return init_func_handle, analytic_func_handle
-# end
-
-# -------------------------------------------------
-
 
 """
     runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)
@@ -223,10 +37,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
     println("\n--- Running Burgers Simulation via IPlotPDESols Interface ---")
     run_params = copy(params) # Work on a copy to store derived values
 
-    # --- Manage RNG State for Reproducibility ---
-    local rng_state_backup
-    #rng_defined = @isdefined(Meshfree4ScalarEq.rng, :rng) && isa(Meshfree4ScalarEq.rng, Random.AbstractRNG)
-    rng_state_backup = copy(Meshfree4ScalarEq.rng);
     # -----------------------------------------
 
     local sim_data_result = nothing # Ensure defined outside try
@@ -242,15 +52,16 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         initFunc_name::String = run_params["init_func"]
         cfl = get(run_params, "CFL", nothing)
         dt = get(run_params, "dt", nothing)
-        save_freq::Int = run_params["save_frequency"]
-        interp_alpha::Float64 = run_params["interp_alpha"]
-        interp_range_factor::Float64 = run_params["interp_range"]
-        randomness_factor::Float64 = run_params["randomness_factor"] # Required
-        order::Int = run_params["order"] # <<< Treat order as required
-        timestepper_name = run_params["timestepper"] # Timestepper needed
+        snapshots::Int = run_params["snapshots"]
+
         eq_name = run_params["PDE"]
 
-        # --- Extract METHOD Parameters (Use `get` with sensible defaults) ---
+        # --- Extract METHOD Parameters (Use `get` with nothing defaults) ---
+        order = get(run_params,"order",nothing)
+        timestepper_name = get(run_params,"timestepper",nothing)
+        interp_alpha = get(run_params,"interp_alpha",1.)
+        interp_range_factor = get(run_params,"interp_range",1.)
+        randomness_factor = get(run_params,"randomness_factor",0.)
         mood_name = get(run_params, "MOOD", nothing)
         delta_relax = get(run_params, "delta_relax", nothing)
         main_grad_name = get(run_params, "main_gradient", nothing)
@@ -258,18 +69,21 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         main_flux_name = get(run_params, "main_flux", nothing)
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
         switch_tol = get(run_params, "switch_tol", nothing)
-        init_params = (get(run_params, "init_params", nothing))
+        init_params = get(run_params, "init_params", nothing)
         relax_vel = get(run_params, "relax_velocities", nothing)
         relax_method = get(run_params, "relax_method", false)
         relax_eps = get(run_params, "relax_epsilon", nothing)
         eq_params = get(run_params, "PDE_params", nothing)
         lim = get(run_params, "limiter", nothing)
+        seed_val = get(run_params, "SEED_value", nothing)
 
+        if isnothing(order) || isnothing(timestepper_name); @info "Analytic solution detected!" end
         # --- Derive regularity ---
         regular::Bool = (randomness_factor == 0.0)
         N_ghost::Int64 = bc == :periodic ? 0 : convert(Int64, ceil(interp_range_factor))
 
         N = N_particles + 2*N_ghost
+        rng = MersenneTwister(seed_val)
 
     
         println("  TimeStepper = $timestepper_name, Main Gradient = $main_grad_name ($order), Main Flux = $main_flux_name")
@@ -283,7 +97,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         local particleGrid
 
         randomness = randomness_factor * dx_nominal
-        particleGrid = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc; randomness = randomness)
+        particleGrid = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc;rng = rng, randomness = randomness)
         determineVolumes!(particleGrid)
         # --- Calculate Dependent Parameters ---
         interp_range = interp_range_factor * particleGrid.dx
@@ -303,6 +117,19 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             dt = cfl * getTimeStep(particleGrid, eqLin, interp_alpha, interp_range)
         elseif isnothing(dt)
             error("The time step has to be given directly via the dt-key or via the CFL fraction using the CFL-key!")
+        end
+
+        # --- NEW: Calculate save_frequency in steps ---
+        if tmax <= 0 || dt <= 0
+            # Handle edge case to avoid division by zero
+            save_freq = 1 
+        else
+            # Calculate the desired time interval between saves
+            save_time_interval = tmax / snapshots
+            # Convert the time interval to an integer number of steps
+            save_frequency_steps = round(Int, save_time_interval / dt)
+            # Ensure we always take at least one step before saving
+            save_freq = max(1, save_frequency_steps)
         end
 
         # --- Build Method Components (Ensure types/constructors are accessible) ---
@@ -365,9 +192,9 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(N; mood = mood_fun)
         elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(N, MainFlux)
         elseif timestepper_name == "Upwind"; method = Upwind(N)
-        elseif timestepper_name == "Analytic"; method = nothing 
         elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = switch_tol)
         elseif relax_method @info "Relaxation Method Detected!"
+        elseif isnothing(timestepper_name); method = nothing 
         else; error("Unknown TimeStepper name: '$timestepper_name'"); end
 
 
@@ -376,29 +203,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         local IC::InitialCondition
         IC = getInitialCondition(initFunc_name, init_params)
         analytic_func = (x,t) -> IC(x,t,eq, particleGrid)
-        # if initFunc_name == "sine"; init_func_handle(x) = sineInit(x, init_params...); analytic_func(x,t) = sineInitAna(eq, x, t, init_params...)
-        # elseif initFunc_name == "gauss"
-        #     init_func_handle = x -> gaussInit(x, init_params...)
-        #     if eq_name == "linear" 
-        #         analytic_func = (x,t) -> linearSolution(x, t, eq, gaussInit, init_params, xmin, xmax)
-        #     else 
-        #         error("Non-linear analytic function not implemented yet!")
-        #     end
-        # # elseif initFunc_name == "smoothInit2"; init_func_handle = smoothInit2
-        # # elseif initFunc_name == "shockInit1"; init_func_handle = shockInit1
-        # # elseif initFunc_name == "shockInit2"; init_func_handle = shockInit2; analytic_func = (x,t) -> shockInit2Ana(x,t,xmin,xmax)
-        # # elseif initFunc_name == "shockInit3"; init_func_handle = shockInit3; analytic_func = shockInit3Ana
-        # elseif initFunc_name == "box"
-        #     @assert typeof(init_params) <: Tuple{Real,Real,Real,Real} "Box Init needs a tuple of 4 real numbers as parameters!"
-        #     u_background, u_box, box_start, box_end = init_params 
-        #     @assert u_box >= u_background "Only top hat supported atm!"
-        #     @assert box_end > box_start "The end of the box has to be larger than the start!"
-        #     init_func_handle = x -> boxInit(x, init_params...)
-        #     analytic_func = (x,t) -> boxInitAna(x,t,u_background,u_box,box_start,box_end,eq)
-        # else; error("Unknown initFunc name: $initFunc_name"); end
-        # if eq_name == "linear" 
-        #         analytic_func = (x,t) -> linearSolution(x, t, eq, init_func_handle, init_params, xmin, xmax)
-        # end
         setInitialConditions!(particleGrid, x -> IC(x))
             # Create SimSettings object
         settings = SimSetting(  tmax=tmax,
@@ -482,29 +286,24 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         return sim_data_result # Return the SimData object
 
     catch e
-         e
          if isa(e, KeyError); @error "Missing required parameter!" key=e.key params=params
          else; @error "Error during Burgers simulation setup or execution!" params=params exception=(e, catch_backtrace()); end
          return nothing # Return nothing on error
-    finally
-        # Restore RNG state regardless of success/failure
-        copy!(Meshfree4ScalarEq.rng, rng_state_backup)
     end
 end
-SEED_value = (:const, Meshfree4ScalarEq.SEED)
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
         "tmax" => 10, "N" => 200, "xmin" => -5.0, "xmax" => 10.0,
-        "CFL" => .2, "save_frequency" => 100, "interp_alpha" => 1.0,
+        "CFL" => .2, "snapshots" => 50, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "riemann",
         "init_params" => (1., 0., 0.),#(0., 1., -4., -2.), #
         "randomness_factor" => 0., # Provide default needed when regular=false
-        "SEED" => SEED_value, 
-        "timestepper" => "Classic", "bc" => :outflow,
+        "SEED" => 10, 
+        "bc" => :outflow,
         "order" => 1, "PDE" => "linear", "PDE_params" => (.5,)
     ),
 
@@ -635,15 +434,16 @@ sim_config_burgers = SimulationConfig(
             "order" => 1
         ),
         "Analytic Solution" => ParamDict(
-            "timestepper" => "Analytic",
-            "randomness_factor" => (:const,0.),
             "N" => (:const, 1000), 
-            "save_frequency" => 50
+            "ignore" => ["interp_alpha", "randomness_factor", "SEED", "order"]
              # No randomness_factor needed when regular=true
         ),
         "LLF(uniform grid)" => ParamDict(
             "randomness_factor" => (:const,0.),
-            "main_flux" => "Rusanov"
+            "main_flux" => "Rusanov",
+            "order" => 1,
+            "timestepper" => "Classic",
+            "ignore" => ["interp_alpha", "randomness_factor", "SEED"]
         ),
                 "ARS233MUSCL5" => ParamDict(
             "timestepper" => "ARS233",
@@ -690,13 +490,13 @@ sim_config_burgers = SimulationConfig(
             "timestepper" => "LW",
             "order" => 2,
             "MOOD" => "U1", "delta_relax" => 0.,
-            "randomness_factor" => (:const, 0.)
+            "ignore" => ["interp_alpha", "randomness_factor", "SEED"]
         ),
         "LW" => ParamDict(
             "timestepper" => "LW",
             "order" => 2,
             "MOOD" => "none",
-            "randomness_factor" => (:const, 0.)
+            "ignore" => ["interp_alpha", "randomness_factor", "SEED"]
         ),
         "ARS233MUSCL2MOOD" => ParamDict(
             "timestepper" => "ARS233",
@@ -728,9 +528,9 @@ sim_config_burgers = SimulationConfig(
 );
 
 # Pass this config to your IPlotPDESols functions
-#show1DSolutionFig(sim_config_burgers; ui_options = :publication);
+show1DSolutionFig(sim_config_burgers; ui_options = :publication);
 #showDynamicDependence(sim_config_burgers; ui_options = :publication)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
-showConvergencePlot(sim_config_burgers, "N", 10. .^(1.6:.2:3); force_int_param = true, initial_calc = true, ui_options = :default)
+#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.6:.2:3); force_int_param = true, initial_calc = true, ui_options = :default)
 #showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
