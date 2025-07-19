@@ -34,7 +34,6 @@ Calculates `dt` based on `CFL` and the Burgers equation properties.
 - `AbstractSimData`: The simulation result object (e.g., SimData1D), or `nothing` on error.
 """
 function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
-    println("\n--- Running Burgers Simulation via IPlotPDESols Interface ---")
     run_params = copy(params) # Work on a copy to store derived values
 
     # -----------------------------------------
@@ -86,11 +85,9 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         rng = MersenneTwister(seed_val)
 
     
-        println("  TimeStepper = $timestepper_name, Main Gradient = $main_grad_name ($order), Main Flux = $main_flux_name")
-        println("  Fallback = $fallback_grad_name / $fallback_flux_name, MOOD = $mood_name (deltaRelax=$delta_relax)")
-        println("  IC = $initFunc_name, N = $N_particles, Regular = $regular (randFactor=$randomness_factor), Order = $order")
-        println("  tmax = $tmax, CFL = $cfl")
-        println("----------------------------------------")
+        @info "TimeStepper = $timestepper_name, Main Gradient = $main_grad_name ($order), Main Flux = $main_flux_name, 
+                Fallback = $fallback_grad_name / $fallback_flux_name, MOOD = $mood_name (deltaRelax=$delta_relax), 
+                IC = $initFunc_name, N = $N_particles, Regular = $regular (randFactor=$randomness_factor), Order = $order"
 
         # --- Grid Creation ---
         dx_nominal = (xmax - xmin) / N_particles
@@ -214,7 +211,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                                 organiseFiles = false)
 
         # --- Call the NEW Time Integrator ---
-        println("Starting time integration (Burgers)...")
         if relax_method
             @assert !isnothing(relax_vel) "The relaxation method needs velocities to create the linear system!"
             eqs = [LinearAdvection(a) for a = relax_vel]
@@ -250,11 +246,9 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             elapsed_time = 0.
             
             ts = collect(0:dt*save_freq:tmax)
-            println(ts[end])
             if ts[end] != tmax
                 push!(ts, tmax)
             end
-            println(ts[end])
             xs = [collect(range(xmin, xmax, N_particles)) for _ = ts]
             us =  Vector{Vector{Float64}}(undef, 0)
             for (i,t) in enumerate(ts)
@@ -263,7 +257,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             end
         end
         #println(typeof(xs), typeof(us), typeof(ts))
-        println("Time integration finished in $(round(elapsed_time, digits=2)) seconds.")
+        @info "Time integration finished in $(round(elapsed_time, digits=2)) seconds."
 
         sim_data_result = createSimData(xs, us, ts, run_params)
         # --- Post-processing ---
@@ -296,15 +290,15 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 10, "N" => 200, "xmin" => -5.0, "xmax" => 10.0,
-        "CFL" => .2, "snapshots" => 50, "interp_alpha" => 1.0,
+        "tmax" => 10, "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "riemann",
-        "init_params" => (1., 0., 0.),#(0., 1., -4., -2.), #
-        "randomness_factor" => 0., # Provide default needed when regular=false
+        "init_func" => "gauss",
+        "init_params" => (1., 0., 1.),#(0., 1., -4., -2.), #
+        "randomness_factor" => 0.2, # Provide default needed when regular=false
         "SEED" => 10, 
-        "bc" => :outflow,
-        "order" => 1, "PDE" => "linear", "PDE_params" => (.5,)
+        "bc" => :periodic,
+        "order" => 1, "PDE" => "linear", "PDE_params" => (1,)
     ),
 
     MethodDict(
@@ -521,16 +515,18 @@ sim_config_burgers = SimulationConfig(
         # )
 
     ),
-    "all"
+    ["RK2MUSCL2","ARS233MUSCL2","LW"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
     #["RK2MUSCL2Smooth", "Analytic Solution"]
     #["RK2MUSCL2MOOD(U1)", "Analytic Solution"]
 );
 
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers; ui_options = :publication);
+#show1DSolutionFig(sim_config_burgers; ui_options = :publication);
 #showDynamicDependence(sim_config_burgers; ui_options = :publication)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
 #showConvergencePlot(sim_config_burgers, "N", 10. .^(1.6:.2:3); force_int_param = true, initial_calc = true, ui_options = :default)
 #showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
+showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);
+

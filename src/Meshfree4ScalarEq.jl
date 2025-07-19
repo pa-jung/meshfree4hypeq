@@ -2,6 +2,17 @@ module Meshfree4ScalarEq
 
 # Imports
 using Random
+using Logging
+
+# --- NEW: Add this function at the end of your module ---
+function __init__()
+    # This code will run once when the module is loaded.
+    # It sets the logger for the entire application.
+    min_level_to_show = Logging.Warn
+    global_logger(ConsoleLogger(stderr, min_level_to_show))
+    println("IPlotPDESols logger initialized to show warnings and errors only.")
+end
+# ---------------------------------------------------------
 
 # Project wide random generator object
 global const SEED = 10

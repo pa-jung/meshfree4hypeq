@@ -108,7 +108,6 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
 
     # Initialize grid
     updateNeighbours!(particleGrid, settings.interpRange)
-    #println(particleGrid.grid[1].neighbourIndices, particleGrid.grid[2].neighbourIndices, particleGrid.grid[3].neighbourIndices, particleGrid.grid[end].neighbourIndices)
     xType = typeof(particleGrid.grid[1].pos)
     # Initialize vectors for simulation data
     xs = Vector{Vector{xType}}(undef, 0)
