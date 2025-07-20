@@ -16,7 +16,7 @@ The purpose of this study is to confirm that the implemented spatial discretizat
 3.  **High-Order Schemes:** Combinations of high-order timesteppers (`RK4`, `ARS233`) and high-order MUSCL reconstructions (`MUSCL5`, which corresponds to a 4th-order reconstruction) are tested to verify if they achieve the higher design accuracy.
 
 #### Observations
-![Convergence plot for smooth linear advection (NoMOOD)](./figures/LA_smooth_convergence_noMOOD.pdf)
+![Convergence plot for smooth linear advection (NoMOOD)](./figures/LA_smooth_convergence_noMOOD.svg)
 The figure presents the L2 error as a function of the number of particles `N` on a log-log scale. Dashed grey lines are included for reference, indicating slopes corresponding to first, second, third, and fourth-order convergence.
 
 * **First-Order Methods:** The `EulerUpwind` (green dash-dot) and `LLF` (orange dash-dot) methods produce lines that are parallel to the reference line with a slope of -1. This confirms their expected first-order accuracy.
@@ -51,7 +51,7 @@ This study focuses exclusively on stabilized methods to quantify the impact of d
 3.  **High-Order MOOD Baseline:** The `ARS233MUSCL5MOOD` and `RK4MUSCL5MOOD` methods are included to show the behavior of MOOD when paired with a very high-order spatial reconstruction.
 
 #### Observations
-![Convergence plot for smooth linear advection (MOOD)](./figures/LA_smooth_convergence_MOODandLimiter.pdf)
+![Convergence plot for smooth linear advection (MOOD)](./figures/LA_smooth_convergence_MOODandLimiter.svg)
 The figure presents the L2 error as a function of `N` on a log-log scale. Dashed grey lines indicate reference slopes for first, second, third, and fourth-order convergence.
 
 * **High-Order MOOD Schemes:** The `ARS233MUSCL5MOOD` (dark blue dashed line) and `RK4MUSCL5MOOD` (dotted red line) are the best-performing methods. Their convergence lines are steep, closely following the -4th order reference line or even steeper (as expected for a 5th order spatial method). This demonstrates that the MOOD framework is not interfering with the high-order accuracy for this smooth problem.
