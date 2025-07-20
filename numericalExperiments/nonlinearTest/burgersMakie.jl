@@ -290,14 +290,14 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 10, "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "tmax" => 10, "N" => 300, "xmin" => -5.0, "xmax" => 10.0,
         "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "gauss",
-        "init_params" => (1., 0., 1.),#(0., 1., -4., -2.), #
+        "init_func" => "riemann",
+        "init_params" => (1., 0., -2.),#(0., 1., -4., -2.), #
         "randomness_factor" => 0.2, # Provide default needed when regular=false
         "SEED" => 10, 
-        "bc" => :periodic,
+        "bc" => :outflow,
         "order" => 1, "PDE" => "linear", "PDE_params" => (1,)
     ),
 
@@ -515,7 +515,7 @@ sim_config_burgers = SimulationConfig(
         # )
 
     ),
-    ["RK2MUSCL2","ARS233MUSCL2","LW"]
+    ["RK2MUSCL2","ARS233MUSCL2","LW", "EulerUpwind"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
     #["RK2MUSCL2Smooth", "Analytic Solution"]
     #["RK2MUSCL2MOOD(U1)", "Analytic Solution"]
@@ -525,7 +525,7 @@ sim_config_burgers = SimulationConfig(
 #show1DSolutionFig(sim_config_burgers; ui_options = :publication);
 #showDynamicDependence(sim_config_burgers; ui_options = :publication)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
-#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.6:.2:3); force_int_param = true, initial_calc = true, ui_options = :default)
+#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.15:3); force_int_param = true, initial_calc = true, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
 showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);
