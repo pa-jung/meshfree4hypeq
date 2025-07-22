@@ -91,27 +91,91 @@ function (ic::Sine)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D; t
 end
 
 function (ic::Box)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D)
+    # --- Pre-computation and edge cases ---
     if t <= 1e-12; return ic(x); end
     if abs(ic.u_box - ic.u_background) < 1e-12; return ic.u_background; end
 
-    if ic.u_box > ic.u_background # Top-hat case
-        s_shock = (ic.u_box + ic.u_background) / 2.0
-        x_shock_front = ic.x_end + s_shock * t
-        x_fan_head = ic.x_start + ic.u_box * t
-        if x_fan_head >= x_shock_front; return NaN; end
-        if x < ic.x_start + ic.u_background * t; return ic.u_background;
-        elseif x < x_fan_head; return (x - ic.x_start) / t;
-        elseif x < x_shock_front; return ic.u_box;
-        else; return ic.u_background; end
-    else # Well case
-        s_shock = (ic.u_background + ic.u_box) / 2.0
-        x_shock_front = ic.x_start + s_shock * t
-        x_fan_tail = ic.x_end + ic.u_box * t
-        if x_shock_front >= x_fan_tail; return NaN; end
-        if x < x_shock_front; return ic.u_background;
-        elseif x < x_fan_tail; return ic.u_box;
-        elseif x < ic.x_end + ic.u_background * t; return (x - ic.x_end) / t;
-        else; return ic.u_background; end
+    if ic.u_box > ic.u_background
+        # --- Top-hat case: Rarefaction at left, Shock at right ---
+        
+        # Time of interaction: when the head of the rarefaction fan catches the shock
+        # This occurs when the plateau of u_box disappears.
+        delta_u = ic.u_box - ic.u_background
+        t_interaction = 2.0 * (ic.x_end - ic.x_start) / delta_u
+        
+        if t < t_interaction
+            # --- Phase 1: Waves evolve independently ---
+            s_shock = (ic.u_box + ic.u_background) / 2.0
+            x_shock_front = ic.x_end + s_shock * t
+            x_fan_head = ic.x_start + ic.u_box * t
+            
+            if x < ic.x_start + ic.u_background * t
+                return ic.u_background
+            elseif x < x_fan_head
+                # Inside rarefaction fan
+                return (x - ic.x_start) / t
+            elseif x < x_shock_front
+                # Plateau region
+                return ic.u_box
+            else 
+                # Behind shock
+                return ic.u_background
+            end
+        else
+            # --- Phase 2: Shock has merged with rarefaction fan ---
+            # The shock path is now x_s(t) = x_start + u_background*t + C*sqrt(t)
+            C = sqrt(2.0 * (ic.x_end - ic.x_start) * delta_u)
+            x_shock_interacting = ic.x_start + ic.u_background * t + C * sqrt(t)
+
+            if x < ic.x_start + ic.u_background * t
+                return ic.u_background
+            elseif x < x_shock_interacting
+                # Inside rarefaction fan, up to the interacting shock
+                return (x - ic.x_start) / t
+            else 
+                # Behind the interacting shock
+                return ic.u_background
+            end
+        end
+
+    else # u_box < u_background
+        # --- Well case: Shock at left, Rarefaction at right ---
+
+        # Time of interaction: when the shock front catches the tail of the rarefaction fan
+        delta_u = ic.u_background - ic.u_box
+        t_interaction = 2.0 * (ic.x_end - ic.x_start) / delta_u
+
+        if t < t_interaction
+            # --- Phase 1: Waves evolve independently ---
+            s_shock = (ic.u_background + ic.u_box) / 2.0
+            x_shock_front = ic.x_start + s_shock * t
+            x_fan_tail = ic.x_end + ic.u_box * t
+            
+            if x < x_shock_front
+                return ic.u_background
+            elseif x < x_fan_tail
+                return ic.u_box
+            elseif x < ic.x_end + ic.u_background * t
+                # Inside rarefaction fan
+                return (x - ic.x_end) / t
+            else
+                return ic.u_background
+            end
+        else
+            # --- Phase 2: Shock has entered the rarefaction fan ---
+            # The shock path is now x_s(t) = x_end + u_background*t - C*sqrt(t)
+            C = sqrt(2.0 * (ic.x_end - ic.x_start) * delta_u)
+            x_shock_interacting = ic.x_end + ic.u_background * t - C * sqrt(t)
+
+            if x < x_shock_interacting
+                return ic.u_background
+            elseif x < ic.x_end + ic.u_background * t
+                # Inside rarefaction fan, to the right of the interacting shock
+                return (x - ic.x_end) / t
+            else
+                return ic.u_background
+            end
+        end
     end
 end
 
@@ -189,11 +253,17 @@ end
 
 # For Box with Burger's -> track shock and rarefaction edges
 function get_discontinuity_points(ic::Box, eq::BurgersEquation, t::Real, pg::ParticleGrid1D)
+    s_shock = (ic.u_box + ic.u_background) / 2.0
     if ic.u_box > ic.u_background # Top-hat
-        s_shock = (ic.u_box + ic.u_background) / 2.0
-        return [ic.x_start + ic.u_background * t, ic.x_start + ic.u_box * t, ic.x_end + s_shock * t]
+        res = [ic.x_start + ic.u_background * t]
+        rare_pos = ic.x_start + ic.u_box * t
+        shock_pos = ic.x_end + s_shock * t
+        if rare_pos < shock_pos
+            push!(res, rare_pos)
+        end
+        push!(res, shock_pos)
+        return res
     else # Well
-        s_shock = (ic.u_background + ic.u_box) / 2.0
         return [ic.x_start + s_shock * t, ic.x_end + ic.u_box * t, ic.x_end + ic.u_background * t]
     end
 end

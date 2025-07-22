@@ -178,7 +178,6 @@ function _calculate_stats_at_timestep(
     # Get discontinuity points for QuadGK at the current time t
     discontinuity_points = get_discontinuity_points(ic, eq, t, pg)
     breakpoints = unique([xmin; discontinuity_points; xmax])
-
     # Insert discontinuity points
     x_coords_aug, u_aug_num = _augment_data_for_spline(x_coords, u_numerical, discontinuity_points)
     _, err_aug = _augment_data_for_spline(x_coords, errors_at_particles, discontinuity_points)

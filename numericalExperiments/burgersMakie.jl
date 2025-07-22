@@ -239,7 +239,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
             elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator2!(system_method, eqs, pgs, settings)
             us = [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
             xs = [sys_x[:,1] for sys_x = sys_xs]
-            #println(typeof(us), typeof(xs))
         elseif !isnothing(method)
             elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
         else
@@ -256,7 +255,6 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
                 push!(us, u_tmp)
             end
         end
-        #println(typeof(xs), typeof(us), typeof(ts))
         @info "Time integration finished in $(round(elapsed_time, digits=2)) seconds."
 
         sim_data_result = createSimData(xs, us, ts, run_params)
@@ -290,12 +288,12 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 10, "N" => 300, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => .2, "snapshots" => 50, "interp_alpha" => 1.0,
+        "tmax" => 10, "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "gauss",
-        "init_params" => (1., 0., 1.),#(0., 1., -4., -2.), #
-        "randomness_factor" => 0.2, # Provide default needed when regular=false
+        "init_func" => "box",
+        "init_params" => (0., 1., -2., 2.),#(0., 1., -4., -2.), #
+        "randomness_factor" => 0.5, # Provide default needed when regular=false
         "SEED" => 10, 
         "bc" => :periodic,
         "order" => 1, "PDE" => "linear", "PDE_params" => (1.,)
@@ -344,7 +342,6 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "U2",
             "delta_relax" => 0.,
             "order" => 2,
-            "interp_range" => 1.5
         ),
         "RK2MUSCL2MOOD(U2Relax)" => ParamDict(
             "timestepper" => "RalstonRK2",
@@ -355,7 +352,6 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "U2",
             "delta_relax" => 1.,
             "order" => 2,
-            "interp_range" => 1.5
         ),
         "RK2MUSCL2MOOD(LoubertU2)" => ParamDict(
             "timestepper" => "RalstonRK2",
@@ -366,7 +362,6 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "LoubertU2",
             "delta_relax" => 1.,
             "order" => 2,
-            "interp_range" => 1.5
         ),
         "RK2MUSCL2MOOD(U1)" => ParamDict(
             "timestepper" => "RalstonRK2",
@@ -377,7 +372,6 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "U1",
             "delta_relax" => 0.,
             "order" => 2,
-            "interp_range" => 1.5
         ),
         "RK2MUSCL2MOOD(U1Relax)" => ParamDict(
             "timestepper" => "RalstonRK2",
@@ -388,7 +382,6 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "U1",
             "delta_relax" => 5.,
             "order" => 2,
-            "interp_range" => 1.5
         ),
         "RK2MUSCL2" => ParamDict(
             "timestepper" => "RalstonRK2",
@@ -515,19 +508,19 @@ sim_config_burgers = SimulationConfig(
         # )
 
     ),
-    #["RK2MUSCL2","ARS233MUSCL2","LW", "EulerUpwind"]
-    ["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1Relax)", "RK2MUSCL2MOOD(U2Relax)", "RK4MUSCL5MOOD"]
+    ["RK2MUSCL2","RK2MUSCL2MOOD(U2)", "ARS233MUSCL2MOOD"]#,"LW", "EulerUpwind"]
+    #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK4MUSCL5MOOD"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
     #["RK2MUSCL2Smooth", "Analytic Solution"]
     #["RK2MUSCL2MOOD(U1)", "Analytic Solution"]
 );
 
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers; ui_options = :publication);
-showDynamicDependence(sim_config_burgers; ui_options = :publication)
+#show1DSolutionFig(sim_config_burgers; ui_options = :publication);
+#showDynamicDependence(sim_config_burgers; ui_options = :publication)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
 #showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.15:3); force_int_param = true, initial_calc = true, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
-#showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);
+showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);
 

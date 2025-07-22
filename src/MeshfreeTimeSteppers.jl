@@ -144,7 +144,6 @@ function (mood::MOODu2)(particleGrid::ParticleGridType, particleIndex::Integer, 
     if !mood.init
         d = maximum((particle.volume for particle in particleGrid.grid))
         mood.delta = mood.deltaRelax * d #mood.deltaRelax ? d : 0.0
-        println(mood.delta, "MOOD_delta", d, "VolumeMaximum")
         mood.init = true
     end
 
@@ -679,7 +678,6 @@ function (ralston::RalstonRK2SmoothSwitch2)(eq::ScalarHyperbolicEquation, partic
     end
     while abs(target_mass - current_mass) >= ralston.tol
         if isempty(ralston.prop_indices)
-            #println(any(map(particle -> particle.moodEvent,particleGrid.grid)))
             @warn "Total Fallback or no MOOD detected! Mass change is " * string(abs(target_mass -current_mass))
             break
         end
