@@ -3,12 +3,29 @@
 module InitialConditions
 
 # Import necessary types from your main module. Adjust the path as needed.
-using ..ScalarHyperbolicEquations 
+using ..ScalarHyperbolicEquations
+using ..HyperbolicSystems 
 using ..ParticleGrids
 
 export InitialCondition, SmoothInitialCondition, ShockInitialCondition, 
-       Gauss, Box, Sine, Riemann, 
-       getInitialCondition, get_discontinuity_points
+       Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,
+       getInitialCondition, get_discontinuity_points, euler1D_physical_fluxes
+
+# --- Helper functions for Euler Equations ---
+const GAS_GAMMA_EULER = 1.4
+
+function pressure_from_euler_conserved(rho::Real, m::Real, E::Real)::Float64
+    if rho < 1e-9; return 1e-9; end
+    pressure = (GAS_GAMMA_EULER - 1.0) * (E - 0.5 * m^2 / rho)
+    return max(pressure, 1e-9)
+end
+
+function euler1D_physical_fluxes(rho::Real, m::Real, E::Real)::NTuple{3, Float64}
+    if rho < 1e-9; return (0.0, pressure_from_euler_conserved(1e-9,0.0,0.0), 0.0); end
+    ux = m / rho
+    p = pressure_from_euler_conserved(rho, m, E)
+    return (m, m * ux + p, (E + p) * ux)
+end
 
 # --- 1. Abstract Type Hierarchy ---
 abstract type InitialCondition end
@@ -197,19 +214,224 @@ end
 # Fallback for ICs without a specific analytical solution for Burger's
 (ic::Gauss)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D) = NaN
 
+# --- EULER SYSTEM ICS ---
+struct EulerSmooth <: SmoothInitialCondition
+    rho_spec::NamedTuple
+    u_spec::NamedTuple
+    p_spec::NamedTuple
+end
+function (ic::EulerSmooth)(x::Real)
+    rho_s, u_s, p_s = ic.rho_spec, ic.u_spec, ic.p_spec
+    rho_val = rho_s.off + rho_s.amp * exp(-((x - rho_s.mean) / rho_s.width)^2)
+    u_val   = u_s.off   + u_s.amp   * exp(-((x - u_s.mean) / u_s.width)^2)
+    p_val   = p_s.off   + p_s.amp   * exp(-((x - p_s.mean) / p_s.width)^2)
+    rho_val = max(rho_val, 1e-6); p_val = max(p_val, 1e-6)
+    m_val = rho_val * u_val
+    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
+    return (rho_val, m_val, E_val)
+end
+
+struct EulerShockTube <: ShockInitialCondition
+    stateL::NTuple{3, Float64} # (rho, u, p)
+    stateR::NTuple{3, Float64} # (rho, u, p)
+    x0::Float64
+end
+function (ic::EulerShockTube)(x::Real)
+    rho_val, u_val, p_val = x < ic.x0 ? ic.stateL : ic.stateR
+    rho_val = max(rho_val, 1e-6); p_val = max(p_val, 1e-6)
+    m_val = rho_val * u_val
+    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
+    return (rho_val, m_val, E_val)
+end
+
+
+# --- 3. Analytical Solution Functors (t>0) ---
+
+# --- For Euler Equations ---
+(ic::InitialCondition)(x::Real, t::Real, eq::EulerEquations, pg::ParticleGrid1D) = error("Analytical solution for this Euler IC is not implemented.")
+
+
+# --- Analytical Solution Functor for Euler Shock Tube (t>0) ---
+function (ic::EulerShockTube)(x::Real, t::Real, eq::EulerEquations, pg::ParticleGrid1D)
+    if pg.bc == :periodic
+        @warn "Analytical Riemann solver for Euler is not defined for periodic BCs."
+        return (NaN, NaN, NaN)
+    end
+    if t <= 1e-9; return ic(x); end
+
+    # --- 1. Extract Initial States and Parameters ---
+    gamma = GAS_GAMMA_EULER
+    rho_L, u_L, p_L = ic.stateL
+    rho_R, u_R, p_R = ic.stateR
+    x0 = ic.x0
+    
+    # --- 2. Solve for Pressure in the Star Region (p_star) ---
+    c_L = sqrt(gamma * p_L / rho_L)
+    c_R = sqrt(gamma * p_R / rho_R)
+    
+    function pressure_func(p_star_guess::Real)
+        local f_L, f_R
+        # Left wave
+        if p_star_guess > p_L # Shock
+            A_L = 2.0 / ((gamma + 1.0) * rho_L); B_L = p_L * (gamma - 1.0) / (gamma + 1.0)
+            f_L = (p_star_guess - p_L) * sqrt(A_L / (p_star_guess + B_L))
+        else # Rarefaction
+            f_L = (2.0 * c_L / (gamma - 1.0)) * ((p_star_guess / p_L)^((gamma - 1.0) / (2.0 * gamma)) - 1.0)
+        end
+        # Right wave
+        if p_star_guess > p_R # Shock
+            A_R = 2.0 / ((gamma + 1.0) * rho_R); B_R = p_R * (gamma - 1.0) / (gamma + 1.0)
+            f_R = (p_star_guess - p_R) * sqrt(A_R / (p_star_guess + B_R))
+        else # Rarefaction
+            f_R = (2.0 * c_R / (gamma - 1.0)) * ((p_star_guess / p_R)^((gamma - 1.0) / (2.0 * gamma)) - 1.0)
+        end
+        return f_L + f_R + (u_R - u_L)
+    end
+
+    p_star = 0.5 * (p_L + p_R) # Initial guess
+    for _ in 1:100 # Newton-Raphson iterations
+        f_p = pressure_func(p_star)
+        if abs(f_p) < 1e-9; break; end
+        dfdp = (pressure_func(p_star * 1.001) - f_p) / (p_star * 0.001)
+        p_star -= f_p / (dfdp + 1e-9)
+        if p_star < 0; p_star = 1e-9; end
+    end
+
+    # --- 3. Calculate Star Region Velocity (u_star) ---
+    local f_L_final
+    if p_star > p_L # Left shock
+        A_L = 2.0 / ((gamma + 1.0) * rho_L); B_L = p_L * (gamma - 1.0) / (gamma + 1.0)
+        f_L_final = (p_star - p_L) * sqrt(A_L / (p_star + B_L))
+    else # Left rarefaction
+        f_L_final = (2.0 * c_L / (gamma - 1.0)) * ((p_star / p_L)^((gamma - 1.0) / (2.0 * gamma)) - 1.0)
+    end
+    u_star = u_L - f_L_final
+
+    # --- 4. Determine Wave Speeds and Regions ---
+    local rho_star_L, rho_star_R, S_L, S_R, S_head_L, S_tail_L, S_head_R, S_tail_R
+    
+    if p_star > p_L # Left Shock
+        S_L = u_L - c_L * sqrt((gamma + 1.0) / (2.0 * gamma) * (p_star / p_L) + (gamma - 1.0) / (2.0 * gamma))
+        rho_star_L = rho_L * ((p_star / p_L) + (gamma - 1.0) / (gamma + 1.0)) / (1.0 + (p_star / p_L) * (gamma - 1.0) / (gamma + 1.0))
+    else # Left Rarefaction
+        S_head_L = u_L - c_L
+        c_star_L = c_L * (p_star / p_L)^((gamma - 1.0) / (2.0 * gamma))
+        S_tail_L = u_star - c_star_L
+        rho_star_L = rho_L * (p_star / p_L)^(1.0 / gamma)
+    end
+
+    if p_star > p_R # Right Shock
+        S_R = u_R + c_R * sqrt((gamma + 1.0) / (2.0 * gamma) * (p_star / p_R) + (gamma - 1.0) / (2.0 * gamma))
+        rho_star_R = rho_R * ((p_star / p_R) + (gamma - 1.0) / (gamma + 1.0)) / (1.0 + (p_star / p_R) * (gamma - 1.0) / (gamma + 1.0))
+    else # Right Rarefaction
+        S_head_R = u_R + c_R
+        c_star_R = c_R * (p_star / p_R)^((gamma - 1.0) / (2.0 * gamma))
+        S_tail_R = u_star + c_star_R
+        rho_star_R = rho_R * (p_star / p_R)^(1.0 / gamma)
+    end
+
+    S_contact = u_star
+
+    # --- 5. Find Solution at Query Point (x,t) ---
+    s_query = (x - x0) / t
+    local rho_final, u_final, p_final
+
+    if s_query <= S_contact # Left of contact
+        if p_star > p_L # Left Shock
+            rho_final, u_final, p_final = s_query <= S_L ? (rho_L, u_L, p_L) : (rho_star_L, u_star, p_star)
+        else # Left Rarefaction
+            if s_query <= S_head_L
+                rho_final, u_final, p_final = rho_L, u_L, p_L
+            elseif s_query >= S_tail_L
+                rho_final, u_final, p_final = rho_star_L, u_star, p_star
+            else # Inside rarefaction fan
+                u_final = (2.0 / (gamma + 1.0)) * (c_L + (gamma - 1.0) / 2.0 * u_L + s_query)
+                c_final = c_L - (gamma - 1.0) / 2.0 * (u_final - u_L)
+                rho_final = rho_L * (c_final / c_L)^(2.0 / (gamma - 1.0))
+                p_final = p_L * (rho_final / rho_L)^gamma
+            end
+        end
+    else # Right of contact
+        if p_star > p_R # Right Shock
+            rho_final, u_final, p_final = s_query >= S_R ? (rho_R, u_R, p_R) : (rho_star_R, u_star, p_star)
+        else # Right Rarefaction
+            if s_query >= S_head_R
+                rho_final, u_final, p_final = rho_R, u_R, p_R
+            elseif s_query <= S_tail_R
+                rho_final, u_final, p_final = rho_star_R, u_star, p_star
+            else # Inside rarefaction fan
+                u_final = (2.0 / (gamma + 1.0)) * (-c_R + (gamma - 1.0) / 2.0 * u_R + s_query)
+                c_final = c_R + (gamma - 1.0) / 2.0 * (u_R - u_final)
+                rho_final = rho_R * (c_final / c_R)^(2.0 / (gamma - 1.0))
+                p_final = p_R * (rho_final / rho_R)^gamma
+            end
+        end
+    end
+
+    # --- 6. Convert final primitive variables to conserved variables ---
+    m_final = rho_final * u_final
+    E_final = p_final / (gamma - 1.0) + 0.5 * rho_final * u_final^2
+    
+    return (rho_final, m_final, E_final)
+end
+
 
 # --- 4. Factory Function ---
-"""
-    getInitialCondition(name::String, params::Tuple)
-
-Factory function that returns an instance of the correct InitialCondition struct.
-"""
 function getInitialCondition(name::String, params::Tuple)::InitialCondition
     if name == "gauss"; return Gauss(params...);
     elseif name == "box"; return Box(params...);
     elseif name == "sine"; return Sine(params...);
     elseif name == "riemann"; return Riemann(params...);
+    elseif name == "eulerSmooth"; return EulerSmooth(params...);
+    elseif name == "eulerShockTube"; return EulerShockTube(params...);
     else error("Unknown initFunc name: $name"); end
+end
+
+
+# --- 5. Discontinuity Finder ---
+# ... (Keep all your scalar get_discontinuity_points functions) ...
+
+# For Euler Shock Tube
+function get_discontinuity_points(ic::EulerShockTube, eq::EulerEquations, t::Real, pg::ParticleGrid1D)
+    # This requires running the Riemann solver to find the wave speeds
+    # It's a bit of duplicated code, but necessary for QuadGK
+    
+    # --- Start of duplicated solver logic for wave speeds ---
+    gamma = GAS_GAMMA_EULER; rho_L, u_L, p_L = ic.stateL; rho_R, u_R, p_R = ic.stateR; x0 = ic.x0
+    c_L = sqrt(gamma*p_L/rho_L); c_R = sqrt(gamma*p_R/rho_R)
+    # ... (pressure_func and p_star root-finding as above) ...
+    # For brevity, let's assume p_star and u_star are found
+    p_star, u_star = # ... result of root-finding ...
+    # --- End of duplicated logic ---
+
+    points = Float64[]
+    
+    # Left Wave
+    if p_star > p_L # Left Shock
+        S_L = u_L - c_L * sqrt((gamma+1)/(2*gamma)*(p_star/p_L) + (gamma-1)/(2*gamma))
+        push!(points, x0 + S_L * t)
+    else # Left Rarefaction
+        S_head_L = u_L - c_L
+        c_star_L = c_L * (p_star/p_L)^((gamma-1)/(2*gamma))
+        S_tail_L = u_star - c_star_L
+        push!(points, x0 + S_head_L * t, x0 + S_tail_L * t)
+    end
+
+    # Contact Discontinuity
+    push!(points, x0 + u_star * t)
+
+    # Right Wave
+    if p_star > p_R # Right Shock
+        S_R = u_R + c_R * sqrt((gamma+1)/(2*gamma)*(p_star/p_R) + (gamma-1)/(2*gamma))
+        push!(points, x0 + S_R * t)
+    else # Right Rarefaction
+        S_head_R = u_R + c_R
+        c_star_R = c_R * (p_star/p_R)^((gamma-1)/(2*gamma))
+        S_tail_R = u_star + c_star_R
+        push!(points, x0 + S_head_R * t, x0 + S_tail_R * t)
+    end
+    
+    return unique(sort(points))
 end
 
 

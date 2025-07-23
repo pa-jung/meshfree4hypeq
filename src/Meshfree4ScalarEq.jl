@@ -22,6 +22,9 @@ global const rng = MersenneTwister(SEED)
 include("ScalarHyperbolicEquations.jl")
 using .ScalarHyperbolicEquations
 
+include("HyperbolicSystems.jl")
+using .HyperbolicSystems
+
 include("FluxFunctions.jl")
 using .FluxFunctions
 

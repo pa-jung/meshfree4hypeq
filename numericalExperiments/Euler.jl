@@ -2,6 +2,7 @@
 
 # --- Module Imports ---
 using Meshfree4ScalarEq.ScalarHyperbolicEquations
+using Meshfree4ScalarEq.HyperbolicSystems
 using Meshfree4ScalarEq.ParticleGrids
 using Meshfree4ScalarEq.TimeIntegration 
 using Meshfree4ScalarEq.Interpolations 
@@ -10,297 +11,22 @@ using Meshfree4ScalarEq.FluxFunctions
 using Meshfree4ScalarEq.SourceTerms 
 using Meshfree4ScalarEq.ImplicitSolvers 
 using Meshfree4ScalarEq.PlottingUtils # If calculateStats is here
+using Meshfree4ScalarEq.InitialConditions
 using Random
 using IPlotPDESols
 using Meshfree4ScalarEq # For SEED, rng
-
-# --- 1D Euler System Specifics ---
-const GAS_GAMMA_EULER = 1.4 # Adiabatic index
-
-"""
-    pressure_from_euler_conserved(rho, m, E)
-
-Calculates pressure from conserved variables for 1D Euler.
-"""
-function pressure_from_euler_conserved(rho::Real, m::Real, E::Real)::Float64
-    if rho < 1e-9 # Density floor
-        # @warn "Density rho = $rho < 1e-9, flooring pressure calculation."
-        return 1e-9 # Avoid division by zero or negative pressure
-    end
-    # E = p/(gamma-1) + 0.5*rho*u^2 = p/(gamma-1) + 0.5*m^2/rho
-    pressure = (GAS_GAMMA_EULER - 1.0) * (E - 0.5 * m^2 / rho)
-    return max(pressure, 1e-9) # Pressure floor
-end
-
-"""
-    euler1D_physical_fluxes(rho, m, E)
-
-Returns the physical flux vector [F_rho, F_m, F_E] for 1D Euler.
-U = [rho, m, E]
-F(U) = [m, m^2/rho + p, (E+p)m/rho]
-"""
-function euler1D_physical_fluxes(rho::Real, m::Real, E::Real)::NTuple{3, Float64}
-    if rho < 1e-9 # Density floor for safety
-        # @warn "Density rho = $rho < 1e-9 in flux calculation."
-        return (0.0, pressure_from_euler_conserved(1e-9,0.0,0.0), 0.0) # Return flux at some floor state
-    end
-    ux = m / rho
-    p = pressure_from_euler_conserved(rho, m, E)
-
-    F1 = m
-    F2 = m * ux + p
-    F3 = (E + p) * ux
-    return (F1, F2, F3)
-end
-
-# --- Initial Condition Functions for 3 Macroscopic Variables (rho, m, E) ---
-# These return (rho_val, m_val, E_val)
-
-"""
-Smooth Gaussian initial condition for 1D Euler (rho, velocity u, pressure p).
-params: NamedTuple e.g., (
-    rho_spec=(amp, mean, width, offset), 
-    u_spec=(amp, mean, width, offset), 
-    p_spec=(amp, mean, width, offset)
-)
-Returns (rho, rho*u, E)
-"""
-function eulerSmooth1DInit(x::Real, params::NamedTuple)::NTuple{3, Float64}
-    rho_s, u_s, p_s = params.rho_spec, params.u_spec, params.p_spec
-
-    rho_val = rho_s.off + rho_s.amp * exp(-((x - rho_s.mean) / rho_s.width)^2)
-    u_val   = u_s.off   + u_s.amp   * exp(-((x - u_s.mean) / u_s.width)^2)
-    p_val   = p_s.off   + p_s.amp   * exp(-((x - p_s.mean) / p_s.width)^2)
-
-    rho_val = max(rho_val, 1e-6) # Density floor
-    p_val   = max(p_val, 1e-6)   # Pressure floor
-
-    m_val = rho_val * u_val
-    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
-
-    return (rho_val, m_val, E_val)
-end
-
-"""
-1D Shock Tube (Riemann problem in x) for Euler variables.
-params: NamedTuple e.g. (stateL=(rho,u,p), stateR=(rho,u,p), shock_pos_x=0.0)
-Returns conserved (rho, m, E).
-"""
-function eulerShockTube1DInit(x::Real, params::NamedTuple)::NTuple{3, Float64}
-    stateL_prim, stateR_prim, shock_pos_x = params.stateL, params.stateR, params.shock_pos_x
-    
-    rho_val, u_val, p_val = x < shock_pos_x ? stateL_prim : stateR_prim
-
-    rho_val = max(rho_val, 1e-6)
-    p_val   = max(p_val, 1e-6)
-
-    m_val = rho_val * u_val
-    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
-
-    return (rho_val, m_val, E_val)
-end
-# --- NEW: Analytical Riemann Solver for 1D Euler Equations ---
-
-"""
-    eulerShockTube1DAnalytic(x::Real, t::Real, params::NamedTuple)
-
-Provides the exact solution to the 1D Euler Riemann problem (shock tube).
-The solution is self-similar and depends on the coordinate s = (x - x0)/t.
-
-# Arguments
-- `x`: Spatial coordinate.
-- `t`: Time.
-- `params`: A NamedTuple containing the initial conditions, e.g.,
-  `(stateL_prim=(rhoL, uL, pL), stateR_prim=(rhoR, uR, pR), shock_pos_x=0.0)`
-  The gas gamma is assumed to be the global `GAS_GAMMA_EULER`.
-
-# Returns
-- `NTuple{3, Float64}`: The conserved variables (rho, m, E) at (x,t).
-"""
-function eulerShockTube1DAnalytic(x::Real, t::Real, params::NamedTuple)::NTuple{3, Float64}
-    
-    # --- 1. Extract Initial States and Parameters ---
-    stateL_prim = params.stateL # (rho_L, u_L, p_L)
-    stateR_prim = params.stateR # (rho_R, u_R, p_R)
-    x0 = params.shock_pos_x          # Initial discontinuity position
-    gamma = GAS_GAMMA_EULER
-
-    rho_L, u_L, p_L = stateL_prim
-    rho_R, u_R, p_R = stateR_prim
-
-    # Check for vacuum generation, which this solver doesn't handle
-    if (2.0 / (gamma - 1.0)) * (sqrt(gamma*p_L/rho_L) + sqrt(gamma*p_R/rho_R)) <= (u_R - u_L)
-        @warn "Vacuum is generated for these initial conditions. Analytical solver may fail."
-    end
-    
-    # Return initial condition for t=0
-    if t <= 1e-9
-        return eulerShockTube1DInit(x, params)
-    end
-
-    # --- 2. Solve for Pressure in the Star Region (p_star) ---
-    # This is the core of the Riemann solver. We need to find the root of the equation:
-    # f(p, p_side, rho_side, u_side) + f(p, p_other_side, ...) + (u_R - u_L) = 0
-    # where f describes the velocity change across the left/right waves.
-    
-    c_L = sqrt(gamma * p_L / rho_L) # Sound speed in left state
-    c_R = sqrt(gamma * p_R / rho_R) # Sound speed in right state
-    
-    # Function whose root gives p_star
-    function pressure_func(p_star_guess::Real)
-        # Left wave (shock or rarefaction)
-        f_L = 0.0
-        if p_star_guess > p_L # Left shock
-            A_L = 2.0 / ((gamma + 1.0) * rho_L)
-            B_L = p_L * (gamma - 1.0) / (gamma + 1.0)
-            f_L = (p_star_guess - p_L) * sqrt(A_L / (p_star_guess + B_L))
-        else # Left rarefaction
-            f_L = (2.0 * c_L / (gamma - 1.0)) * ((p_star_guess / p_L)^((gamma - 1.0) / (2.0 * gamma)) - 1.0)
-        end
-        
-        # Right wave (shock or rarefaction)
-        f_R = 0.0
-        if p_star_guess > p_R # Right shock
-            A_R = 2.0 / ((gamma + 1.0) * rho_R)
-            B_R = p_R * (gamma - 1.0) / (gamma + 1.0)
-            f_R = (p_star_guess - p_R) * sqrt(A_R / (p_star_guess + B_R))
-        else # Right rarefaction
-            f_R = (2.0 * c_R / (gamma - 1.0)) * ((p_star_guess / p_R)^((gamma - 1.0) / (2.0 * gamma)) - 1.0)
-        end
-        
-        return f_L + f_R + (u_R - u_L)
-    end
-
-    # Iterative root-finding for p_star (e.g., Newton-Raphson or a bracketing method)
-    # For simplicity, we use a basic iterative solver here. A robust library like Roots.jl is better.
-    p_star = 0.5 * (p_L + p_R) # Initial guess
-    p_min_guess = min(p_L, p_R) * 1e-2
-    p_max_guess = max(p_L, p_R) * 1e2
-    
-    # Simple bisection/secant-like method
-    for _ in 1:100 # Max iterations
-        f_p = pressure_func(p_star)
-        if abs(f_p) < 1e-9; break; end
-        
-        # Simple update logic (can be improved with Newton's method)
-        # This is a basic secant/newton step approximation
-        dfdp = (pressure_func(p_star * 1.001) - f_p) / (p_star * 0.001)
-        p_star -= f_p / (dfdp + 1e-9) # Avoid division by zero
-        if p_star < 0; p_star = 1e-9; end # Enforce positivity
-    end
-
-    # --- 3. Calculate Star Region Velocity (u_star) and Wave Speeds ---
-    f_L_final = 0.0
-    if p_star > p_L; f_L_final = (p_star - p_L) * sqrt((2.0/((gamma+1.0)*rho_L)) / (p_star + p_L*(gamma-1.0)/(gamma+1.0)));
-    else; f_L_final = (2.0*c_L/(gamma-1.0)) * ((p_star/p_L)^((gamma-1.0)/(2.0*gamma)) - 1.0); end
-    u_star = 0.5 * (u_L + u_R) + 0.5 * (pressure_func(p_star) - f_L_final - f_L_final) # This is not quite right
-    u_star = u_L - f_L_final # Correct way to find u_star from left wave
-
-    # --- 4. Determine Wave Speeds and Regions ---
-    local rho_star_L, rho_star_R
-    local S_L, S_R # Left and Right wave speeds
-    
-    # Left Wave
-    if p_star > p_L # Left Shock
-        S_L = u_L - c_L * sqrt((gamma + 1.0) / (2.0 * gamma) * (p_star / p_L) + (gamma - 1.0) / (2.0 * gamma))
-        rho_star_L = rho_L * ((p_star / p_L) + (gamma - 1.0) / (gamma + 1.0)) / (1.0 + (p_star / p_L) * (gamma - 1.0) / (gamma + 1.0))
-    else # Left Rarefaction
-        S_rarefaction_head_L = u_L - c_L
-        c_star_L = c_L * (p_star / p_L)^((gamma - 1.0) / (2.0 * gamma))
-        S_rarefaction_tail_L = u_star - c_star_L
-        rho_star_L = rho_L * (p_star / p_L)^(1.0 / gamma)
-    end
-
-    # Right Wave
-    if p_star > p_R # Right Shock
-        S_R = u_R + c_R * sqrt((gamma + 1.0) / (2.0 * gamma) * (p_star / p_R) + (gamma - 1.0) / (2.0 * gamma))
-        rho_star_R = rho_R * ((p_star / p_R) + (gamma - 1.0) / (gamma + 1.0)) / (1.0 + (p_star / p_R) * (gamma - 1.0) / (gamma + 1.0))
-    else # Right Rarefaction
-        S_rarefaction_head_R = u_R + c_R
-        c_star_R = c_R * (p_star / p_R)^((gamma - 1.0) / (2.0 * gamma))
-        S_rarefaction_tail_R = u_star + c_star_R
-        rho_star_R = rho_R * (p_star / p_R)^(1.0 / gamma)
-    end
-
-    S_contact = u_star # Speed of the contact discontinuity
-
-    # --- 5. Find Solution at Query Point (x,t) ---
-    s_query = (x - x0) / t # Self-similar coordinate
-
-    rho_final, u_final, p_final = 0.0, 0.0, 0.0
-
-    if s_query <= S_contact # Left of contact
-        if p_star > p_L # Left Shock
-            if s_query <= S_L
-                rho_final, u_final, p_final = rho_L, u_L, p_L
-            else
-                rho_final, u_final, p_final = rho_star_L, u_star, p_star
-            end
-        else # Left Rarefaction
-            if s_query <= S_rarefaction_head_L
-                rho_final, u_final, p_final = rho_L, u_L, p_L
-            elseif s_query >= S_rarefaction_tail_L
-                rho_final, u_final, p_final = rho_star_L, u_star, p_star
-            else # Inside rarefaction fan
-                u_final = (2.0 / (gamma + 1.0)) * (c_L + (gamma - 1.0) / 2.0 * u_L + s_query)
-                c_final = c_L - (gamma - 1.0) / 2.0 * (u_final - u_L)
-                rho_final = rho_L * (c_final / c_L)^(2.0 / (gamma - 1.0))
-                p_final = p_L * (rho_final / rho_L)^gamma
-            end
-        end
-    else # Right of contact (s_query > S_contact)
-        if p_star > p_R # Right Shock
-            if s_query >= S_R
-                rho_final, u_final, p_final = rho_R, u_R, p_R
-            else
-                rho_final, u_final, p_final = rho_star_R, u_star, p_star
-            end
-        else # Right Rarefaction
-            if s_query >= S_rarefaction_head_R
-                rho_final, u_final, p_final = rho_R, u_R, p_R
-            elseif s_query <= S_rarefaction_tail_R
-                rho_final, u_final, p_final = rho_star_R, u_star, p_star
-            else # Inside rarefaction fan
-                u_final = (2.0 / (gamma + 1.0)) * (-c_R + (gamma - 1.0) / 2.0 * u_R + s_query)
-                c_final = c_R + (gamma - 1.0) / 2.0 * (u_R - u_final)
-                rho_final = rho_R * (c_final / c_R)^(2.0 / (gamma - 1.0))
-                p_final = p_R * (rho_final / rho_R)^gamma
-            end
-        end
-    end
-
-    # --- 6. Convert final primitive variables to conserved variables ---
-    m_final = rho_final * u_final
-    E_final = p_final / (gamma - 1.0) + 0.5 * rho_final * u_final^2
-    
-    return (rho_final, m_final, E_final)
-end
-# --- Analytical Solution Placeholder ---
-function eulerSystemAnalytic_dummy(x::Real, t::Real, init_func::Function, init_params_tuple, N_macro_vars::Int)
-    if t == 0.0
-        # For 2D IC functions that take (x,y,params)
-        if applicable(init_func, x, 0.0, init_params_tuple) 
-            return init_func(x, 0.0, init_params_tuple) # Call with a dummy y=0.0
-        else # For 1D IC functions that take (x,params)
-            return init_func(x, init_params_tuple)
-        end
-    else
-        return NTuple{N_macro_vars, Float64}(NaN for _ in 1:N_macro_vars)
-    end
-end
-
 
 # --- Main Simulation Runner for 1D Euler Relaxation System ---
 function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
     println("\n--- Running 1D Euler System Simulation (Relaxation Method) ---")
     run_params = copy(params)
-    rng_state_backup = copy(Meshfree4ScalarEq.rng)
     local sim_data_result = nothing
 
     try
         tmax::Float64 = run_params["tmax"]
         N_particles::Int = run_params["N"]
         bc::Symbol = run_params["bc"]
+        system_name::String = run_params["system"]
 
         xmin = run_params["xmin"]
         xmax = run_params["xmax"]
@@ -310,7 +36,8 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
 
         cfl_val = get(run_params, "CFL", nothing)
         dt_val = get(run_params, "dt", nothing)
-        save_freq::Int = run_params["save_frequency"]
+        SEED_value = get(run_params, "SEED", nothing)
+        snapshots::Int = run_params["snapshots"]
         interp_alpha::Float64 = run_params["interp_alpha"]
         interp_range_factor::Float64 = run_params["interp_range"]
         
@@ -326,6 +53,10 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         fallback_grad_name = get(run_params, "fallback_gradient", nothing)
         fallback_flux_name = get(run_params,"fallback_flux", nothing)
 
+        # Check for Euler
+        @assert system_name == "euler" "Only Euler system supported so far!"
+        system = EulerEquations()
+
         # Relaxation Velocities: Vector of Tuples, one pair for each macro var
         relax_velocities_config = get(run_params,"relax_velocities", nothing)
         relax_epsilon_val = get(run_params,"relax_epsilon", nothing)
@@ -336,6 +67,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         #     error("`relax_velocities` must provide a pair of speeds for each of $N_macro_vars macroscopic variables.")
         # end
         N_total = N_particles + 2*N_ghost
+        ic_object = InitialConditions.getInitialCondition(initFunc_name, init_params_tuple)
 
         println("  System Timestepper: $(timestepper_name), Main Gradient: $(main_grad_name)")
         println("  IC: $(initFunc_name), N_particles: $(N_particles), Domain: [$xmin,$xmax]")
@@ -344,8 +76,9 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         dx_nominal = (xmax - xmin) / N_particles
         local base_particleGrid1D
 
+        rng = MersenneTwister(SEED_value)
         randomness = randomness_factor * dx_nominal
-        base_particleGrid1D = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc; randomness = randomness)
+        base_particleGrid1D = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc; randomness = randomness, rng = rng)
         interior_indices = base_particleGrid1D.interior_indices
         interp_range = interp_range_factor * base_particleGrid1D.dx
         println(length(base_particleGrid1D.grid))
@@ -362,7 +95,20 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
             actual_dt = cfl_val * getTimeStep(base_particleGrid1D, temp_eq_for_dt, interp_alpha, interp_range)
         elseif !isnothing(dt_val); actual_dt = dt_val;
         else error("Either CFL or dt must be specified."); end
-        println("  Calculated/Used dt: $actual_dt")
+
+        # --- NEW: Calculate save_frequency in steps ---
+        if tmax <= 0 || actual_dt <= 0
+            # Handle edge case to avoid division by zero
+            save_freq = 1 
+        else
+            # Calculate the desired time interval between saves
+            save_time_interval = tmax / snapshots
+            # Convert the time interval to an integer number of steps
+            save_frequency_steps = round(Int, save_time_interval / actual_dt)
+            # Ensure we always take at least one step before saving
+            save_freq = max(1, save_frequency_steps)
+        end
+        @info "  Calculated/Used dt: $actual_dt"
         if !isnothing(timestepper_name)
             # --- Build Scalar Method Components ---
             MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() else error("Flux $main_flux_name NYI"); end
@@ -440,16 +186,12 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
 
             component_pgs = [deepcopy(base_particleGrid1D) for _ in 1:N_total_kinetic_components]
 
-            # --- REFINED: Initialize Macroscopic State first, then Kinetic Component Grids using M_funcs and map ---
-            init_func_evaluator = if initFunc_name == "eulerSmooth1D"; eulerSmooth1DInit
-                                elseif initFunc_name == "eulerShockTube1D"; eulerShockTube1DInit
-                                else error("Unknown system IC name: $initFunc_name for 1D Euler"); end
             
             # This matrix stores the macroscopic IC [rho_0(xp), m_0(xp), E_0(xp)] for each particle
             macro_IC_at_points = Matrix{Float64}(undef, N_particles, N_macro_vars)
             for (i,p_idx) in enumerate(base_particleGrid1D.interior_indices)
                 xp = base_particleGrid1D.grid[p_idx].pos
-                U_macro_0_at_p_tuple = init_func_evaluator(xp, init_params_tuple)
+                U_macro_0_at_p_tuple = ic_object(xp)
                 for i_mvar in 1:N_macro_vars
                     macro_IC_at_points[i, i_mvar] = U_macro_0_at_p_tuple[i_mvar]
                 end
@@ -527,7 +269,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
             end
             sim_data_result = createSimData(sys_xs_data, us_macro_data, sys_ts_data, run_params)
         else
-            ts = collect(0:actual_dt:tmax)
+            ts = collect(0:actual_dt*save_freq:tmax)
             if ts[end] != tmax
                 push!(ts, tmax)
             end
@@ -536,7 +278,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
             for t = ts
                 tmp = Matrix(undef, length(xs), 3)
                 for (i,x) = enumerate(xs)
-                    tmp[i,:] = collect(eulerShockTube1DAnalytic(x,t, init_params_tuple))
+                    tmp[i,:] = collect(ic_object(x,t,system,base_particleGrid1D))
                 end
                 push!(us, tmp)
             end
@@ -546,36 +288,35 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
          if isa(e, KeyError); @error "Missing required parameter for System Simulation!" key=e.key params=run_params
          else; @error "Error during System Simulation!" params=run_params exception=(e, catch_backtrace()); end
          return nothing
-    finally
-        copy!(Meshfree4ScalarEq.rng, rng_state_backup)
     end
     return sim_data_result
 end
 
 # --- Example SimulationConfig for 1D Euler System ---
 euler_smooth_params = (
-    rho_spec=(amp=0.1, mean=0.0, width=0.5, off=1.0),
-    u_spec  =(amp=0.2, mean=0.0, width=0.5, off=0.5),
-    p_spec  =(amp=0.1, mean=0.0, width=0.5, off=1.0)
+    (amp=0.1, mean=0.0, width=0.5, off=1.0),
+    (amp=0.2, mean=0.0, width=0.5, off=0.5),
+    (amp=0.1, mean=0.0, width=0.5, off=1.0)
 )
 
 sod_euler_params = ( # Sod shock tube for 1D Euler
-    stateL=(rho=1.0, u=0.0, p=1.0),    
-    stateR=(rho=0.125, u=0.0, p=0.1), 
-    shock_pos_x=0.0 
+    (1.0, 0.0, 1.0),    
+    (0.125, 0.0, 0.1), 
+    0.0 
     # Note: Your plotting range and tmax should be suitable for Sod's problem evolution.
     # Typical Sod domain [-0.5, 0.5], tmax ~ 0.2
 )
-SEED_value = (:const, Meshfree4ScalarEq.SEED)
+SEED_value = 10
 
 sim_config_euler1d_system = SimulationConfig(
     RunSystem1DEulerSimulation, 
     ParamDict(
         "tmax" => 0.2, "N" => 100, "bc" => :outflow,
         "xmin" => -0.5, "xmax" => .5, 
-        "CFL" => 0.5, "save_frequency" => 5, 
+        "CFL" => 0.5, "snapshots" => 5, 
         "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
-        "init_func" => "eulerShockTube1D", 
+        "init_func" => "eulerShockTube",
+        "system" => "euler", 
         "init_params" => sod_euler_params, 
         "randomness_factor" => 0., 
         "SEED" => SEED_value,
@@ -641,7 +382,7 @@ sim_config_euler1d_system = SimulationConfig(
              # No randomness_factor needed when regular=true
         )
     ),
-    "ARS222MUSCL2MOOD"
+    "Analytic"
 )
 
 # To run:
