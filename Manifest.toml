@@ -745,7 +745,7 @@ uuid = "34004b35-14d8-5ef3-9330-4cdb6864b03a"
 version = "0.3.28"
 
 [[deps.IPlotPDESols]]
-deps = ["CSV", "CairoMakie", "DataFrames", "Dates", "FileIO", "GLMakie", "JLD2", "LinearAlgebra", "Printf", "ProgressMeter", "SHA", "Statistics", "StatsBase"]
+deps = ["CSV", "CairoMakie", "DataFrames", "Dates", "FileIO", "GLMakie", "JLD2", "LinearAlgebra", "Printf", "ProgressMeter", "Random", "SHA", "Statistics", "StatsBase"]
 path = "../IPlotPDESols"
 uuid = "9dcd72ad-f481-4c48-9703-3c94083dcfc3"
 version = "0.1.0"

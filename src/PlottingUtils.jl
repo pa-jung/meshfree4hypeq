@@ -5,6 +5,7 @@ using ..Particles
 using ..SimSettings
 using ..InitialConditions # For InitialCondition and get_discontinuity_points
 using ..ScalarHyperbolicEquations # For equation types
+using ..HyperbolicSystems
 #using ..Interpolations
 using Dierckx
 using QuadGK
@@ -144,158 +145,450 @@ function _create_piecewise_spline_function(
         return splines[idx](x)
     end
 end
-"""
-    _calculate_stats_at_timestep(...)
 
-Internal helper function to compute statistics for a single time step.
+"""
+    _calculate_stats_at_timestep(u_numerical, u_analytical_ref, x_coords, domain_params; ...)
+
+Internal worker function to compute statistics for a single component at a single time step.
+It takes a numerical data vector and a callable function for the analytical/reference solution.
 """
 function _calculate_stats_at_timestep(
     u_numerical::AbstractVector{<:Real},
+    u_analytical_ref::Function,
     x_coords::AbstractVector{<:Real},
-    t::Real,
-    pg::ParticleGrid1D,
-    ic::InitialCondition,
-    eq::ScalarHyperbolicEquation;
-    dierckx_k::Int,
-    quad_tol::Real
+    domain_params::NamedTuple;
+    dierckx_k::Int = 1,
+    quad_tol::Real = 1e-12,
+    discontinuity_points::Vector{Float64} = Float64[]
 )::Dict{String, Float64}
 
     results = Dict{String, Float64}()
     N_particles = length(u_numerical)
     if N_particles == 0; return results; end
 
-    # Define the analytical function closure for this specific time t
-    analytical_func_at_t = x -> ic(x, t, eq, pg)
-
     # --- 1. Calculate Pointwise and Analytical Values ---
-    u_analytical_at_particles = [analytical_func_at_t(x) for x in x_coords]
+    u_analytical_at_particles = [u_analytical_ref(x) for x in x_coords]
     errors_at_particles = u_numerical .- u_analytical_at_particles
-
-    # Define domain parameters
-    xmin, xmax = pg.xmin, pg.xmax
-    domain_length = xmax - xmin
     
-    # Get discontinuity points for QuadGK at the current time t
-    discontinuity_points = get_discontinuity_points(ic, eq, t, pg)
-    breakpoints = unique([xmin; discontinuity_points; xmax])
-    # Insert discontinuity points
-    x_coords_aug, u_aug_num = _augment_data_for_spline(x_coords, u_numerical, discontinuity_points)
-    _, err_aug = _augment_data_for_spline(x_coords, errors_at_particles, discontinuity_points)
-    # --- 2. Calculate High-Accuracy Analytical Norms/Mass via QuadGK ---
-    ana_l1_norm, _ = QuadGK.quadgk(x -> abs(analytical_func_at_t(x)), breakpoints...; rtol=quad_tol)
-    ana_l2_sq_norm, _ = QuadGK.quadgk(x -> analytical_func_at_t(x)^2, breakpoints...; rtol=quad_tol)
-    ana_l2_norm = sqrt(ana_l2_sq_norm)
-    mass_ana, _ = QuadGK.quadgk(analytical_func_at_t, breakpoints...; rtol=quad_tol)
+    xmin, xmax = domain_params.xmin, domain_params.xmax
+    breakpoints = unique(sort([xmin; discontinuity_points; xmax]))
 
-    # --- 3. Create Splines from Discrete Data ---
+    # --- 2. Create Splines from Discrete Data ---
     perm = sortperm(x_coords)
     x_sorted = x_coords[perm]
-    spl_error = _create_piecewise_spline_function(x_sorted, errors_at_particles[perm], breakpoints, dierckx_k)#
-    #spl_error = Dierckx.Spline1D(x_coords_aug, err_aug; k=dierckx_k, s=0.0, bc="nearest")
-    spl_u_num = _create_piecewise_spline_function(x_sorted, u_numerical[perm], breakpoints, dierckx_k)#
-    #spl_u_num = Dierckx.Spline1D(x_coords_aug, u_aug_num; k=dierckx_k, s=0.0, bc="nearest")
+    # Use k=1 (linear) and s=0 (interpolation) as this is most robust for discontinuities
+    spl_error = Dierckx._create_piecewise_spline_function(x_sorted, errors_at_particles[perm], breakpoints, dierckx_k)
+    spl_u_num = Dierckx._create_piecewise_spline_function(x_sorted, u_numerical[perm], breakpoints, dierckx_k)
 
-    # --- 4. Calculate All Requested Statistics using Splines and Analytical Norms ---
-    
-    # Integrated Error Norms (from error spline)
+    # --- 3. Calculate All Requested Statistics ---
+    ana_l1_norm, _ = QuadGK.quadgk(x -> abs(u_analytical_ref(x)), breakpoints...; rtol=quad_tol)
+    ana_l2_sq_norm, _ = QuadGK.quadgk(x -> u_analytical_ref(x)^2, breakpoints...; rtol=quad_tol)
+    ana_l2_norm = sqrt(ana_l2_sq_norm)
+    mass_ana, _ = QuadGK.quadgk(u_analytical_ref, breakpoints...; rtol=quad_tol)
+
     l1_error_val, _ = QuadGK.quadgk(x -> abs(spl_error(x)), breakpoints...; rtol=quad_tol)
     l2_sq_error_val, _ = QuadGK.quadgk(x -> spl_error(x)^2, breakpoints...; rtol=quad_tol)
     results["l1error"] = l1_error_val
     results["l2error"] = sqrt(l2_sq_error_val)
-    
-    # Relative Integrated Error Norms
     results["relative_l1error"] = ana_l1_norm > 1e-12 ? results["l1error"] / ana_l1_norm : results["l1error"]
     results["relative_l2error"] = ana_l2_norm > 1e-12 ? results["l2error"] / ana_l2_norm : results["l2error"]
 
-    # Integrated Solution Norms (from numerical spline)
-    l1_norm_val, _ = QuadGK.quadgk(x -> abs(spl_u_num(x)), breakpoints...; rtol=quad_tol)
-    l2_sq_norm_val, _ = QuadGK.quadgk(x -> spl_u_num(x)^2, breakpoints...; rtol=quad_tol)
-    results["l1norm"] = l1_norm_val
-    results["l2norm"] = sqrt(l2_sq_norm_val)
-
-    # Mass
-    mass_num,_ = QuadGK.quadgk(x -> spl_u_num(x), breakpoints...; rtol=quad_tol)
+    mass_num, _ = QuadGK.quadgk(spl_u_num, breakpoints...; rtol=quad_tol)
     results["mass"] = mass_num
     results["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / abs(mass_ana) : NaN
+
     
-    # Supremum Norm (pointwise)
     results["supnorm"] = maximum(abs.(errors_at_particles))
     sup_norm_ana = maximum(abs.(u_analytical_at_particles))
     results["relative_supnorm"] = sup_norm_ana > 1e-12 ? results["supnorm"] / sup_norm_ana : results["supnorm"]
 
-    height_ana, index_ana = findmax(u_analytical_at_particles)
-    pos_ana = x_coords[index_ana]
+    return results
+end
+
+"""
+    _calculate_stats_at_timestep_no_ref(...)
+
+Worker for stats that do not require a reference solution.
+"""
+function _calculate_stats_at_timestep_no_ref(
+    u_numerical::AbstractVector{<:Real},
+    x_coords::AbstractVector{<:Real},
+    domain_params::NamedTuple;
+    dierckx_k::Int = 1,
+    discontinuity_points::Vector{Float64} = Float64[]
+)::Dict{String, Float64}
+    
+    results = Dict{String, Float64}()
+    N_particles = length(u_numerical)
+    if N_particles == 0; return results; end
+
+    xmin, xmax = domain_params.xmin, domain_params.xmax
+    breakpoints = unique(sort([xmin; discontinuity_points; xmax]))
+    perm = sortperm(x_coords)
+    spl_u_num = Dierckx._create_piecewise_spline_function(x_sorted, u_numerical[perm], breakpoints, dierckx_k)
+
+    results["mass"] = Dierckx.integrate(spl_u_num, xmin, xmax)
+    
+    l1_norm_val, _ = QuadGK.quadgk(x -> abs(spl_u_num(x)), breakpoints...; rtol=quad_tol)
+    results["l1norm"] = l1_norm_val
+    l2_norm_val, _ = QuadGK.quadgk(x -> abs(spl_u_num(x))^2, breakpoints...; rtol=quad_tol)
+    results["l2norm"] = l2_norm_val
+
     height_num, index_num = findmax(u_numerical)
     pos_num = x_coords[index_num]
-
-    results["wave_position_error"] = domain_length > 1e-9 ? abs(pos_ana - pos_num) / domain_length : abs(pos_ana - pos_num)
-    results["wave_height_error"] = abs(height_ana) > 1e-9 ? abs(height_ana - height_num) / abs(height_ana) : abs(height_ana - height_num)
+    results["wave_height"] = height_num
+    results["wave_position"] = pos_num
 
     return results
 end
 
+# ==============================================================================
+# --- SECTION 2: MAIN USER-FACING FUNCTIONS ---
+# ==============================================================================
 
 """
-    calculateAllStats!(sim_data::AbstractSimData, ic_object::InitialCondition, eq::ScalarHyperbolicEquation; ...)
+    calculateAllStats!(sim_data, ref_func, discontinuity_points_func; ...)
 
-Main user-facing function. Loops through all time steps in `sim_data`,
-calculates a comprehensive set of statistics for each step, and stores
-them in `sim_data.stats`.
+Main user-facing function for problems WITH a reference solution (analytical or numerical).
+Handles both scalar and system `sim_data` automatically.
+"""
+function calculateAllStats!(
+    sim_data::AbstractSimData,
+    ref_func::Function; # Should be a function ref(x, t)
+    discontinuity_points_func::Function = _ -> Float64[], # Should be a function disc_pts(t)
+    dierckx_k::Int = 1, 
+    quad_tol::Real = 1e-12,
+    stats_to_calculate::Union{String,Vector{String}} = "all"
+)
+    all_possible_stats = [ "l1error", "l2error", "supnorm", "relative_l1error", "relative_l2error", "relative_supnorm", "l1norm", "mass", "relative_mass_error" ]
+    stats_list = stats_to_calculate == "all" ? all_possible_stats : stats_to_calculate
+
+    if isempty(sim_data.u); @warn "SimData has no solution steps to process."; return; end
+    if !hasproperty(sim_data, :stats); sim_data.stats = Dict{String, Any}(); end
+
+    num_timesteps = length(sim_data.t)
+    # Determine if this is a system by checking the type of the solution data
+    is_system = sim_data.u[1] isa AbstractMatrix
+    num_components = is_system ? size(sim_data.u[1], 2) : 1
+
+    # Initialize stats storage
+    for key in stats_list
+        sim_data.stats[key] = is_system ? Matrix{Float64}(undef, num_timesteps, num_components) : Vector{Float64}(undef, num_timesteps)
+    end
+
+    domain_params = (xmin=sim_data.params["xmin"], xmax=sim_data.params["xmax"])
+    println("Calculating statistics for $(sim_data.params["method"])...")
+
+    for m in 1:num_timesteps
+        t = sim_data.t[m]
+        x_coords = sim_data.x[m]
+        discontinuity_points = discontinuity_points_func(t)
+
+        if is_system
+            for i_comp in 1:num_components
+                analytical_func_component = x -> ref_func(x, t)[i_comp]
+                u_numerical_component = @view sim_data.u[m][:, i_comp]
+                stats_tmp = _calculate_stats_at_timestep(u_numerical_component, analytical_func_component, x_coords, domain_params; dierckx_k=dierckx_k, quad_tol=quad_tol, discontinuity_points=discontinuity_points)
+                for key in stats_list; sim_data.stats[key][m, i_comp] = get(stats_tmp, key, NaN); end
+            end
+        else # Scalar case
+            analytical_func_scalar = x -> ref_func(x, t)
+            stats_tmp = _calculate_stats_at_timestep(sim_data.u[m], analytical_func_scalar, x_coords, domain_params; dierckx_k=dierckx_k, quad_tol=quad_tol, discontinuity_points=discontinuity_points)
+            for key in stats_list; sim_data.stats[key][m] = get(stats_tmp, key, NaN); end
+        end
+    end
+    
+    # Placeholder for derived stats, which would only apply to systems
+    if is_system
+        # _calculate_derived_system_stats!(sim_data, ref_func, ... )
+    end
+    
+    println("...done.")
+end
+
+"""
+    calculateAllStats!(sim_data, ic_object, eq, pg; ...)
+
+Convenience wrapper for when you have an analytical solution defined by an IC object.
 """
 function calculateAllStats!(
     sim_data::AbstractSimData,
     ic_object::InitialCondition,
-    eq::ScalarHyperbolicEquation,
+    eq::HyperbolicEquation,
     pg::ParticleGrid;
-    dierckx_k::Int = 3, 
-    quad_tol::Real = 1e-12,
+    kwargs... # Pass kwargs like dierckx_k, quad_tol, etc.
+)
+    # Create the reference function and discontinuity function from the IC object
+    ref_func = (x, t) -> ic_object(x, t, eq, pg)
+    discontinuity_points_func = t -> get_discontinuity_points(ic_object, eq, t, pg)
+    
+    # Call the main worker function
+    calculateAllStats!(sim_data, ref_func; discontinuity_points_func=discontinuity_points_func, kwargs...)
+end
+
+"""
+    calculateAllStats!(sim_data::AbstractSimData; ...)
+
+Main user-facing function for problems WITHOUT a reference solution.
+"""
+function calculateAllStats!(
+    sim_data::AbstractSimData;
+    dierckx_k::Int = 1,
     stats_to_calculate::Union{String,Vector{String}} = "all"
 )
-    # Define the full list of possible stats
-    all_possible_stats = [
-        "l1error", "l2error", "supnorm", 
-        "relative_l1error", "relative_l2error", "relative_supnorm",
-        "l1norm", "l2norm", "mass", "relative_mass", "wave_position_error",
-        "wave_height_error"
-    ]
+    no_ref_stats = ["mass", "wave_height", "wave_position"]
+    stats_list = stats_to_calculate == "all" ? no_ref_stats : intersect(stats_to_calculate, no_ref_stats)
     
-    stats_list = stats_to_calculate == "all" ? all_possible_stats : stats_to_calculate
+    if isempty(sim_data.u); @warn "SimData has no solution steps to process."; return; end
+    if !hasproperty(sim_data, :stats); sim_data.stats = Dict{String, Any}(); end
+    for key in stats_list; sim_data.stats[key] = []; end
 
-    # Initialize stats dictionary
-    if !hasproperty(sim_data, :stats) || !isa(sim_data.stats, Dict)
-        sim_data.stats = Dict{String, Any}()
-    end
-    for key in stats_list
-        sim_data.stats[key] = [] # Initialize as empty vector
-    end
+    xmin = get(sim_data.params, "xmin", sim_data.x[1][1])
+    xmax = get(sim_data.params, "xmax", sim_data.x[1][end])
+    domain_params = (xmin=xmin, xmax=xmax)
+
+    println("Calculating statistics (no reference) for $(sim_data.params["method"])...")
     for (m, t) in enumerate(sim_data.t)
-        # For each time step, we need a particle grid object to pass to the analytical solution
-        # This grid contains the positions and boundary condition info for that time step.
-        x_coords = sim_data.x[m]
-
-        # Call the helper function for this time step
-        stats_tmp = _calculate_stats_at_timestep(
-            sim_data.u[m],
-            x_coords,
-            t,
-            pg,
-            ic_object,
-            eq;
-            dierckx_k = dierckx_k,
-            quad_tol = quad_tol
-        )
-        
-        # Append results
-        for key in stats_list
-            if haskey(stats_tmp, key)
-                push!(sim_data.stats[key], stats_tmp[key])
-            else
-                # Push NaN if a stat wasn't calculated (e.g., due to error)
-                push!(sim_data.stats[key], NaN)
-            end
-        end
+        stats_tmp = _calculate_stats_at_timestep_no_ref(sim_data.u[m], sim_data.x[m], domain_params; dierckx_k=dierckx_k)
+        for key in stats_list; push!(sim_data.stats[key], get(stats_tmp, key, NaN)); end
     end
+    println("...done.")
 end
+
+
+# """
+#     _calculate_stats_at_timestep(...)
+
+# Internal helper function to compute statistics for a single time step.
+# """
+# function _calculate_stats_at_timestep(
+#     u_numerical::AbstractVector{<:Real},
+#     x_coords::AbstractVector{<:Real},
+#     t::Real,
+#     pg::ParticleGrid1D,
+#     ic::InitialCondition,
+#     eq::T,
+#     comp::Union{Int,Nothing}; 
+#     dierckx_k::Int,
+#     quad_tol::Real
+# )::Dict{String, Float64} where T <: Union{ScalarHyperbolicEquation, HyperbolicSystem}
+
+#     results = Dict{String, Float64}()
+#     N_particles = length(u_numerical)
+#     if N_particles == 0; return results; end
+
+#     # Define the analytical function closure for this specific time t
+#     analytical_func_at_t = x -> eq isa ScalarHyperbolicEquation ? ic(x, t, eq, pg) : ic(x, t, eq, pg)[comp]
+
+#     # --- 1. Calculate Pointwise and Analytical Values ---
+#     u_analytical_at_particles = [analytical_func_at_t(x) for x in x_coords]
+#     errors_at_particles = u_numerical .- u_analytical_at_particles
+
+#     # Define domain parameters
+#     xmin, xmax = pg.xmin, pg.xmax
+#     domain_length = xmax - xmin
+    
+#     # Get discontinuity points for QuadGK at the current time t
+#     discontinuity_points = get_discontinuity_points(ic, eq, t, pg)
+#     breakpoints = unique([xmin; discontinuity_points; xmax])
+#     # Insert discontinuity points
+#     x_coords_aug, u_aug_num = _augment_data_for_spline(x_coords, u_numerical, discontinuity_points)
+#     _, err_aug = _augment_data_for_spline(x_coords, errors_at_particles, discontinuity_points)
+#     # --- 2. Calculate High-Accuracy Analytical Norms/Mass via QuadGK ---
+#     ana_l1_norm, _ = QuadGK.quadgk(x -> abs(analytical_func_at_t(x)), breakpoints...; rtol=quad_tol)
+#     ana_l2_sq_norm, _ = QuadGK.quadgk(x -> analytical_func_at_t(x)^2, breakpoints...; rtol=quad_tol)
+#     ana_l2_norm = sqrt(ana_l2_sq_norm)
+#     mass_ana, _ = QuadGK.quadgk(analytical_func_at_t, breakpoints...; rtol=quad_tol)
+
+#     # --- 3. Create Splines from Discrete Data ---
+#     perm = sortperm(x_coords)
+#     x_sorted = x_coords[perm]
+#     spl_error = _create_piecewise_spline_function(x_sorted, errors_at_particles[perm], breakpoints, dierckx_k)#
+#     #spl_error = Dierckx.Spline1D(x_coords_aug, err_aug; k=dierckx_k, s=0.0, bc="nearest")
+#     spl_u_num = _create_piecewise_spline_function(x_sorted, u_numerical[perm], breakpoints, dierckx_k)#
+#     #spl_u_num = Dierckx.Spline1D(x_coords_aug, u_aug_num; k=dierckx_k, s=0.0, bc="nearest")
+
+#     # --- 4. Calculate All Requested Statistics using Splines and Analytical Norms ---
+    
+#     # Integrated Error Norms (from error spline)
+#     l1_error_val, _ = QuadGK.quadgk(x -> abs(spl_error(x)), breakpoints...; rtol=quad_tol)
+#     l2_sq_error_val, _ = QuadGK.quadgk(x -> spl_error(x)^2, breakpoints...; rtol=quad_tol)
+#     results["l1error"] = l1_error_val
+#     results["l2error"] = sqrt(l2_sq_error_val)
+    
+#     # Relative Integrated Error Norms
+#     results["relative_l1error"] = ana_l1_norm > 1e-12 ? results["l1error"] / ana_l1_norm : results["l1error"]
+#     results["relative_l2error"] = ana_l2_norm > 1e-12 ? results["l2error"] / ana_l2_norm : results["l2error"]
+
+#     # Integrated Solution Norms (from numerical spline)
+#     l1_norm_val, _ = QuadGK.quadgk(x -> abs(spl_u_num(x)), breakpoints...; rtol=quad_tol)
+#     l2_sq_norm_val, _ = QuadGK.quadgk(x -> spl_u_num(x)^2, breakpoints...; rtol=quad_tol)
+#     results["l1norm"] = l1_norm_val
+#     results["l2norm"] = sqrt(l2_sq_norm_val)
+
+#     # Mass
+#     mass_num,_ = QuadGK.quadgk(x -> spl_u_num(x), breakpoints...; rtol=quad_tol)
+#     results["mass"] = mass_num
+#     results["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / abs(mass_ana) : NaN
+    
+#     # Supremum Norm (pointwise)
+#     results["supnorm"] = maximum(abs.(errors_at_particles))
+#     sup_norm_ana = maximum(abs.(u_analytical_at_particles))
+#     results["relative_supnorm"] = sup_norm_ana > 1e-12 ? results["supnorm"] / sup_norm_ana : results["supnorm"]
+
+#     height_ana, index_ana = findmax(u_analytical_at_particles)
+#     pos_ana = x_coords[index_ana]
+#     height_num, index_num = findmax(u_numerical)
+#     pos_num = x_coords[index_num]
+
+#     results["wave_position_error"] = domain_length > 1e-9 ? abs(pos_ana - pos_num) / domain_length : abs(pos_ana - pos_num)
+#     results["wave_height_error"] = abs(height_ana) > 1e-9 ? abs(height_ana - height_num) / abs(height_ana) : abs(height_ana - height_num)
+
+#     return results
+# end
+
+# """
+#     _calculate_derived_system_stats!(sim_data, ic_object, eq, pg; kwargs...)
+
+# Placeholder function to calculate statistics on derived quantities (e.g., velocity, pressure).
+# This function would be responsible for populating `sim_data.stats` with keys like "l1error_velocity".
+# """
+# function _calculate_derived_system_stats!(
+#     sim_data::AbstractSimData,
+#     ic_object::InitialCondition,
+#     eq::HyperbolicSystem,
+#     pg::ParticleGrid;
+#     kwargs...
+# )
+#     # --- Example Implementation for Velocity Error ---
+#     # 1. Check if "l1error_velocity" is a requested stat.
+#     # 2. Loop through time steps `m, t`.
+#     # 3. Get numerical rho and m: `rho_num = sim_data.u[m][:, 1]`, `m_num = sim_data.u[m][:, 2]`.
+#     # 4. Calculate numerical velocity: `u_num = m_num ./ rho_num`.
+#     # 5. Get analytical rho and m: `U_ana = [ic_object(x, t, eq, pg) for x in sim_data.x[m]]`.
+#     #    `rho_ana = [u[1] for u in U_ana]`, `m_ana = [u[2] for u in U_ana]`.
+#     # 6. Calculate analytical velocity: `u_ana = m_ana ./ rho_ana`.
+#     # 7. Calculate error vector: `error_vec = u_num - u_ana`.
+#     # 8. Compute the L1 error of `error_vec` (e.g., discrete volume-weighted norm).
+#     # 9. Store it: `sim_data.stats["l1error_velocity"][m] = l1_error_val`.
+    
+#     # For now, this is just a placeholder.
+#     # println("Derived system stats calculation is not yet implemented.")
+# end
+
+# """
+#     calculateAllStats!(sim_data::AbstractSimData, ic_object::InitialCondition, eq::ScalarHyperbolicEquation; ...)
+
+# Main user-facing function. Loops through all time steps in `sim_data`,
+# calculates a comprehensive set of statistics for each step, and stores
+# them in `sim_data.stats`.
+# """
+# function calculateAllStats!(
+#     sim_data::AbstractSimData,
+#     ic_object::InitialCondition,
+#     eq::ScalarHyperbolicEquation,
+#     pg::ParticleGrid;
+#     dierckx_k::Int = 3, 
+#     quad_tol::Real = 1e-12,
+#     stats_to_calculate::Union{String,Vector{String}} = "all"
+# )
+#     # Define the full list of possible stats
+#     all_possible_stats = [
+#         "l1error", "l2error", "supnorm", 
+#         "relative_l1error", "relative_l2error", "relative_supnorm",
+#         "l1norm", "l2norm", "mass", "relative_mass", "wave_position_error",
+#         "wave_height_error"
+#     ]
+    
+#     stats_list = stats_to_calculate == "all" ? all_possible_stats : stats_to_calculate
+
+#     # Initialize stats dictionary
+#     if !hasproperty(sim_data, :stats) || !isa(sim_data.stats, Dict)
+#         sim_data.stats = Dict{String, Any}()
+#     end
+#     for key in stats_list
+#         sim_data.stats[key] = [] # Initialize as empty vector
+#     end
+#     for (m, t) in enumerate(sim_data.t)
+#         # For each time step, we need a particle grid object to pass to the analytical solution
+#         # This grid contains the positions and boundary condition info for that time step.
+#         x_coords = sim_data.x[m]
+
+#         # Call the helper function for this time step
+#         stats_tmp = _calculate_stats_at_timestep(
+#             sim_data.u[m],
+#             x_coords,
+#             t,
+#             pg,
+#             ic_object,
+#             eq, nothing;
+#             dierckx_k = dierckx_k,
+#             quad_tol = quad_tol
+#         )
+        
+#         # Append results
+#         for key in stats_list
+#             if haskey(stats_tmp, key)
+#                 push!(sim_data.stats[key], stats_tmp[key])
+#             else
+#                 # Push NaN if a stat wasn't calculated (e.g., due to error)
+#                 push!(sim_data.stats[key], NaN)
+#             end
+#         end
+#     end
+# end
+
+# """
+#     calculateAllStats!(sim_data, ic_object, eq::HyperbolicSystem, pg; ...)
+
+# Main user-facing function for SYSTEM problems (e.g., Euler).
+# Calculates statistics for each component of the conserved variables separately.
+# """
+# function calculateAllStats!(
+#     sim_data::AbstractSimData,
+#     ic_object::InitialCondition,
+#     eq::HyperbolicSystem,
+#     pg::ParticleGrid;
+#     dierckx_k::Int = 1, 
+#     quad_tol::Real = 1e-12,
+#     stats_to_calculate::Union{String,Vector{String}} = "all"
+# )
+#     # Define the stats that are calculated on a per-component basis
+#     component_wise_stats = [
+#         "l1error", "l2error", "supnorm", 
+#         "relative_l1error", "relative_l2error", "relative_supnorm",
+#         "l1norm", "l2norm", "mass", "relative_mass", "wave_position_error",
+#         "wave_height_error"
+#     ]
+#     stats_list = stats_to_calculate == "all" ? component_wise_stats : intersect(stats_to_calculate, component_wise_stats)
+
+#     if isempty(sim_data.u); @warn "SimData has no solution steps to process."; return; end
+#     num_timesteps = length(sim_data.t)
+#     num_components = size(sim_data.u[1], 2)
+
+#     if !hasproperty(sim_data, :stats) || !isa(sim_data.stats, Dict); sim_data.stats = Dict{String, Any}(); end
+#     for key in stats_list
+#         sim_data.stats[key] = Matrix{Float64}(undef, num_timesteps, num_components)
+#     end
+
+#     for m in 1:num_timesteps
+#         t = sim_data.t[m]
+#         x_coords = sim_data.x[m]
+
+#         for i_comp in 1:num_components
+#             u_numerical_component = @view sim_data.u[m][:, i_comp]
+
+#             stats_tmp = _calculate_stats_at_timestep(u_numerical_component, x_coords, t, pg, ic_object, eq, i_comp; dierckx_k=dierckx_k, quad_tol=quad_tol)
+            
+#             for key in stats_list
+#                 sim_data.stats[key][m, i_comp] = get(stats_tmp, key, NaN)
+#             end
+#         end
+#     end
+    
+#     # Call the placeholder for any stats that mix components (e.g., velocity error)
+#     _calculate_derived_system_stats!(sim_data, ic_object, eq, pg; dierckx_k=dierckx_k, quad_tol=quad_tol, stats_to_calculate=stats_to_calculate)
+# end
 
 # """
 #     calculateStats(

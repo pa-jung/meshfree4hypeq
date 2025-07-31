@@ -18,7 +18,7 @@ using Meshfree4ScalarEq # For SEED, rng
 
 # --- Main Simulation Runner for 1D Euler Relaxation System ---
 function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
-    println("\n--- Running 1D Euler System Simulation (Relaxation Method) ---")
+    @info "\n--- Running 1D Euler System Simulation (Relaxation Method) ---"
     run_params = copy(params)
     local sim_data_result = nothing
 
@@ -59,6 +59,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
 
         # Relaxation Velocities: Vector of Tuples, one pair for each macro var
         relax_velocities_config = get(run_params,"relax_velocities", nothing)
+        relax_velocities_config = isnothing(relax_velocities_config) ? [(1., -1.)] : relax_velocities_config
         relax_epsilon_val = get(run_params,"relax_epsilon", nothing)
 
         N_macro_vars = length(relax_velocities_config) # rho, m, E
@@ -69,8 +70,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         N_total = N_particles + 2*N_ghost
         ic_object = InitialConditions.getInitialCondition(initFunc_name, init_params_tuple)
 
-        println("  System Timestepper: $(timestepper_name), Main Gradient: $(main_grad_name)")
-        println("  IC: $(initFunc_name), N_particles: $(N_particles), Domain: [$xmin,$xmax]")
+        @info "  System Timestepper: $(timestepper_name), Main Gradient: $(main_grad_name) IC: $(initFunc_name), N_particles: $(N_particles), Domain: [$xmin,$xmax]"
                 # --- Base 1D Grid for Geometry ---
         # --- Grid Creation ---
         dx_nominal = (xmax - xmin) / N_particles
@@ -81,7 +81,6 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
         base_particleGrid1D = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc; randomness = randomness, rng = rng)
         interior_indices = base_particleGrid1D.interior_indices
         interp_range = interp_range_factor * base_particleGrid1D.dx
-        println(length(base_particleGrid1D.grid))
         # --- Determine dt ---
         local actual_dt::Float64
         if !isnothing(cfl_val)
@@ -237,11 +236,11 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
                 saveFreq=save_freq, organiseFiles=false
             )
 
-            println("Starting 1D Euler system time integration...")
+            @info "Starting 1D Euler system time integration..."
             elapsed_time, sys_xs_data, sys_us_data_kinetic, sys_ts_data = mainTimeIntegrator2!(
                 system_method_instance, kinetic_eqs, component_pgs, sim_settings_obj
             )
-            println("1D Euler system time integration finished in $(round(elapsed_time, digits=2)) seconds.")
+            @info "1D Euler system time integration finished in $(round(elapsed_time, digits=2)) seconds."
 
             # --- Post-process: Recombine kinetic variables to macroscopic ---
             us_macro_data = Vector{Matrix{Float64}}(undef, length(sys_us_data_kinetic))
@@ -284,6 +283,7 @@ function RunSystem1DEulerSimulation(params::ParamDictType)::Union{AbstractSimDat
             end
             sim_data_result = createSimData([xs for _ = ts], us, ts, run_params)
         end
+        calculateAllStats!(sim_data_result, ic_object, system, base_particleGrid1D; quad_tol = 10e-9, dierckx_k = 4)
     catch e
          if isa(e, KeyError); @error "Missing required parameter for System Simulation!" key=e.key params=run_params
          else; @error "Error during System Simulation!" params=run_params exception=(e, catch_backtrace()); end
@@ -311,9 +311,9 @@ SEED_value = 10
 sim_config_euler1d_system = SimulationConfig(
     RunSystem1DEulerSimulation, 
     ParamDict(
-        "tmax" => 0.2, "N" => 100, "bc" => :outflow,
+        "tmax" => 0.2, "N" => 200, "bc" => :outflow,
         "xmin" => -0.5, "xmax" => .5, 
-        "CFL" => 0.5, "snapshots" => 5, 
+        "CFL" => 0.5, "snapshots" => 11, 
         "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
         "init_func" => "eulerShockTube",
         "system" => "euler", 
@@ -346,6 +346,14 @@ sim_config_euler1d_system = SimulationConfig(
                     "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
             "relax_epsilon" => 1e-6
         ),
+        "ARS222MUSCL2" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_flux" => "Rusanov",
+            "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
+            "MOOD" => "none", 
+                    "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+            "relax_epsilon" => 1e-6
+        ),
         "SSP2MUSCL2MOOD" => ParamDict(
             "timestepper" => "SSP2",
             "main_flux" => "Rusanov",
@@ -361,8 +369,25 @@ sim_config_euler1d_system = SimulationConfig(
             "MOOD" => "none",
             "relax_epsilon" => 1e-6
         ),
+        "ARS222Upwind(fixedGrid)" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_flux" => "Rusanov",
+            "main_gradient" => "Upwind", "order" => 1, # MUSCL(1) for 2nd order spatial
+            "MOOD" => "none",
+            "randomness_factor" => 0.,
+            "interp_range" => 1.5,
+            "relax_epsilon" => 1e-6
+        ),
         "ARS233MUSCL5MOOD" => ParamDict(
             "timestepper" => "ARS233",
+                    "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+            "main_flux" => "Rusanov",
+            "main_gradient" => "MUSCL", "order" => 5, # MUSCL(1) for 2nd order spatial
+            "MOOD" => "U2", "delta_relax" => 0., # More aggressive MOOD
+            "relax_epsilon" => 1e-6
+        ),
+        "ARS222MUSCL5MOOD" => ParamDict(
+            "timestepper" => "ARS222",
                     "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
             "main_flux" => "Rusanov",
             "main_gradient" => "MUSCL", "order" => 5, # MUSCL(1) for 2nd order spatial
@@ -378,14 +403,17 @@ sim_config_euler1d_system = SimulationConfig(
             "relax_epsilon" => 1e-6
         ),
         "Analytic" => ParamDict(
-            "randomness_factor" => (:const,0.)
+            "randomness_factor" => (:const,0.),
+            "ignore" => ["interp_alpha", "randomness_factor", "SEED", "order", "relax_velocities"]
              # No randomness_factor needed when regular=true
         )
     ),
-    "Analytic"
+    ["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 
 # To run:
-show1DSolutionFig(sim_config_euler1d_system) 
+#show1DSolutionFig(sim_config_euler1d_system) 
+#showDynamicDependence(sim_config_euler1d_system)
+showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.5:.2:3.5); force_int_param = true, initial_calc = true, ui_options = :default)
 # This will require show1DSolutionFig to be adapted to handle SimData1D.u as Vector{Matrix}
 # and use the component selector. For now, it will plot the first component (rho_macro).
