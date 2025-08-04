@@ -9,13 +9,15 @@ using Meshfree4ScalarEq.SimSettings
 using Meshfree4ScalarEq.FluxFunctions
 using Meshfree4ScalarEq.SourceTerms
 using Meshfree4ScalarEq.ImplicitSolvers
-using Meshfree4ScalarEq.PlottingUtils
+#using Meshfree4ScalarEq.PlottingUtils
 using Meshfree4ScalarEq.InitialConditions
 using Random                    # For RNG state copy
 using IPlotPDESols
 using Meshfree4ScalarEq
 
+
 """
+
     runBurgersSimulation_for_IPlotPDESols(params::ParamDictType)
 
 Runs a single 1D Burgers' equation simulation based on parameters defined
@@ -261,7 +263,7 @@ function RunSimulation(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Post-processing ---
         if !isnothing(sim_data_result)
              # Add metadata to stats dictionary
-             calculateAllStats!(sim_data_result, IC, eq, particleGrid; quad_tol = 10e-9, dierckx_k = 4)
+             calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
              if hasproperty(sim_data_result, :stats) && isa(sim_data_result.stats, Dict)
                  sim_data_result.stats["time"] = elapsed_time
                 #  sim_data_result.stats["dx_nominal"] = dx_nominal
@@ -288,7 +290,7 @@ sim_config_burgers = SimulationConfig(
     RunSimulation, # Use the new runner
 
     ParamDict(
-        "tmax" => 4, "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "tmax" => 5, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "box",
@@ -516,10 +518,10 @@ sim_config_burgers = SimulationConfig(
 );
 
 # Pass this config to your IPlotPDESols functions
-#show1DSolutionFig(sim_config_burgers; ui_options = :publication);
-showDynamicDependence(sim_config_burgers; ui_options = :publication)
-#calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2.5); force_int_param = true)
-#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.15:3); force_int_param = true, initial_calc = true, ui_options = :publication)
+#show1DSolutionFig(sim_config_burgers; calc_stats = true, ui_options = :publication);
+#showDynamicDependence(sim_config_burgers; ui_options = :publication)
+#calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2); force_int_param = true)
+showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.25:2); force_int_param = true, initial_calc = true, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,5); force_int_param = true, initial_calc = true, ui_options = :publication);

@@ -410,7 +410,6 @@ sim_config_euler1d_system = SimulationConfig(
     ),
     ["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
-
 # To run:
 #show1DSolutionFig(sim_config_euler1d_system) 
 #showDynamicDependence(sim_config_euler1d_system)
