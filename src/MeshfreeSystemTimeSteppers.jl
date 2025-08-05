@@ -1,6 +1,6 @@
 
 # Default case: Everything is decoupled
-export RelaxationStepper, ARS2IMEX, GeneralIMEXTimeStepper, ARS233, PareschiRussoIMEXSSP3, ARS222, SSP2332
+export RelaxationStepper, ARS2IMEX, GeneralIMEXTimeStepper, ARS233, PareschiRussoIMEXSSP3, ARS222, SSP2332, SimpleSplitting
 
 include("ButcherTableaus.jl")
 
@@ -45,6 +45,113 @@ function(relax_ts::RelaxationStepper)(eqs::Vector{LinearAdvection{T}}, particleG
     end
 
 end
+
+# In your TimeIntegration.jl or a similar module
+
+# Ensure all necessary types are accessible via `using` statements
+# using ..ParticleGrids, ..SimSettings, ..ScalarHyperbolicEquations, ..SourceTerms
+
+"""
+    SimpleSplitting <: MeshfreeSystemTimeStepper
+
+A simple first-order operator splitting time stepper for relaxation systems.
+It performs an advection step followed by a relaxation step.
+
+This is a robust but only first-order accurate method, often used for reference
+or as a component in more complex schemes.
+"""
+struct SimpleSplitting{T <: TimeStepper, S <: AbstractSourceTerm} <: MeshfreeSystemTimeStepper
+    timestepper::T # The scalar timestepper for the advection step (e.g., EulerUpwind, RalstonRK2)
+    source_term::S # The RelaxationSourceTerm object
+
+    # Buffer to hold the intermediate macroscopic state after advection
+    macro_state_buffer::Matrix{Float64} 
+
+    function SimpleSplitting(
+        timestepper::T, 
+        source_term::S,
+        N_total_particles::Int
+    ) where {T <: TimeStepper, S <: AbstractSourceTerm}
+        @assert !isa(timestepper, MeshfreeSystemTimeStepper) "A scalar timestepper must be provided for the advection step."
+        @assert isa(source_term, RelaxationSourceTerm) "Source term must be a RelaxationSourceTerm."
+        
+        num_macro_vars = source_term.num_macro_variables
+        macro_buffer = Matrix{Float64}(undef, N_total_particles, num_macro_vars)
+        
+        new{T, S}(timestepper, source_term, macro_buffer)
+    end
+end
+
+function initTimeStepper(method::SimpleSplitting, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting)
+    # Initialize the underlying scalar timestepper for each component grid
+    # (This assumes the initTimeStepper for the scalar method is defined)
+    for pg in particleGrids
+        initTimeStepper(method.timestepper, pg, settings)
+    end
+end
+
+"""
+    (ss::SimpleSplitting)(eqs, particleGrids, settings, time, dt)
+
+Functor for the SimpleSplitting timestepper.
+"""
+function (ss::SimpleSplitting)(
+    eqs::Vector{<:LinearAdvection}, # The kinetic equations
+    particleGrids::Vector{<:ParticleGrid}, 
+    settings::SimSetting, 
+    time::Real, 
+    dt::Real
+)
+    # --- 1. Advection Step ---
+    # Apply the scalar timestepper to each kinetic component grid.
+    # This updates the .rho field of each particle to the post-advection state v_k^*.
+    for k_comp in eachindex(particleGrids)
+        ss.timestepper(eqs[k_comp], particleGrids[k_comp], settings, time, dt)
+    end
+    # Note: The scalar timestepper should only update interior points.
+
+    # --- 2. Recombination Step ---
+    # Reconstruct the macroscopic state U_macro^* = [rho^*, m^*, E^*] at ALL particle locations
+    # (including ghosts) because Maxwellians for interior points may need neighbor values.
+    N_total_particles = length(particleGrids[1].grid)
+    rs = ss.source_term # Alias for the relaxation source term object
+
+    for p_idx in 1:N_total_particles
+        for i_macro in 1:rs.num_macro_variables
+            # Sum the advected kinetic variables (v_k^*) to get the macroscopic state (U_macro_i^*)
+            indices = rs.kinetic_indices[i_macro]
+            ss.macro_state_buffer[p_idx, i_macro] = sum(particleGrids[k_idx].grid[p_idx].rho for k_idx in indices)
+        end
+    end
+
+    # --- 3. Relaxation Step ---
+    # Apply the relaxation formula ONLY to the INTERIOR particles.
+    coeff_ep = rs.epsilon / (rs.epsilon + dt)
+    coeff_dt = dt / (rs.epsilon + dt)
+
+    for k_comp in eachindex(particleGrids)
+        pg_k = particleGrids[k_comp]
+        maxwellian_func_k = rs.maxwellians[k_comp]
+
+        for p_idx in pg_k.interior_indices
+            particle = pg_k.grid[p_idx]
+            
+            # This is v_k^*(p_idx) from the advection step
+            v_k_star_at_p = particle.rho 
+            
+            # Get the macroscopic state vector (rho^*, m^*, E^*) at this particle
+            U_macro_star_at_p = NTuple{rs.num_macro_variables, Float64}(ss.macro_state_buffer[p_idx, i] for i in 1:rs.num_macro_variables)
+
+            # Evaluate the Maxwellian by splatting the macroscopic state tuple
+            equilibrium_val_k = maxwellian_func_k(U_macro_star_at_p...)
+            
+            # Update particle.rho to the final state v_k^{n+1}
+            particle.rho = coeff_ep * v_k_star_at_p + coeff_dt * equilibrium_val_k
+        end
+    end
+    # Ghost cell values in particleGrids are NOT touched in this step, preserving the BCs.
+end
+
 
 # --- Helper to compute explicit tendency -L(U_state) with MOOD ---
 function compute_explicit_tendency_with_mood!(

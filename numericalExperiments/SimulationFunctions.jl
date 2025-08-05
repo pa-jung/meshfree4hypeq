@@ -310,10 +310,10 @@ function RunSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
         dt_val = get(run_params, "dt", nothing)
         SEED_value = get(run_params, "SEED", nothing)
         snapshots::Int = run_params["snapshots"]
-        interp_alpha::Float64 = run_params["interp_alpha"]
-        interp_range_factor::Float64 = run_params["interp_range"]
+        interp_alpha::Float64 = get(run_params,"interp_alpha", 1.)
+        interp_range_factor::Float64 = get(run_params,"interp_range", 1.1)
         
-        randomness_factor::Float64 = run_params["randomness_factor"]
+        randomness_factor::Float64 = get(run_params,"randomness_factor",0.)
 
         timestepper_name = get(run_params,"timestepper",nothing) # e.g., "ARS2IMEX_Relax"
         main_grad_name = get(run_params,"main_gradient",nothing)
@@ -348,7 +348,7 @@ function RunSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
         dx_nominal = (xmax - xmin) / N_particles
         local base_particleGrid1D
 
-        rng = MersenneTwister(SEED_value)
+        rng = isnothing(SEED_value) ? MersenneTwister(1) : MersenneTwister(SEED_value)
         randomness = randomness_factor * dx_nominal
         base_particleGrid1D = ParticleGrid1D(xmin, xmax, N_particles, N_ghost, bc; randomness = randomness, rng = rng)
         interior_indices = base_particleGrid1D.interior_indices
@@ -361,7 +361,6 @@ function RunSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
                 max_abs_kinetic_speed = max(max_abs_kinetic_speed, maximum(abs.(speeds)))
             end
             if max_abs_kinetic_speed < 1e-9; max_abs_kinetic_speed = 1.0; end
-            
             temp_eq_for_dt = LinearAdvection(max_abs_kinetic_speed)
             actual_dt = cfl_val * getTimeStep(base_particleGrid1D, temp_eq_for_dt, interp_alpha, interp_range)
         elseif !isnothing(dt_val); actual_dt = dt_val;
@@ -394,7 +393,8 @@ function RunSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
                     elseif main_grad_name == "Upwind"
                         UpwindGradient(1; numericalFlux=MainFlux, algType="Classic", weightFunction=exponentialWeightFunction())
                     elseif isnothing(main_grad_name)
-                            @assert timestepper_name == "Analytic"
+                            @assert timestepper_name == "Analytic" || timestepper_name == "SimpleSplitting"
+                            nothing
                     else error("Unknown MainGrad: $main_grad_name"); end
 
             FallbackGrad =  if fallback_grad_name == "Upwind"
@@ -478,7 +478,10 @@ function RunSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
             end
             
             local system_method_instance::TimeIntegration.TimeStepper
-            if timestepper_name == "ARS222" # Default IMEX choice
+            if timestepper_name == "SimpleSplitting"
+                @assert isnothing(MainGrad) "SimpleSplitting only allowed for 1st order classic timestepper reference solution!"
+                system_method_instance = SimpleSplitting(ClassicalTimeStepper(N_total, MainFlux), relaxation_source, N_total)
+            elseif timestepper_name == "ARS222" # Default IMEX choice
                 system_method_instance = ARS222( MainGrad, FallbackGrad, mood_fun,
                     implicit_solver, relaxation_source,
                     N_total, N_total_kinetic_components
@@ -555,7 +558,9 @@ function RunSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
             end
             sim_data_result = createSimData([xs for _ = ts], us, ts, run_params)
         end
-        calculateAllStats!(sim_data_result, ic_object, system, base_particleGrid1D; quad_tol = 10e-9, dierckx_k = 4)
+        if initFunc_name == "eulerShockTube"
+            calculateAllStats!(sim_data_result, (x,t) -> ic_object(x,t,system,base_particleGrid1D); discontinuity_points_func = t -> get_discontinuity_points(ic_object, system, t, base_particleGrid1D), quad_tol = 10e-9, dierckx_k = 4)
+        end
     catch e
          if isa(e, KeyError); @error "Missing required parameter for System Simulation!" key=e.key params=run_params
          else; @error "Error during System Simulation!" params=run_params exception=(e, catch_backtrace()); end
