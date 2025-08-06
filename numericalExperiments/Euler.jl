@@ -1,4 +1,4 @@
-include("SimulationFunctions.jl")
+include("../SimulationFunctions/runSystem1DSimulation.jl")
 
 # --- Example SimulationConfig for 1D Euler System ---
 euler_smooth_params = (
@@ -125,12 +125,12 @@ sim_config_euler1d_system = SimulationConfig(
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
         )
     ),
-    ["Reference"]#,"ARS222MUSCL2", "ARS222MUSCL2limiter"]
+    ["ARS222MUSCL2", "ARS222MUSCL2limiter"]
     #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 # To run:
-show1DSolutionFig(sim_config_euler1d_system) 
-#showDynamicDependence(sim_config_euler1d_system)
-#showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.5:.2:3.5); force_int_param = true, initial_calc = true, ui_options = :default)
+#show1DSolutionFig(sim_config_euler1d_system) 
+#showDynamicDependence(sim_config_euler1d_system; calc_stats = true)
+showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
 # This will require show1DSolutionFig to be adapted to handle SimData1D.u as Vector{Matrix}
 # and use the component selector. For now, it will plot the first component (rho_macro).
