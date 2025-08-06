@@ -238,5 +238,6 @@ sim_config_burgers = SimulationConfig(
 #showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,5); force_int_param = true, initial_calc = true, ui_options = :publication);
+using IPlotPDESols
 test = create_sim_config_from_csv("figures/test_csv_params.csv","none")
-show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication);
+show1DSolutionFig(test; calc_stats = false, ui_options = :publication);
