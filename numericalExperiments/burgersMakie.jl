@@ -2,8 +2,6 @@ include("../SimulationFunctions/runScalarSim.jl")
 
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
-    runScalarSim, # Use the new runner
-
     ParamDict(
         "tmax" => 5, "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
@@ -11,7 +9,7 @@ sim_config_burgers = SimulationConfig(
         "init_func" => "box",
         "init_params" => (0., 1., -2., 2.),#(0., 1., -4., -2.), #
         "randomness_factor" => 0.2, # Provide default needed when regular=false
-        "SEED" => 10, 
+        "SEED" => 10, "sim_function" => (:const, "runScalarSim"),
         "bc" => :periodic,
         "order" => 1, "PDE" => "linear", "PDE_params" => (1.,)
     ),
@@ -233,11 +231,12 @@ sim_config_burgers = SimulationConfig(
 );
 
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication);
+#show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication);
 #showDynamicDependence(sim_config_burgers; ui_options = :publication)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2); force_int_param = true)
 #showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.25:2); force_int_param = true, initial_calc = true, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,5); force_int_param = true, initial_calc = true, ui_options = :publication);
-
+test = create_sim_config_from_csv("figures/test_csv_params.csv","none")
+show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication);
