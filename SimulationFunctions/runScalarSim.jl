@@ -72,6 +72,9 @@ function runScalarSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         eq_params = get(run_params, "PDE_params", nothing)
         lim = get(run_params, "limiter", nothing)
         seed_val = get(run_params, "SEED_value", nothing)
+        save_relax = get(run_params, "save_relax", false)
+
+        relax_vel = relax_vel isa Real ? (-relax_vel,relax_vel) : relax_vel
 
         if isnothing(order) || isnothing(timestepper_name); @info "Analytic solution detected!" end
         # --- Derive regularity ---
@@ -234,8 +237,8 @@ function runScalarSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                 system_method = RelaxationStepper(method, N, M; epsilon = relax_eps)
             end
             elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator2!(system_method, eqs, pgs, settings)
-            us = [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
-            xs = [sys_x[:,1] for sys_x = sys_xs]
+            us = save_relax ? sys_us : [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
+            xs = save_relax ? sys_xs : [sys_x[:,1] for sys_x = sys_xs]
         elseif !isnothing(method)
             elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
         else
@@ -253,13 +256,14 @@ function runScalarSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
             end
         end
         @info "Time integration finished in $(round(elapsed_time, digits=2)) seconds."
-
         sim_data_result = createSimData(xs, us, ts, run_params)
         # --- Post-processing ---
         if !isnothing(sim_data_result)
              # Add metadata to stats dictionary
-             calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
-             if hasproperty(sim_data_result, :stats) && isa(sim_data_result.stats, Dict)
+            if !save_relax
+                calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+            end 
+            if hasproperty(sim_data_result, :stats) && isa(sim_data_result.stats, Dict)
                  sim_data_result.stats["time"] = elapsed_time
                 #  sim_data_result.stats["dx_nominal"] = dx_nominal
                 #  sim_data_result.stats["dt_calculated"] = dt

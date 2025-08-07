@@ -208,8 +208,8 @@ function runSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
             
             local system_method_instance::TimeIntegration.TimeStepper
             if timestepper_name == "SimpleSplitting"
-                @assert isnothing(MainGrad) "SimpleSplitting only allowed for 1st order classic timestepper reference solution!"
-                system_method_instance = SimpleSplitting(ClassicalTimeStepper(N_total, MainFlux), relaxation_source, N_total)
+                #@assert isnothing(MainGrad) "SimpleSplitting only allowed for 1st order classic timestepper reference solution!"
+                system_method_instance = SimpleSplitting(RalstonRK2(MainGrad, N_total; fallbackInterpolator = FallbackGrad, mood = mood_fun), relaxation_source, N_total)
             elseif timestepper_name == "ARS222" # Default IMEX choice
                 system_method_instance = ARS222( MainGrad, FallbackGrad, mood_fun,
                     implicit_solver, relaxation_source,

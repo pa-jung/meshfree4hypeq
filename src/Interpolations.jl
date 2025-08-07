@@ -1221,39 +1221,43 @@ function limit_slope!(
         # Find closest left and right neighbors to calculate one-sided slopes
         _, val_L, dist_L_val, _, val_R, dist_R_val = find_closest_lr_neighbors_1D(particleGrid, i, fVec)
 
-        slope_L_os = 0.0; if !isnothing(val_L); slope_L_os = (fVec[i] - val_L) / (-dist_L_val); end
-        slope_R_os = 0.0; if !isnothing(val_R); slope_R_os = (val_R - fVec[i]) / dist_R_val; end
-
-        r_val = 0.0; if abs(slope_R_os) > 1e-12; r_val = slope_L_os / slope_R_os; end
-
-        phi = 0.0
-        if strategy isa SuperbeeLimiter
-            phi = superbee_phi(r_val)
-        elseif strategy isa MinmodLimiter
-            phi = minmod_phi(r_val)
+        slope_L_os = 0.0
+        if !isnothing(val_L) && abs(dist_L_val) > 1e-12
+            slope_L_os = (fVec[i] - val_L) / (-dist_L_val)
         end
         
-        # Classical limiters often applied to an "upwind" or "downwind" slope.
-        # A common choice is to apply it to the one-sided slopes.
-        # Another choice is to apply it to the centered MLS slope.
-        # Let's apply it to the centered (unlimited) slope for consistency.
-        # This requires relating r to the centered slope, which is tricky.
-        # A more direct way is to limit the centered slope based on the one-sided ones.
-        if slope_L_os * slope_R_os <= 0.0 # Different signs -> local extremum
+        slope_R_os = 0.0
+        if !isnothing(val_R) && abs(dist_R_val) > 1e-12
+            slope_R_os = (val_R - fVec[i]) / dist_R_val
+        end
+
+        # --- CORRECTED LOGIC ---
+
+        # If the one-sided slopes have opposite signs, it indicates a local
+        # extremum, and the limited slope should be zero to prevent oscillations.
+        if slope_L_os * slope_R_os <= 0.0
             limited_slopes_cache[i] = 0.0
-        else # Slopes have same sign
-            # Limit the centered slope by the magnitude of the one-sided slopes
-            centered_slope = unlimited_slopes[i]
-            # minmod logic applied to the centered slope vs one-sided slopes
-            if centered_slope > 0
-                limited_slopes_cache[i] = min(abs(centered_slope), abs(2.0*slope_L_os), abs(2.0*slope_R_os))
-            else
-                limited_slopes_cache[i] = -min(abs(centered_slope), abs(2.0*slope_L_os), abs(2.0*slope_R_os))
+        else
+            # Calculate the ratio r of the "upwind" to "downwind" slope.
+            # Avoid division by zero.
+            r_val = abs(slope_R_os) > 1e-12 ? slope_L_os / slope_R_os : 1.0
+
+            # Calculate the limiter function phi(r) based on the strategy.
+            phi = 0.0
+            if strategy isa SuperbeeLimiter
+                phi = superbee_phi(r_val)
+            elseif strategy isa MinmodLimiter
+                phi = minmod_phi(r_val)
             end
-            # This is a form of generalized minmod on the centered slope.
+            
+            # The limited slope is phi(r) times one of the one-sided slopes.
+            # A common and robust choice is to use the right-sided slope.
+            # This correctly applies both the minmod and superbee limiters.
+            limited_slopes_cache[i] =  phi * slope_R_os
         end
     end
 end
+
 
 # Version for geometric, bound-based limiters (Barth-Jespersen, Venkatakrishnan)
 function limit_slope!(

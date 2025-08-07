@@ -17,23 +17,29 @@ sod_euler_params = ( # Sod shock tube for 1D Euler
 SEED_value = 10
 
 sim_config_euler1d_system = SimulationConfig(
-    RunSystem1DSimulation, 
     ParamDict(
         "tmax" => 0.2, "N" => 200, "bc" => :outflow,
         "xmin" => -0.5, "xmax" => .5, 
-        "CFL" => 0.5, "snapshots" => 11, 
-        "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
-        "init_func" => "eulerSmooth",
-        "system" => "euler",
-        "init_params" => euler_smooth_params, 
-        #"init_params" => sod_euler_params, 
-        "randomness_factor" => 0., 
+        "CFL" => 0.2, "snapshots" => 11, 
+        "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
+        "init_func" => "eulerShockTube",
+        "system" => "euler", "sim_function" => "runSystem1DSimulation",
+        #"init_params" => euler_smooth_params, 
+        "init_params" => sod_euler_params, 
+        "randomness_factor" => 0.2, 
         "SEED" => SEED_value,
         "relax_velocities" => [ (2.0, -2.0), (3.0, -3.0), (4.0, -4.0) ], # Pairs for rho, m, E kinetic components
     ),
     MethodDict( 
         "ARS222MUSCL2limiter" => ParamDict(
             "timestepper" => "ARS222",
+            "main_gradient" => "MUSCLlimit", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
+            "main_flux" => "Rusanov",
+            "MOOD" => "none",
+            "relax_epsilon" => 1e-6
+        ),
+        "SimpleSplittingMUSCL2limiter" => ParamDict(
+            "timestepper" => "SimpleSplitting",
             "main_gradient" => "MUSCLlimit", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
             "main_flux" => "Rusanov",
             "MOOD" => "none",
@@ -111,7 +117,7 @@ sim_config_euler1d_system = SimulationConfig(
             "MOOD" => "U2", "delta_relax" => 0., # More aggressive MOOD
             "relax_epsilon" => 1e-6
         ),
-        "Anlytic" => ParamDict(
+        "Analytic" => ParamDict(
             "randomness_factor" => (:const,0.),
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order", "relax_velocities"]
              # No randomness_factor needed when regular=true
@@ -125,12 +131,12 @@ sim_config_euler1d_system = SimulationConfig(
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
         )
     ),
-    ["ARS222MUSCL2", "ARS222MUSCL2limiter"]
+    ["Analytic", "ARS222MUSCL2", "ARS222MUSCL2limiter", "ARS222MUSCL2MOOD", "ARS222Upwind", "SimpleSplittingMUSCL2limiter"]
     #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 # To run:
-#show1DSolutionFig(sim_config_euler1d_system) 
+show1DSolutionFig(sim_config_euler1d_system; ui_options = :publication) 
 #showDynamicDependence(sim_config_euler1d_system; calc_stats = true)
-showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
+#showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
 # This will require show1DSolutionFig to be adapted to handle SimData1D.u as Vector{Matrix}
 # and use the component selector. For now, it will plot the first component (rho_macro).

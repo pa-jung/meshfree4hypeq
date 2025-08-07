@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.11.5"
+julia_version = "1.11.4"
 manifest_format = "2.0"
 project_hash = "803c4b459a63838a91c656757fdfd4ac96b7d35e"
 
@@ -745,7 +745,7 @@ uuid = "34004b35-14d8-5ef3-9330-4cdb6864b03a"
 version = "0.3.28"
 
 [[deps.IPlotPDESols]]
-deps = ["CSV", "CairoMakie", "DataFrames", "Dates", "Dierckx", "FileIO", "GLMakie", "JLD2", "LibGit2", "LinearAlgebra", "Printf", "ProgressMeter", "QuadGK", "Random", "SHA", "Statistics", "StatsBase"]
+deps = ["CSV", "CairoMakie", "DataFrames", "Dates", "Dierckx", "FileIO", "GLMakie", "JLD2", "LibGit2", "LinearAlgebra", "Pkg", "Printf", "ProgressMeter", "QuadGK", "Random", "SHA", "Statistics", "StatsBase"]
 path = "../IPlotPDESols"
 uuid = "9dcd72ad-f481-4c48-9703-3c94083dcfc3"
 version = "0.1.0"
@@ -1410,7 +1410,7 @@ version = "2.4.0+0"
 [[deps.OpenLibm_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "05823500-19ac-5b8b-9628-191a04bc5112"
-version = "0.8.5+0"
+version = "0.8.1+4"
 
 [[deps.OpenSSL]]
 deps = ["BitFlags", "Dates", "MozillaCACerts_jll", "OpenSSL_jll", "Sockets"]
