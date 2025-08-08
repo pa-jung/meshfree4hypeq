@@ -153,6 +153,8 @@ function runScalarSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
             limiter = VenkatakrishnanLimiter()
         elseif lim == "BJ"
             limiter = BarthJespersenLimiter()
+        elseif lim == "none"
+            limiter = NoLimiter()
         elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
         local MainFlux
         if main_flux_name == "LW"; MainFlux = LaxWendroffFlux()
@@ -170,7 +172,7 @@ function runScalarSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         if main_grad_name == "MUSCL"; MainGrad = isnothing(lim) ? MUSCL(order-1; numericalFlux = MainFlux) : MUSCLlimited(1; numericalFlux = MainFlux, limiter = limiter)
         #elseif main_grad_name == "MUSCLlimit"; MainGrad = MUSCLlimited(1; numericalFlux = MainFlux)
         elseif main_grad_name == "Upwind"; MainGrad = UpwindGradient(order; numericalFlux = MainFlux)
-        elseif main_grad_name == "WENO"; error("WENO not implemented for non-linear case.")
+        elseif main_grad_name == "WENO"; @assert (relax_method || eq isa LinearAdvection) "WENO requires Relax-Method. Only implemented for linear advection!"; MainGrad = WENO(order)
         elseif !isnothing(main_grad_name); error("Requested Main GradientInterpolator not implemented!") end
 
         local FallbackGrad 
@@ -233,6 +235,10 @@ function runScalarSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                 system_method = ARS222(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
             elseif timestepper_name == "SSP2332"
                 system_method = SSP2332(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
+            elseif timestepper_name == "IMEXRalstonRK2"
+                system_method = RalstonRK2(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
+            elseif timestepper_name == "ARS232"
+                system_method = ARS232(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, N, length(relax_vel))
             else
                 system_method = RelaxationStepper(method, N, M; epsilon = relax_eps)
             end

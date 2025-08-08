@@ -21,12 +21,12 @@ sim_config_euler1d_system = SimulationConfig(
         "tmax" => 0.2, "N" => 200, "bc" => :outflow,
         "xmin" => -0.5, "xmax" => .5, 
         "CFL" => 0.2, "snapshots" => 11, 
-        "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
+        "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
         "init_func" => "eulerShockTube",
         "system" => "euler", "sim_function" => "runSystem1DSimulation",
         #"init_params" => euler_smooth_params, 
         "init_params" => sod_euler_params, 
-        "randomness_factor" => 0.2, 
+        "randomness_factor" => 0., 
         "SEED" => SEED_value,
         "relax_velocities" => [ (2.0, -2.0), (3.0, -3.0), (4.0, -4.0) ], # Pairs for rho, m, E kinetic components
     ),
@@ -45,12 +45,10 @@ sim_config_euler1d_system = SimulationConfig(
             "MOOD" => "none",
             "relax_epsilon" => 1e-6
         ),
-        "ARS222MUSCL2MOOD" => ParamDict(
+        "ARS222WENO2" => ParamDict(
             "timestepper" => "ARS222",
-            "main_flux" => "Rusanov",
-            "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
-            "MOOD" => "U2", "delta_relax" => 0., 
-            "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+            "main_gradient" => "WENO", "order" => 2, # MUSCL(1) for 2nd order spatial
+            "MOOD" => "none", "interp_range" => 2.5,
             "relax_epsilon" => 1e-6
         ),
         "ARS222MUSCL2MOOD" => ParamDict(
@@ -117,7 +115,7 @@ sim_config_euler1d_system = SimulationConfig(
             "MOOD" => "U2", "delta_relax" => 0., # More aggressive MOOD
             "relax_epsilon" => 1e-6
         ),
-        "Analytic" => ParamDict(
+        "Analytical Solution" => ParamDict(
             "randomness_factor" => (:const,0.),
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order", "relax_velocities"]
              # No randomness_factor needed when regular=true
@@ -131,7 +129,7 @@ sim_config_euler1d_system = SimulationConfig(
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
         )
     ),
-    ["Analytic", "ARS222MUSCL2", "ARS222MUSCL2limiter", "ARS222MUSCL2MOOD", "ARS222Upwind", "SimpleSplittingMUSCL2limiter"]
+    ["Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2limiter", "ARS222MUSCL2MOOD", "SimpleSplittingMUSCL2limiter", "ARS222WENO2"]
     #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 # To run:

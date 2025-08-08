@@ -1,6 +1,6 @@
 
 # Default case: Everything is decoupled
-export RelaxationStepper, ARS2IMEX, GeneralIMEXTimeStepper, ARS233, PareschiRussoIMEXSSP3, ARS222, SSP2332, SimpleSplitting
+export RelaxationStepper, ARS2IMEX, GeneralIMEXTimeStepper, ARS233, PareschiRussoIMEXSSP3, ARS222, SSP2332, SimpleSplitting, RalstonRK2, ARS232
 
 include("ButcherTableaus.jl")
 
@@ -152,7 +152,6 @@ function (ss::SimpleSplitting)(
     # Ghost cell values in particleGrids are NOT touched in this step, preserving the BCs.
 end
 
-
 # --- Helper to compute explicit tendency -L(U_state) with MOOD ---
 function compute_explicit_tendency_with_mood!(
     K_E_out_sys::Matrix{Float64},
@@ -192,10 +191,7 @@ function compute_explicit_tendency_with_mood!(
         copyCurvatures!(scalar_grid_k) 
 
         for p_idx in interior_indices
-            div_high_k_p = gradientInterpolator(
-                scalar_grid_k, p_idx, U_state_k_view, scalar_eq_k, settings; setCurvature=true
-            )
-            
+            div_high_k_p = gradientInterpolator(scalar_grid_k, p_idx, U_state_k_view, scalar_eq_k, settings; setCurvature=true)
             rho_candidate_for_mood = U_state_k_view[p_idx] - dt_for_mood_check * div_high_k_p
             K_E_out_sys[p_idx, k_comp] = -div_high_k_p
 
@@ -597,6 +593,127 @@ function (imex_ts::GeneralIMEXTimeStepper)(
     end
 end
 
+# # --- REVISED Functor for GeneralIMEXTimeStepper (Explicit-First Logic) ---
+# function (imex_ts::GeneralIMEXTimeStepper)(
+#         scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation},
+#         system_pg::Vector{<:ParticleGrids.ParticleGrid},
+#         settings::SimSettings.SimSetting,
+#         time_n::Real,
+#         dt::Real
+#     )
+
+#     interior_indices = system_pg[1].interior_indices
+#     N_total_particles = length(system_pg[1].grid)
+#     N_components = length(scalar_equations)
+#     s = imex_ts.num_stages
+#     bt = imex_ts.butcher_tableau
+
+#     if size(imex_ts.U_n_sys,1) != N_total_particles || size(imex_ts.U_n_sys,2) != N_components
+#         error("GeneralIMEXTimeStepper buffers not sized correctly. Re-initialize instance.")
+#     end
+
+#     # --- 0. Store U^n from system_pg (including ghost cells) ---
+#     for k_comp in 1:N_components
+#         for p_idx in 1:N_total_particles
+#             imex_ts.U_n_sys[p_idx, k_comp] = system_pg[k_comp].grid[p_idx].rho
+#         end
+#     end
+
+#     # Temporary particle-local vectors for implicit solve
+#     u_particle_iter_buffer = Vector{Float64}(undef, N_components)
+#     Y_i_base_for_implicit_solve = Vector{Float64}(undef, N_components)
+
+#     # --- Loop through stages i = 1 to s ---
+#     for i in 1:s
+#         # This buffer will hold the state used to compute the explicit tendency K_E
+#         Y_i_for_explicit_eval = imex_ts.Y_stages_sys[i] # Reuse stage buffer temporarily
+#         Y_i_for_explicit_eval .= imex_ts.U_n_sys
+
+#         # --- Step 1: Build the state for the EXPLICIT tendency evaluation ---
+#         # Y_i_E = U^n + dt * sum_{j=1}^{i-1} (At[i,j]*K_Ej + A[i,j]*K_Ij)
+#         # Note: Some IMEX schemes use the same stage value for both explicit and implicit
+#         # tendencies. The ARS schemes do this. We build the full base state first.
+#         for j in 1:(i-1)
+#             if bt.At[i,j] != 0.0
+#                 @. Y_i_for_explicit_eval[interior_indices, :] += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][interior_indices, :]
+#             end
+#             if bt.A[i,j] != 0.0
+#                 @. Y_i_for_explicit_eval[interior_indices, :] += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][interior_indices, :]
+#             end
+#         end
+        
+#         # --- Step 2: Update ghost cells for this intermediate state ---
+#         # The explicit operator needs correct ghost values for its stencil.
+#         for k_comp in 1:N_components
+#             for p_idx in interior_indices; system_pg[k_comp].grid[p_idx].rho = Y_i_for_explicit_eval[p_idx, k_comp]; end
+#             apply_boundary_conditions!(system_pg[k_comp])
+#             for p_idx in 1:N_total_particles; if !(p_idx in interior_indices); Y_i_for_explicit_eval[p_idx, k_comp] = system_pg[k_comp].grid[p_idx].rho; end; end
+#         end
+
+#         # --- Step 3: Evaluate and store the EXPLICIT tendency K_Ei FIRST ---
+#         time_explicit_eval = time_n + bt.ct[i] * dt
+#         compute_explicit_tendency_with_mood!(
+#             imex_ts.K_E_stages_sys[i], Y_i_for_explicit_eval, 
+#             imex_ts.gradientInterpolator, imex_ts.fallbackInterpolator, imex_ts.mood,
+#             scalar_equations, system_pg, settings, dt, (i==1), interior_indices
+#         )
+
+#         # --- Step 4: Build the RHS for the IMPLICIT solve ---
+#         # This now includes the explicit tendency from the current stage.
+#         # Y_i_base = U^n + dt*sum_{j=1}^{i} At[i,j]*K_Ej + dt*sum_{j=1}^{i-1} A[i,j]*K_Ij
+#         # We can just add the new K_E term to our existing Y_i_for_explicit_eval
+#         if bt.At[i,i] != 0.0 # This is usually zero for ARS schemes but included for generality
+#             @. Y_i_for_explicit_eval[interior_indices, :] += dt * bt.At[i,i] * imex_ts.K_E_stages_sys[i][interior_indices, :]
+#         end
+        
+#         # --- Step 5: Implicit Solve for the final stage value Y_i ---
+#         current_Y_i_sys = Y_i_for_explicit_eval # Y_i_for_explicit_eval now holds the full RHS
+#         if abs(bt.A[i,i]) > 1e-14
+#             time_implicit_eval = time_n + bt.c[i] * dt
+#             for p_idx in interior_indices
+#                 particle_pos = system_pg[1].grid[p_idx].pos
+#                 u_particle_iter_buffer .= @view current_Y_i_sys[p_idx, :] 
+#                 Y_i_base_for_implicit_solve .= @view current_Y_i_sys[p_idx, :] 
+                                          
+#                 ImplicitSolvers.solve!(imex_ts.implicit_solver,
+#                     u_particle_iter_buffer, Y_i_base_for_implicit_solve, dt * bt.A[i,i],
+#                     imex_ts.source_term_object, particle_pos, time_implicit_eval, N_components
+#                 )
+#                 current_Y_i_sys[p_idx, :] .= u_particle_iter_buffer
+#             end
+#         end
+        
+#         # --- Step 6: Evaluate and store the IMPLICIT tendency K_Ii ---
+#         time_implicit_eval_for_KI = time_n + bt.c[i] * dt 
+#         for p_idx in 1:N_total_particles
+#             particle_pos = system_pg[1].grid[p_idx].pos
+#             Y_i_p_view = @view current_Y_i_sys[p_idx, :]
+#             K_Ii_p_view = @view imex_ts.K_I_stages_sys[i][p_idx, :]
+#             imex_ts.source_term_object(K_Ii_p_view, Y_i_p_view, particle_pos, time_implicit_eval_for_KI)
+#         end
+#     end # End of stages loop
+
+#     # --- Final Update (this part remains the same) ---
+#     U_np1_sys_temp = copy(imex_ts.U_n_sys) 
+#     for i in 1:s
+#         if abs(bt.bt[i]) > 1e-14 || abs(bt.b[i]) > 1e-14
+#             @. U_np1_sys_temp[interior_indices, :] += dt * (bt.bt[i] * imex_ts.K_E_stages_sys[i][interior_indices, :] + bt.b[i] * imex_ts.K_I_stages_sys[i][interior_indices, :])
+#         end
+#     end
+
+#     # Update physical particleGrid
+#     for k_comp in 1:N_components
+#         for p_idx in interior_indices
+#             system_pg[k_comp].grid[p_idx].rho = U_np1_sys_temp[p_idx, k_comp]
+#         end
+#     end
+    
+#     for k_comp in 1:N_components
+#         for p_obj in system_pg[k_comp].grid
+#             p_obj.moodEvent = false 
+#         end
+#     end
+# end
 
 
 """
@@ -766,6 +883,36 @@ function SSP2332(
 }
     
     tableau = SSP2332ButcherTableau() 
+
+    return GeneralIMEXTimeStepper(
+        gradientInterpolator,
+        fallbackInterpolator,
+        mood_criterion,
+        implicit_solver,
+        source_term_object,
+        tableau, # The specific ARS(2,2,2) Butcher tableau
+        N_particles,
+        N_components
+    )
+end
+
+function RalstonRK2(
+    gradientInterpolator::G1,
+    fallbackInterpolator::G2,
+    mood_criterion::M,
+    implicit_solver::IS,
+    source_term_object::ST_OBJ,
+    N_particles::Int,
+    N_components::Int
+) where {
+    G1 <: Interpolations.GradientInterpolator,
+    G2 <: Union{Interpolations.GradientInterpolator, Nothing},
+    M <: MOODCriterion, # Assuming MOODCriterion is defined
+    IS <: ImplicitSolvers.AbstractImplicitSolver,
+    ST_OBJ <: SourceTerms.AbstractSourceTerm
+}
+    
+    tableau = RalstonRK2ButcherTableau() 
 
     return GeneralIMEXTimeStepper(
         gradientInterpolator,

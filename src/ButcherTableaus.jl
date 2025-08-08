@@ -52,6 +52,9 @@ function IMEXARS233ButcherTableau(gamma_val::Float64 = (3.0 + sqrt(3.0))/6.0)::I
     A_impl = [0.0      0.0             0.0;
               0.0      gamma_val       0.0;
               0.0      1.0-2*gamma_val gamma_val]
+    # A_impl = [0.0      0.0             0.0;
+    #           0.0      0.       0.0;
+    #           0.0      0. 0.]
 
     At_expl = [0.0          0.0              0.0;
                gamma_val    0.0              0.0;
@@ -66,6 +69,23 @@ function IMEXARS233ButcherTableau(gamma_val::Float64 = (3.0 + sqrt(3.0))/6.0)::I
 
     return IMEXButcherTableau(A_impl, At_expl, c_nodes, c_nodes, b_weights)
 end
+
+# In a file like IMEXTableaus.jl
+
+
+function RalstonRK2ButcherTableau()::IMEXButcherTableau
+
+    A_impl = [0. 0.
+              0. 0.]
+    At_expl = [0. 0.
+               (2. /3.) 0.]
+
+    c_nodes = [0, 2. /3.]
+    b_weights = [1/4, 3/4]
+
+    return IMEXButcherTableau(A_impl, At_expl, c_nodes, c_nodes, b_weights)
+end
+
 
 function PR_IMEX_SSP3_ButcherTableau()::IMEXButcherTableau
     # Coefficients for Pareschi & Russo (2005), Scheme (4.2)

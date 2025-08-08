@@ -8,7 +8,7 @@ using ..Meshfree4ScalarEq.ScalarHyperbolicEquations
 using ..Meshfree4ScalarEq.FluxFunctions
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil, LaxFriedrichsGradient, MUSCLlimited,
-       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter  
+       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter  
 
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
@@ -1077,6 +1077,7 @@ struct BarthJespersenLimiter <: AbstractSlopeLimiter end
 struct VenkatakrishnanLimiter <: AbstractSlopeLimiter end
 struct SuperbeeLimiter <: AbstractSlopeLimiter end
 struct MinmodLimiter <: AbstractSlopeLimiter end
+struct NoLimiter <: AbstractSlopeLimiter end
 
 # --- Limiter "phi" functions (they compute the limiter coefficient) ---
 
@@ -1138,6 +1139,7 @@ mutable struct MUSCLlimited{ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter} <: Gradi
     weightFunction::MLSWeightFunction
     numericalFlux::NumericalFluxFunction
     limited_slopes_cache::Vector{Float64}
+    unlimited_slopes_cache::Vector{Float64}
 
     function MUSCLlimited(
         order::Int64; 
@@ -1147,7 +1149,7 @@ mutable struct MUSCLlimited{ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter} <: Gradi
     ) where {L <: AbstractSlopeLimiter}
         @assert (order == 1) "MUSCLlimited currently only supports order=1 (linear reconstruction)"
         limited_slopes_cache_init = Vector{Float64}(undef, 0)
-        new{MUSCLORDER1, L}(MUSCLORDER1(), limiter, Vector{Float64}(undef, order), weightFunction, numericalFlux, limited_slopes_cache_init)
+        new{MUSCLORDER1, L}(MUSCLORDER1(), limiter, Vector{Float64}(undef, order), weightFunction, numericalFlux, limited_slopes_cache_init, limited_slopes_cache_init)
     end
 end
 
@@ -1157,11 +1159,13 @@ function initTimeStep(
     muscl::MUSCLlimited, # Generic for any limiter strategy
     particleGrid::ParticleGrid1D, 
     interpAlpha::Real, 
-    interpRange::Real
+    interpRange::Real;
+    first_stage::Bool = true
 )
     N_total_particles = length(particleGrid.grid)
     if length(muscl.limited_slopes_cache) != N_total_particles
         resize!(muscl.limited_slopes_cache, N_total_particles)
+        resize!(muscl.unlimited_slopes_cache, N_total_particles)
     end
 
     # --- Part 1: Calculate geometric alfaij coefficients (unchanged) ---
@@ -1182,7 +1186,6 @@ function initTimeStep(
     fVec_internal = [p.rho for p in particleGrid.grid]
 
     # --- Part 2: Calculate Unlimited Slopes (unchanged) ---
-    unlimited_slopes = Vector{Float64}(undef, N_total_particles)
     for i in 1:N_total_particles
         particle_i = particleGrid.grid[i]
         ui = fVec_internal[i]
@@ -1192,21 +1195,33 @@ function initTimeStep(
                 slope += particle_i.alfaij[k_idx] * (fVec_internal[nb_idx] - ui)
             end
         end
-        unlimited_slopes[i] = slope
+        muscl.unlimited_slopes_cache[i] = slope
     end
     
+    #current_strategy = first_stage ? muscl.limiter_strategy : NoLimiter()
     # --- Part 3: Apply the selected limiting strategy (Dispatch!) ---
     limit_slope!(
         muscl.limited_slopes_cache, # Output cache
         muscl.limiter_strategy,     # The strategy object (e.g., SuperbeeLimiter())
-        unlimited_slopes,           # The slopes to be limited
+        muscl.unlimited_slopes_cache,           # The slopes to be limited
         particleGrid,
         fVec_internal
     )
 end
 
-
 # --- 4. Dispatched `limit_slope!` Helper Functions ---
+
+function limit_slope!(
+    limited_slopes_cache::Vector{Float64},
+    strategy::NoLimiter,
+    unlimited_slopes::Vector{Float64},
+    particleGrid::ParticleGrid1D,
+    fVec::AbstractVector{<:Real}
+)
+    for i = eachindex(limited_slopes_cache)
+        limited_slopes_cache[i] = unlimited_slopes[i]
+    end
+end
 
 # Version for classical, ratio-based limiters (Superbee, Minmod)
 function limit_slope!(
@@ -1319,7 +1334,7 @@ function (muscl::MUSCLlimited{MUSCLORDER1})(
     fVec::AbstractVector{<:Real}, 
     eq::ScalarHyperbolicEquation, 
     settings::SimSetting; 
-    setCurvature::Bool=true
+    setCurvature::Bool=true,
 )::Real
     # ... (code as you provided, it is correct) ...
     particle_i_data = particleGrid.grid[particleIndex]

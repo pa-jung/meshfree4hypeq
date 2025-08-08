@@ -110,13 +110,13 @@ function runSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
         @info "  Calculated/Used dt: $actual_dt"
         if !isnothing(timestepper_name)
             # --- Build Scalar Method Components ---
-            MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() else error("Flux $main_flux_name NYI"); end
+            MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() elseif main_grad_name!="WENO" error("Flux $main_flux_name NYI"); end
             FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux() elseif !isnothing(fallback_flux_name); error("Flux $fallback_flux_name NYI"); end
             
             MainGrad = if main_grad_name == "MUSCL"
                         MUSCL(muscl_order_param-1; numericalFlux=MainFlux, weightFunction=exponentialWeightFunction())
                         elseif main_grad_name == "WENO"
-                            WENO(order)
+                            WENO(muscl_order_param)
                         elseif main_grad_name == "MUSCLlimit"
                             MUSCLlimited(1; numericalFlux=MainFlux, weightFunction=exponentialWeightFunction())
                     elseif main_grad_name == "Upwind"
