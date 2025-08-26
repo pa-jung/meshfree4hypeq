@@ -1,0 +1,94 @@
+Parameter,Value
+# Context Info,====================
+Save Type,Static Frame
+Timestamp,2025-07-22T18:48:09.284
+# Shared Parameters,====================
+CFL,0.2
+N,200
+PDE,linear
+PDE_params,"(1.0,)"
+SEED,10
+bc,periodic
+init_func,box
+init_params,"(0.0, 1.0, -2.0, 2.0)"
+interp_alpha,1.0
+interp_range,3.5
+order,1
+randomness_factor,0.35
+snapshots,5
+tmax,10
+xmax,5.0
+xmin,-5.0
+# Method-Specific Parameters,==========================
+# Method: ARS233MUSCL2MOOD,--------------------
+MOOD,U2
+delta_relax,0.0
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+relax_epsilon,1.0e-8
+relax_method,true
+relax_velocities,"(1.0, -1.0)"
+timestepper,ARS233
+# Method: RK2MUSCL2,--------------------
+MOOD,none
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+timestepper,RalstonRK2
+# Method: RK2MUSCL2MOOD(U2),--------------------
+MOOD,U2
+delta_relax,0.0
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+timestepper,RalstonRK2
+# UI Options,====================
+animation_duration_s,10.0
+animation_fps,30
+colors,"[:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy]"
+create_savefolder,false
+dashed_lines,false
+figsize,"(700, 550)"
+font_size,14
+label_size,14
+legend,
+legend_pos,rightcenter
+lineStyles,"Any[:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal), (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]"
+linewidth,2.5
+mark_outliers,false
+markers,"[:rect, :circle, :utriangle, :dtriangle, :cross, :xcross]"
+markersize,10
+outlier_threshold,1.5
+reference,"(1.0,)"
+remove_outliers,false
+save_formats,"[""png"", ""pdf"", ""svg""]"
+show_lines,false
+show_scatter,true
+sort_legend,true
+ticklabel_size,12
+title,
+title_size,14
+track_max,false
+track_min,false
+update_limits,true
+xgridvisible,true
+xlabel,default
+xlogscale,false
+xpadding,0.0
+xscale_offset,0.0
+xtick_count,0
+xtickformat,default
+xticklabelsvisible,true
+ygridvisible,true
+ylabel,default
+ylogscale,false
+ypadding,0.1
+yscale_offset,0.0
+ytick_count,0
+ytickformat,default
+yticklabelsvisible,true

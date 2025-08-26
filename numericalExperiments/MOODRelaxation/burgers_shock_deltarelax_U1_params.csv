@@ -1,0 +1,37 @@
+Parameter,Value
+# Context Info,====================
+Save Type,Static Frame
+Timestamp,2025-07-15T13:24:01.547
+# Shared Parameters,====================
+CFL,0.2
+N,200
+PDE,burgers
+SEED,10
+bc,outflow
+init_func,riemann
+init_params,"(1.0, 0.0, -3.0)"
+interp_alpha,1.0
+interp_range,1.5
+order,1
+randomness_factor,0.0
+save_frequency,5
+timestepper,Classic
+tmax,20
+xmax,10.0
+xmin,-5.0
+# Method-Specific Parameters,==========================
+# Method: Analytic Solution,--------------------
+N,"(:const, 10000)"
+randomness_factor,"(:const, 0.0)"
+save_frequency,500
+timestepper,Analytic
+# Method: RK2MUSCL2MOOD(U1),--------------------
+MOOD,U1
+delta_relax,0.0
+fallback_flux,Rusanov
+fallback_gradient,Upwind
+interp_range,1.5
+main_flux,Rusanov
+main_gradient,MUSCL
+order,2
+timestepper,RalstonRK2
