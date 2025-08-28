@@ -1,10 +1,12 @@
 Section,MethodName,Parameter,Value
 Context,,Save Type,Static Frame
-Context,,Timestamp,2025-08-08T19:33:28.550
-Context,,git_commit_count,63
-Context,,git_commit_hash,34af781e2f49e9069fca0e38185ba57d3c79123d
+Context,,Timestamp,2025-08-28T17:46:55.569
+Context,,git_commit_count,66
+Context,,git_commit_hash,4913d10313577b5be5862b5d259d741541775830
 Context,,git_commit_summary,LibGit2.GitCommit
 Context,,julia_version,1.11.5
+Scene,,component,1
+Scene,,t,8.0
 Shared,,CFL,0.2
 Shared,,N,100
 Shared,,PDE,burgers
@@ -30,7 +32,7 @@ UI,,dashed_lines,false
 UI,,figsize,"(700, 550)"
 UI,,font_size,14
 UI,,label_size,14
-UI,,legend,
+UI,,legend,<empty>
 UI,,legend_pos,leftbottom
 UI,,lineStyles,"Any[:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal), (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]"
 UI,,linewidth,2.5
@@ -45,7 +47,7 @@ UI,,show_lines,true
 UI,,show_scatter,true
 UI,,sort_legend,true
 UI,,ticklabel_size,12
-UI,,title,
+UI,,title,<empty>
 UI,,title_size,14
 UI,,track_max,false
 UI,,track_min,false
@@ -55,7 +57,7 @@ UI,,xlabel,default
 UI,,xlogscale,false
 UI,,xpadding,0.0
 UI,,xscale_offset,0.0
-UI,,xtick_count,0
+UI,,xtick_count,5
 UI,,xtickformat,default
 UI,,xticklabelsvisible,true
 UI,,ygridvisible,true

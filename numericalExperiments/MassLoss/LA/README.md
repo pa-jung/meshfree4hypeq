@@ -1,34 +1,64 @@
-### Numerical Experiment: Mass Conservation for the Linear Advection Equation
+# Quantitative Analysis of Mass Loss in Linear Advection
 
-This experiment analyzes the mass conservation properties of the various schemes for the linear advection equation. The goal is to contrast this behavior with the results from the nonlinear Burgers' equation, particularly concerning the effects of the MOOD framework and the performance of relaxation schemes on irregular grids.
+## Introduction
 
-#### Experimental Setup
+This experiment investigates whether the mass loss associated with the `MOOD` mechanism, which was significant for the non-linear Burgers' equation, also occurs for the linear advection equation. By tracking the total mass for a discontinuous profile, we can compare the magnitude of the effect between the linear and non-linear cases. Furthermore, by using a smooth profile and "relaxing" the `MOOD` criterion, we can definitively diagnose the fallback mechanism as the source of the non-conservative behavior.
 
-The test problem is the one-dimensional linear advection equation, $u_t + a u_x = 0$. The simulations are performed on irregular grids (`randomness_factor > 0`) to assess the robustness of the methods. We investigate two distinct scenarios: a discontinuous initial condition (a Riemann problem) to test the schemes' behavior at sharp fronts, and a smooth initial condition (a Gaussian pulse) to evaluate their baseline conservation error in non-challenging cases. The `relative_mass` is plotted over time, where a value of 1.0 indicates perfect mass conservation.
+## Experimental Setup
 
-#### Observations and Analysis
+The simulation solves the 1D linear advection equation, $\partial_t u + u = 0$, on a uniform, periodic domain. Two scenarios are considered.
 
-##### Case 1: Discontinuous Initial Condition (Riemann Problem)
-![Mass conservation for the linear Riemann problem on an irregular grid](./figures/LA_riemann_mass.svg)
+### Scenario 1: Discontinuous Profile (Riemann Problem)
+This test measures the mass loss for a propagating step function.
+- **Initial Condition**: Step from 1.0 to 0 (`init_func: box`)
+- **Domain**: `[-5, 5]`
+- **Final Time (`tmax`)**: 5.0
+- **Particles (`N`)**: 300
+- **Methods**:
+    - `ARS-MUSCL2-MOOD`: Meshfree MUSCL with `ARS222` (IMEX) timestepper.
+    - `SS-MUSCL2-MOOD`: Meshfree MUSCL with `SimpleSplitting` timestepper.
+    - `LW-MOOD`: A classical (non-meshfree) Lax-Wendroff scheme with MOOD.
+    - `RK5-MOOD`: A 5th order scheme with MOOD.
 
-For the Riemann problem, the MOOD-stabilized schemes are necessary to prevent the large, non-physical oscillations that would otherwise occur.
-* **Observation:** The plot shows that all stabilized methods exhibit some degree of mass loss over time. The classical `LWMOOD` scheme is the most dissipative, while the meshfree MOOD schemes (`ARS233MUSCL2MOOD`, `RK2MUSCL2MOOD`, etc.) perform significantly better, keeping the mass loss within about 1-2%.
-* **Analysis:** As with the Burgers' equation, this mass loss is an artifact of the **non-conservative mixing** of fluxes when the MOOD framework switches between the high-order and low-order schemes to stabilize the discontinuity. However, it is crucial to note that the magnitude of mass loss is **much smaller** than that observed for the Burgers' shock wave. This is because the linear advection of a step function does not generate the same kind of strong, nonlinear oscillations in the candidate solution, leading to less frequent and less aggressive intervention by the MOOD detector.
+### Scenario 2: Smooth Profile with MOOD Relaxation
+This test uses a smooth Gaussian profile to show the effect of relaxing the `MOOD` criterion's sensitivity.
+- **Initial Condition**: Gaussian (`init_func: gaussian`)
+- **Domain**: `[-5, 5]`
+- **Final Time (`tmax`)**: 5.0
+- **Particles (`N`)**: 100
+- **MOOD Settings**:
+    - Standard: `delta_relax = 0.`
+    - Relaxed: `delta_relax = 0.1`
 
-##### Case 2: Smooth Initial Condition (Gaussian Pulse)
-![Mass conservation for the smooth linear problem with MOOD](./figures/LA_smooth_mass_MOOD.svg)
-![Comparison of Direct vs. Relaxed MOOD schemes for the smooth linear problem](./figures/LA_smooth_mass_relaxxed.svg)
+---
 
-For the smooth Gaussian initial condition, the behavior is markedly different.
-* **Observation:** All methods, including those with MOOD enabled, demonstrate excellent mass conservation. The relative mass for all schemes remains very close to the ideal value of 1.0, with deviations on the order of numerical precision.
-* **Analysis:** This result confirms that the MOOD criteria are working as intended. They correctly identify the smooth Gaussian as a non-problematic solution and remain "dormant," allowing the underlying high-order schemes to run without intervention. Consequently, no non-conservative mixing occurs, and the schemes exhibit their inherent, excellent conservation properties.
+## Observation of Plots
 
-#### Direct vs. Relaxation Methods for Linear Advection
+### Discontinuous Profile
 
-The comparison between the direct and relaxed MOOD schemes for the smooth case is particularly insightful.
-* **Observation:** The plot shows that both direct (`RK2MUSCL2MOOD(U1)`) and relaxed (`RK2MUSCL2MOOD(U1Relax)`) methods are highly conservative.
-* **Analysis:** You correctly noted that for linear advection, the relaxation scheme is a particularly good approximation. The condition that the relaxed fluxes match the physical flux, $\sum_k a_k M_k(u) = a \cdot u$, can be satisfied with high precision. As a result, the relaxation method effectively reproduces the behavior of the underlying high-order meshfree scheme (`MUSCL2`). The small amount of mass error observed in the relaxed versions is essentially the baseline numerical error of the spatial discretization itself. This contrasts sharply with the Burgers' equation case, where the primary benefit of the relaxation method was to present a simpler, linear problem to the MOOD detector to *reduce non-conservative mixing at the shock*. Here, since no mixing occurs, both direct and relaxed methods perform nearly perfectly.
+![Mass vs. Time for Linear Advection Shock](./figures/LA_riemann_mass.png)
 
-#### Conclusion
+- All methods exhibit a very small, gradual loss of mass over time when advecting the discontinuity.
+- The total mass loss is negligible for practical purposes (on the order of $10^{-4}$), and is orders of magnitude smaller than the loss observed for the Burgers' shock.
+- The `ARS-MUSCL2-MOOD` scheme shows a slightly higher rate of mass loss compared to the other methods in this linear case.
 
-For the linear advection equation, mass loss is primarily a concern for discontinuous problems where stabilization is required. The non-conservative mixing introduced by MOOD is the source of this error, though it is significantly less severe than for the nonlinear Burgers' shock. For smooth problems, the MOOD framework correctly remains inactive, and all high-order schemes demonstrate excellent mass conservation, with the relaxation method providing a very accurate and stable implementation of the underlying high-order spatial discretization.
+### Smooth Profile with Standard vs. Relaxed MOOD
+
+![Mass vs. Time with Standard MOOD](./figures/LA_smooth_mass_MOOD.png)
+![Mass vs. Time with Relaxed MOOD](./figures/LA_smooth_mass_relaxed.png)
+
+- With the standard, sensitive `MOOD` criterion, all methods show a small but steady loss of mass, even on the smooth Gaussian profile.
+- When the `MOOD` criterion is relaxed (made less sensitive), the mass loss is almost entirely eliminated for all methods.
+- Specifically, the `LW-MOOD` scheme becomes virtually perfectly conservative, and the meshfree schemes (`ARS` and `SS`) show only a tiny residual mass change, consistent with the baseline error of the discretization itself.
+
+---
+
+## Analysis
+
+This set of experiments confirms that the `MOOD` fallback mechanism is the primary source of the mass loss, and that the effect, while present, is far less severe for linear problems than for non-linear ones.
+
+- **Confirmation of MOOD-induced Mass Loss**: The comparison between the standard and relaxed `MOOD` criteria provides definitive proof that the fallback mechanism is the cause of the mass loss. By making the criterion less sensitive (`delta_relax = 0.1`), the dissipative first-order fallback is no longer triggered by the minor numerical ripples in the smooth Gaussian solution. This stops the mass loss, showing a direct causal link. The fact that the classical `LW-MOOD` scheme becomes perfectly conservative under the relaxed criterion isolates the effect to the `MOOD` logic itself, independent of the meshfree discretization.
+
+- **Linear vs. Non-linear Effects**: The mass loss for the linear shock is present but dramatically smaller than for the Burgers' shock. This indicates that the severity of the non-conservative behavior is strongly linked to the non-linearity of the governing equation. For the Burgers' equation, the self-steepening nature of the shock creates a more challenging scenario for the numerical scheme, likely leading to more frequent or more aggressive `MOOD` interventions at the shock front. In the linear case, the discontinuity propagates without changing shape, resulting in a more predictable and less dissipative application of the fallback mechanism.
+
+- **Performance of ARS Method in the Linear Case**: Interestingly, the `ARS` (IMEX) scheme, which was beneficial in the non-linear case, performs slightly worse here, showing the most mass loss (though the absolute difference is still negligible). This is likely an artifact of using a relaxation-based system of equations to approximate a simple scalar problem. The small errors introduced by the relaxation approximation may create minor numerical artifacts that trigger the sensitive `MOOD` criterion slightly more often than in a direct solve, leading to the marginally higher mass loss.

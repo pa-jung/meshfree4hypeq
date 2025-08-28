@@ -5,6 +5,8 @@ Context,,git_commit_count,63
 Context,,git_commit_hash,34af781e2f49e9069fca0e38185ba57d3c79123d
 Context,,git_commit_summary,LibGit2.GitCommit
 Context,,julia_version,1.11.5
+Scene,,t,0.2
+Scene,,component,1
 Shared,,CFL,0.2
 Shared,,N,200
 Shared,,SEED,10
@@ -30,7 +32,7 @@ UI,,dashed_lines,false
 UI,,figsize,"(700, 550)"
 UI,,font_size,14
 UI,,label_size,14
-UI,,legend,
+UI,,legend,<empty>
 UI,,legend_pos,righttop
 UI,,lineStyles,"Any[:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal), (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]"
 UI,,linewidth,2.5
@@ -45,7 +47,7 @@ UI,,show_lines,true
 UI,,show_scatter,false
 UI,,sort_legend,true
 UI,,ticklabel_size,12
-UI,,title,
+UI,,title,<empty>
 UI,,title_size,14
 UI,,track_max,false
 UI,,track_min,false

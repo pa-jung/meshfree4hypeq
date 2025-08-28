@@ -1,43 +1,57 @@
-### Numerical Experiment: Convergence and Mass Conservation for Shock Waves
+# Analysis of Grid Resolution on Mass Conservation and L2-Error
 
-This experiment investigates the behavior of the numerical schemes when applied to the nonlinear Burgers' equation with initial conditions that evolve into shock waves. The primary goals are to assess how the mass conservation and the L2 error of the solution change as the spatial resolution (`N`) is increased. For problems with smooth solutions, we expect the error to decrease predictably with `N`. For problems with shocks, the behavior is more complex.
+## Introduction
 
-The simulations are performed on irregular grids (`randomness_factor > 0`) to test the methods' robustness. The study involves running simulations for each method across a range of particle counts `N`. At a fixed final time, two key metrics are recorded: the `relative_mass` and the `normalized L2-Error`.
+This final experiment analyzes the effect of grid resolution on the performance of the numerical schemes for a shock problem in the Burgers' equation. By systematically increasing the number of particles (`N`), we investigate whether the mass loss observed in previous tests is a systematic error that persists under grid refinement. Furthermore, by analyzing the L2-error, we directly assess how this non-conservative behavior impacts the overall convergence of the solution to the correct physical state.
 
-#### Case 1: Riemann Problem Initial Condition
+## Experimental Setup
 
-First, we consider a classic Riemann problem which immediately forms a single traveling shock wave.
+The simulation solves the 1D inviscid Burgers' equation with a box initial condition on a uniform, periodic grid. The final mass and L2-error are measured at `tmax = 10.0` for a range of particle numbers. The correct total mass for this initial condition is **1.0**.
 
-##### Mass Conservation vs. Spatial Resolution (Riemann)
-![Relative Mass vs. N for the Burgers' Riemann problem](./figures/burgers_shock_mass_Ndependence.svg)
+### Shared Parameters
+- **PDE**: Burgers' Equation
+- **Initial Condition**: Step from 1.0 to 0 (`init_func: box`)
+- **Domain**: `[-5, 5]` (periodic)
+- **Final Time (`tmax`)**: 10.0
+- **Grid**: Uniform
+- **Particle Numbers (`N`)**: `[56, 100, 177, 316, 562, 1000]`
+- **Methods**:
+    - `ARS-MUSCL2-MOOD(U1)`: Meshfree MUSCL with ARS222 (IMEX) timestepper and U1 MOOD criterion.
+    - `LW-MOOD(U1)`: Classical Lax-Wendroff with U1 MOOD criterion.
+    - `RK2-MUSCL2-MOOD(U1)`: Meshfree MUSCL with RalstonRK2 timestepper and U1 MOOD criterion.
+    - `RK2-MUSCL2-MOOD(U2)`: Meshfree MUSCL with RalstonRK2 timestepper and U2 MOOD criterion.
+    - `RK2-MUSCL2`: Unlimited Meshfree MUSCL with RalstonRK2 timestepper.
+    - `LW`: Classical Lax-Wendroff without MOOD.
 
-The first figure shows the relative mass of the final solution as a function of `N`.
-* **Observation:** For the MOOD-stabilized schemes (e.g., `ARS233MUSCL2MOOD`, `RK2MUSCL2MOOD`), the relative mass is not 1.0, indicating a loss of mass. Crucially, after an initial transient at very low resolutions, the amount of mass loss becomes **largely independent of the spatial resolution**. For `N > 100`, the lines become nearly flat. The more oscillatory underlying schemes, like `LWMOOD` and `RK4MUSCL5MOOD`, settle at a much lower relative mass, indicating more severe conservation issues.
-* **Analysis:** This result demonstrates that the mass loss, which is caused by the non-conservative mixing of fluxes when the MOOD criterion triggers a switch at the shock front, is a local phenomenon tied to the structure of the shock itself. Refining the grid does not reduce this error.
+---
 
-##### L2-Error vs. Spatial Resolution (Riemann)
-![Normalized L2-Error vs. N for the Burgers' Riemann problem](./figures/burgers_shock_L2error_Ndependence.svg)
+## Observation of Plots
 
-The second figure shows the normalized L2 error on a log-log scale.
-* **Observation:** In stark contrast to the smooth test cases, **none of the methods show a clear order of convergence**. The error lines are highly oscillatory and do not follow a straight line with a consistent negative slope.
-* **Analysis:** This behavior is a direct consequence of solving a problem with a moving discontinuity. The L2 error is dominated by the error in the shock's position and width. Small, grid-dependent variations in the shock's location from one resolution `N` to the next can cause large, noisy fluctuations in the integrated L2 error. This, combined with the non-converging conservation error, prevents classical convergence.
+### Final Mass vs. Number of Particles
 
-#### Case 2: Box Initial Condition
+![Final Mass vs. N](./figures/burgers_shock_mass_Ndependence.svg)
 
-To confirm that this behavior is characteristic of shocks in general, we now consider a box initial condition (a "top-hat"), which evolves into a rarefaction wave on the left and a shock wave on the right.
+- The `LW` and unlimited `RK2-MUSCL2` schemes demonstrate excellent mass conservation. Their final total mass remains very close to the correct value of **1.0** across all tested resolutions.
+- All four `MOOD`-based schemes show a significant and nearly identical amount of mass loss, ending with a total mass of approximately 0.96.
+- Critically, the amount of mass lost by the MOOD schemes is independent of the grid resolution; the final mass remains at a constant, incorrect value even as `N` increases.
 
-##### Mass Conservation vs. Spatial Resolution (Box)
-![Relative Mass vs. N for the Burgers' box problem](./figures/burgers_box_mass_Ndependence.svg)
+### L2-Error vs. Number of Particles
 
-The third figure shows the relative mass for the box initial condition.
-* **Observation:** The results are qualitatively identical to the Riemann problem. After an initial transient phase for low `N`, the mass loss for each MOOD-stabilized scheme settles to a constant level that does not improve with further grid refinement.
-* **Analysis:** This confirms the previous finding. The mass loss is tied to the presence of the shock wave. The numerical scheme correctly resolves the smooth rarefaction part of the solution, but the stabilization required for the shock front consistently introduces a similar amount of non-conservative mixing, regardless of the number of particles.
+![L2-Error vs. N](./figures/burgers_shock_L2error_Ndependence.png)
 
-#### Conclusion
+- The `LW` and `RK2-MUSCL2` schemes show a visible, albeit slow, decrease in L2-error as `N` increases, indicating that they are converging toward the correct solution. The error curves for these unlimited schemes are not perfectly smooth, exhibiting some non-monotonic behavior.
+- All four `MOOD`-based schemes have a substantially higher L2-error, which remains nearly constant across the entire range of `N`. These schemes are not converging.
 
-This experiment demonstrates two fundamental properties of the MOOD-stabilized meshfree schemes when applied to nonlinear problems with shocks:
+---
 
-1.  **Mass loss due to the stabilization mechanism is independent of grid resolution.** The non-conservative mixing at a shock front is an inherent feature of the method, and simply using more points does not eliminate this source of error. This results in a zeroth-order error in mass conservation.
-2.  **Classical convergence analysis is not meaningful for shocked flows.** The L2 error is dominated by the shock's position and the non-converging conservation error. This leads to erratic, non-convergent error plots.
+## Analysis
 
-The primary goal for such problems is not to achieve a specific order of convergence, but to produce a stable, sharp, and correctly located shock wave. The MOOD framework successfully achieves this, but as this analysis shows, it comes at the cost of formal convergence and perfect conservation.
+This experiment reveals a critical flaw in the non-conservative MOOD implementation for this problem: the mass loss is a zeroth-order error that prevents the solution from converging.
+
+- **Systematic Mass Loss and Stalled Convergence**: The key finding is that the mass loss from the `MOOD` mechanism is a systematic error that does not diminish with grid refinement. Because the total mass is incorrect by a fixed amount regardless of `N` (as $\Delta x \to 0$), it represents a fundamental inconsistency in the scheme for this type of problem. The L2-error measures the difference between the numerical and exact solutions. Since the numerical solution has a systematically wrong total mass, this error cannot go to zero. The error becomes "stalled" or "saturated" by this constant mass error, which explains why the L2-error for all `MOOD`-based schemes fails to decrease with increasing `N`.
+
+- **Convergence of More-Conservative Schemes**: In contrast, the `LW` and unlimited `RK2-MUSCL2` schemes are better at conserving mass. Because they converge to the correct total mass of 1.0, their L2-error is dominated by local discretization errors (like numerical oscillations or smearing near the shock) that *do* decrease with grid refinement. This allows their L2-error to trend downwards, demonstrating proper convergence.
+
+- **Non-Monotonic Error in Unlimited Schemes**: The non-monotonic "wiggles" in the error curves for the `LW` and `RK2-MUSCL2` schemes are a well-known characteristic of applying unlimited, high-order methods to discontinuous problems. The L2-error is sensitive to the exact location and amplitude of the numerical oscillations relative to the true shock position. As `N` changes, the structure of these oscillations shifts, which can temporarily increase or decrease the L2-error while the overall trend of convergence continues.
+
+- **MOOD Flavors (`U1` vs. `U2`)**: For this sharp shock problem, the performance of the `U1` and `U2` MOOD criteria are nearly identical. This is expected, as the `U2` criterion's main feature is the relaxation of the DMP for smooth extrema. At a sharp discontinuity, this relaxation is inactive, and both criteria behave like the simpler and more restrictive DMP check (`U1`).

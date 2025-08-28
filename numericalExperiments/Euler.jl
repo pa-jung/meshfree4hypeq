@@ -133,8 +133,11 @@ sim_config_euler1d_system = SimulationConfig(
     #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 # To run:
-show1DSolutionFig(sim_config_euler1d_system; ui_options = :publication) 
+
+#show1DSolutionFig(sim_config_euler1d_system; ui_options = :publication) 
 #showDynamicDependence(sim_config_euler1d_system; calc_stats = true)
 #showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
 # This will require show1DSolutionFig to be adapted to handle SimData1D.u as Vector{Matrix}
 # and use the component selector. For now, it will plot the first component (rho_macro).
+sim_config = create_sim_config_from_csv("numericalExperiments/Euler/ShockTubeSolution(uniform)/figures/euler_shocktube_limiter_uniform_params.csv","none")
+show1DSolutionFig(sim_config; ui_options = :publication) 

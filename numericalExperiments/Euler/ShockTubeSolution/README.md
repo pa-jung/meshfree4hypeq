@@ -28,9 +28,9 @@ This figure compares the performance of a slope-limited MUSCL scheme using two d
 
 This figure compares the performance of the MOOD-stabilized MUSCL scheme against a WENO reconstruction, both using the same `ARS222` IMEX timestepper.
 
-* **Observation:** The `ARS222MUSCL2MOOD` scheme (blue line) successfully captures all three features: the smooth rarefaction, the sharp contact discontinuity, and the shock wave, though it exhibits some minor post-shock oscillations. The `ARS222WENO2` scheme (green line), while capturing the main shock and rarefaction, is noticeably more diffusive and **fails to correctly capture the contact discontinuity**, smearing it into a smooth profile.
+* **Observation:** The `ARS222MUSCL2MOOD` scheme (blue line) successfully captures all three features: the smooth rarefaction, the sharp contact discontinuity, and the shock wave, though it exhibits some minor post-shock oscillations. The `ARS222WENO2` scheme (green line), while capturing the rarefaction similarly well as the `ARS222MUSCL2MOOD`, both the contact discontinuity and the shock are not correctly captured. In both cases it lags behind the true solution. Furthermore, the **shock plateau is higher than the analytical solution**, leading to a substantial deviation from the analytical solution. 
 
-* **Analysis:** For this complex problem, the MOOD framework proves to be superior to the WENO reconstruction. The MOOD scheme's ability to apply a robust first-order method locally and only when needed allows it to maintain sharpness across all discontinuities. The WENO scheme, while high-order, appears to introduce too much numerical diffusion in this context, particularly struggling with the subtle but sharp contact discontinuity.
+* **Analysis:** For this complex problem, the MOOD framework proves to be superior to the WENO reconstruction. The MOOD scheme's ability to apply a robust first-order method locally and only when needed allows it to maintain sharpness across all discontinuities. While the WENO scheme seems to have a similar accuracy, as expected from the same order, it fails to capture both the position and height of the discontinuities.
 
 #### Conclusion
 
@@ -38,3 +38,4 @@ This series of experiments on the Euler shock tube problem provides two key conc
 
 1.  When using relaxation schemes with classical slope limiters, an **explicit-first operator splitting approach (`SimpleSplitting`) is vastly superior** to interwoven IMEX methods (`ARS222`). The latter introduces excessive diffusion by applying the limiter to an already-relaxed, smooth state.
 2.  For capturing complex wave structures with multiple discontinuities, the **`MUSCL+MOOD` framework is more effective than the tested `WENO` scheme**. The MOOD approach provides a better balance of sharpness and stability, successfully resolving the shock, contact, and rarefaction waves, while the WENO scheme suffers from excessive diffusion, particularly at the contact discontinuity.
+3.  In both cases, the **`ARS222MUSCL2MOOD` method is the superior choice** because it both shows second order behavior in the smooth rarefaction part and captures both the position and the height of the discontinuities quite well.

@@ -1,47 +1,70 @@
-### Numerical Experiment: Mass Conservation for Burgers' Equation with a Shock
+# Quantitative Analysis of Mass Loss in Burgers' Equation Simulations
 
-While high-order accuracy is desirable for smooth problems, for nonlinear problems involving shock waves, a crucial property of a numerical scheme is its ability to conserve fundamental quantities like mass. This experiment investigates the mass conservation properties of various schemes when solving the inviscid Burgers' equation with a shock wave. A key aspect of this test is the use of **irregular grids** (`randomness_factor > 0`), which challenges the robustness of the methods.
+## Introduction
 
-#### Experimental Setup
+This experiment provides a quantitative analysis of the mass conservation properties of the implemented high-resolution schemes. Building on the previous qualitative observation of mass loss for the `MOOD` and `WENO` methods, this study tracks the total mass (the integral of the solution) over time. The goal is to measure the rate of mass loss, confirm its origin, and investigate strategies for its mitigation.
 
-The test problem is the inviscid Burgers' equation, $u_t + (\frac{1}{2}u^2)_x = 0$. The initial condition is a Riemann problem that forms a shock wave. We test two different shock strengths: a large jump from $u_L=1.0$ to $u_R=0.0$, and a smaller jump from $u_L=1.0$ to $u_R=0.5$. The simulation is run on an irregular grid to assess the performance in a more realistic, non-ideal setting.
+## Experimental Setup
 
-The primary metric for this analysis is the `relative_mass`, calculated as the total mass of the numerical solution at time $t$ divided by the initial mass. For a perfectly conservative scheme, this value should remain exactly 1.0 for all time.
+The simulation solves the 1D inviscid Burgers' equation on a periodic domain. Two primary scenarios are tested to diagnose the non-conservative behavior.
 
-#### Rationale for Method Selection
+### Scenario 1: Small Step (1 to 0.5) on a Uniform Grid
+This test uses a non-zero downstream value to investigate the inherent dissipation of the MOOD mechanism itself.
+- **Initial Condition**: Step from 1.0 to 0.5
+- **Domain**: `[-4, 4]`
+- **Final Time (`tmax`)**: 8.0
+- **Particles (`N`)**: 300
+- **Grid**: Uniform
+- **Methods**:
+    - `ARS-MUSCL2-MOOD`: Meshfree MUSCL with `ARS222` (IMEX) timestepper.
+    - `SS-MUSCL2-MOOD`: Meshfree MUSCL with `SimpleSplitting` timestepper.
+    - `LW-MOOD`: A classical (non-meshfree) Lax-Wendroff scheme with MOOD.
+    - `RK5-MOOD`: A 5th order scheme with MOOD.
 
-This study is designed to compare how different stabilization strategies and numerical formulations affect mass conservation in the presence of a shock on an irregular grid.
-1.  **High-Order Schemes (`LW`, `RK4MUSCL5MOOD`):** These are included to test the hypothesis that more oscillatory high-order methods might lead to poorer conservation when stabilized.
-2.  **MOOD-Stabilized Schemes:** The core of the analysis is on the `ARS233MUSCL2MOOD` and various `RK2MUSCL2MOOD` methods. Since both the high-order and low-order components are conservative on their own, any mass loss is a direct result of the non-conservative mixing that occurs when the MOOD framework switches between them.
-3.  **Direct vs. Relaxation Methods:** A key comparison is made between direct solvers and their relaxation-based counterparts (e.g., `RK2MUSCL2MOOD(U1)` vs. `RK2MUSCL2MOOD(U1Relax)`). This tests whether reformulating the problem into a semi-linear system can improve conservation.
+### Scenario 2: Shock (1 to 0) on an Irregular Grid
+This is a more challenging test case corresponding to the solution plots from the previous experiment.
+- **Initial Condition**: Step from 1.0 to 0 (`init_func: box`)
+- **Domain**: `[-5, 5]`
+- **Final Time (`tmax`)**: 10.0
+- **Particles (`N`)**: 300
+- **Grid**: Irregular (`randomness_factor: 0.2`)
+- **Methods**:
+    - `MUSCL-Superbee`
+    - `MUSCL-VK`
+    - `MOOD`
+    - `WENO`
+- **Note**: All methods in this scenario use the `ARS222` IMEX timestepper.
 
-#### Observations
+---
 
-The figures show the evolution of the relative mass over time for the two different shock strengths.
+## Observation of Plots
 
-##### Case 1: Large Shock (Jump from 1.0 to 0.0)
-![Solution profile for the large shock case](./figures/burgers_shock_mass_solution.svg)
-![Mass conservation for the large shock case on an irregular grid](./figures/burgers_shock_mass_irregular.svg)
+### Small Step Profile (1 to 0.5)
 
-The solution plot confirms that all MOOD-stabilized methods produce sharp, non-oscillatory shock profiles, while the unlimited high-order schemes (not shown) would be unstable. The mass conservation plot, however, reveals significant differences.
-* **High-Order Schemes (`LW`, `RK4MUSCL5MOOD`):** The classical Lax-Wendroff and the high-order meshfree method exhibit the most severe mass loss, with the relative mass decaying to nearly 0.75. This is because their underlying tendency to produce large oscillations at the shock front forces the MOOD detector to intervene heavily, leading to frequent and widespread non-conservative mixing.
-* **Second-Order MOOD Schemes:** The second-order MOOD schemes perform better but still show a clear loss of mass over time.
-* **Effect of Shock Strength:** The mass loss is significant for this strong shock.
+![Mass vs. Time for Small Step](./figures/burgers_shock_mass_smallstep.svg)
+![Zoomed View of Mass vs. Time](./figures/burgers_shock_mass(zoom)_smallstep.svg)
 
-##### Case 2: Small Shock (Jump from 1.0 to 0.5)
-![Solution profile for the small shock case](./figures/burgers_shock_mass_solution_smallstep.svg)
-![Mass conservation for the small shock case on an irregular grid](./figures/burgers_shock_mass_smallstep.svg)
-![Zoomed-in view of mass conservation for the small shock case](./figures/burgers_shock_mass(zoom)_smallstep.svg)
+- All tested MOOD-based methods exhibit a slow, near-linear loss of mass over time.
+- The zoomed plot reveals that the three meshfree MOOD schemes (`ARS-MUSCL2-MOOD` and `RK2-MUSCL2-U1/U2`) have virtually identical rates of mass loss, which are the highest among the tested methods.
+- The non-meshfree `LW-MOOD` and the higher-order `RK5-MOOD` schemes also lose mass, but at a noticeably lower rate.
 
-For the weaker shock, the mass loss is substantially reduced for all methods.
-* The zoomed-in plot shows that the mass loss for the best methods is now less than 0.1%.
-* **Relaxation Method Superiority:** The most striking result is the clear difference between the direct and relaxation methods. The direct MOOD schemes (e.g., `RK2MUSCL2MOOD(U1)`, orange) show small but noticeable oscillations in their mass calculation. In contrast, the relaxation-based MOOD schemes (e.g., `ARS233MUSCL2MOOD`, blue) are significantly better, maintaining a relative mass much closer to the ideal value of 1.0.
+### Shock Profile (1 to 0) on an Irregular Grid
 
-#### Analysis and Conclusion
+![Mass vs. Time for 1-to-0 Shock](./figures/burgers_shock_mass_irregular.svg)
 
-This experiment provides several key insights into the behavior of stabilized schemes for nonlinear problems.
+- The limiter-based schemes, `MUSCL-Superbee` and `MUSCL-VK`, demonstrate excellent mass conservation, with the total mass remaining nearly constant throughout the simulation.
+- The `MOOD` and `WENO` schemes show significant and continuous mass loss. The rate of loss is much more severe than in the "small step" case, with several percent of the initial mass lost by the final time.
 
-1.  **Mass Loss from Non-Conservative Mixing:** The primary source of mass loss is the non-conservative mixing of fluxes that occurs when the MOOD framework applies different spatial discretizations (high-order vs. low-order fallback) to adjacent cells at the shock front.
-2.  **Dependence on Shock Strength and Scheme Order:** The amount of mass loss is directly related to how much the MOOD scheme is forced to intervene. Stronger shocks and more inherently oscillatory high-order base schemes (like `LW` and `RK4MUSCL5`) produce larger candidate oscillations, which trigger more frequent and wider application of the non-conservative fallback, resulting in greater mass loss.
-3.  **Relaxation Schemes Improve Conservation:** The relaxation methods demonstrate significantly better mass conservation. This is a crucial finding. The MOOD criteria are applied to the individual, linearly advected kinetic variables. Since these variables represent smoother components of the underlying physics, the MOOD detector is likely triggered less often or less severely than when applied directly to the highly nonlinear macroscopic solution. This results in less non-conservative mixing and better overall mass conservation.
-4.  **Stability on Irregular Grids:** It is noteworthy that despite the mass conservation issues, all the MOOD-stabilized meshfree methods successfully compute stable, non-oscillatory solutions for this challenging nonlinear problem on irregular grids, which validates their fundamental robustness.
+---
+
+## Analysis
+
+The quantitative data confirms that the mass loss is primarily caused by the dissipative nature of the *a posteriori* limiting in `MOOD` and `WENO`, especially when interacting with zero-valued solution regions.
+
+- **MOOD Mechanism as the Source of Mass Loss**: The "small step" experiment effectively isolates the `MOOD` mechanism as a source of non-conservation. The inclusion of the `LW-MOOD` scheme, a classical finite difference method on a uniform grid, confirms that the mass loss is not an artifact of the meshfree spatial discretization. Instead, it is inherent to the `MOOD` logic itself. When the `MOOD` criterion is triggered at a shock, the scheme falls back to a first-order upwind update, which is dissipative. This local dissipation clips the solution profile, leading to a net loss of the conserved quantity.
+
+- **The "Zero-Value" Problem**: The drastic difference in mass loss between the "small step" (1 to 0.5) and the "shock" (1 to 0) scenarios confirms the critical role of the downstream state. When the dissipative fallback acts at the foot of a shock moving into a zero-valued region, it effectively removes mass from the system. When the downstream value is non-zero, the dissipation acts more like a local averaging or smoothing, which significantly mitigates the net loss.
+
+- **Benefit of Relaxation (IMEX) Methods for MOOD**: A key takeaway from the full suite of experiments is that relaxation-based time integrators like `ARS222` are preferable when using `MOOD`. While all MOOD methods lose mass, the IMEX schemes consistently show substantially smaller losses for the 1-to-0 shock compared to direct explicit methods. The implicit part of the IMEX solve has a stabilizing effect, reducing the tendency of the high-order explicit step to produce oscillations. This means the `MOOD` criterion is triggered less frequently or less severely, leading to a smaller cumulative mass loss from the dissipative fallback over time.
+
+- **Conservation of Limiter-Based Schemes**: In contrast, the `MUSCL-Superbee` and `MUSCL-VK` schemes, which rely on *a priori* slope limiting, prove to be robustly conservative in this test. Their limiting action modifies the reconstruction slopes to prevent oscillations but does not systematically remove mass in the same way the `MOOD` fallback does, demonstrating that the underlying meshfree divergence approximation can preserve mass effectively when paired with a suitable limiter.

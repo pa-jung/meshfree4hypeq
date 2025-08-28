@@ -3,15 +3,15 @@ include("../SimulationFunctions/runScalarSim.jl")
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
     ParamDict(
-        "tmax" => 5., "N" => 100, "xmin" => -4.0, "xmax" => 4.0,
+        "tmax" => 10., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
-        "interp_range" => 3.5,
-        "init_func" => "riemann",
-        "init_params" => (.0,1.,-3.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
-        "randomness_factor" => 0.2, # Provide default needed when regular=false
+        "interp_range" => 1.5,
+        "init_func" => "box",
+        "init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
+        "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => 10, "sim_function" => (:const, "runScalarSim"),
-        "bc" => :outflow,
-        "order" => 1, "PDE" => "burgers"#, "PDE_params" => (1.,)
+        "bc" => :periodic,
+        "order" => 1, "PDE" => "linear", "PDE_params" => (1.,)
     ),
 
     MethodDict(
@@ -40,12 +40,20 @@ sim_config_burgers = SimulationConfig(
             "limiter" => "VK",
             "MOOD" => "none",
         ),
-        "RK2MUSCL2(Superbee)" => ParamDict(
+        "RK2MUSCL2(superbee)" => ParamDict(
             "timestepper" => "RalstonRK2",
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "order" => 2,
             "limiter" => "superbee",
+            "MOOD" => "none",
+        ),
+        "RK2MUSCL2(minmod)" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "main_flux" => "Rusanov",
+            "order" => 2,
+            "limiter" => "minmod",
             "MOOD" => "none",
         ),
         "RK2MUSCL2(NoLimiter)" => ParamDict(
@@ -127,11 +135,22 @@ sim_config_burgers = SimulationConfig(
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
         ),
-        "ARS233MUSCL2(Superbee)" => ParamDict(
+        "ARS233MUSCL2(superbee)" => ParamDict(
             "timestepper" => "ARS233",
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "limiter" => "superbee",
+            "order" => 2,
+            "relax_method" => true,
+            "relax_velocities" => (1.,-1.),
+            "relax_epsilon" => 10. ^ -8,
+            "MOOD" => "none"
+        ),
+        "ARS233MUSCL2(minmod)" => ParamDict(
+            "timestepper" => "ARS233",
+            "main_gradient" => "MUSCL",
+            "main_flux" => "Rusanov",
+            "limiter" => "minmod",
             "order" => 2,
             "relax_method" => true,
             "relax_velocities" => (1.,-1.),
@@ -280,13 +299,13 @@ sim_config_burgers = SimulationConfig(
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
         ),
-        "LWMOOD" => ParamDict(
+        "LWMOOD(uniform grid)" => ParamDict(
             "timestepper" => "LW",
             "order" => 2,
             "MOOD" => "U1", "delta_relax" => 0.,
             "ignore" => ["interp_alpha", "randomness_factor", "SEED"]
         ),
-        "LW" => ParamDict(
+        "LW(uniform grid)" => ParamDict(
             "timestepper" => "LW",
             "order" => 2,
             "MOOD" => "none",
@@ -315,27 +334,31 @@ sim_config_burgers = SimulationConfig(
         # )
 
     ),
-    ["Analytical Solution", "ARS233WENO", "ARS233MUSCL2MOOD", "RK2MUSCL2(Superbee)", "RK2MUSCL2(VKLimiter)"]
+    #["Analytical Solution", "ARS233WENO", "ARS233MUSCL2MOOD", "RK2MUSCL2(Superbee)", "RK2MUSCL2(VKLimiter)"]
     #["ARS233MUSCL2","IMEXRK2MUSCL2Limiter", "RK2MUSCL2(Superbee)","ARS233MUSCL2Limiter", "ARS233WENO","SimpleSplittingMUSCL2Limiter", "ARS233MUSCL2MOOD"]#,"ARS233MUSCL2","ARS233Upwind"]
     #"RK2MUSCL2(Superbee)"
     #["RK2MUSCL2MOOD", "RK2MUSCL2(Superbee)", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter","Analytic Solution", "ARS233Upwind"]
     #["ARS233MUSCL2", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter", "EulerUpwind","Analytic Solution"]#,"LW", "EulerUpwind"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK4MUSCL5MOOD"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
-    #["RK2MUSCL2Smooth", "Analytic Solution"]
-    #["RK2MUSCL2MOOD(U1)", "Analytic Solution"]
+    #["ARS233MUSCL2MOOD","ARS233MUSCL5MOOD","LWMOOD(uniform grid)","RK2MUSCL2MOOD(U1)","RK2MUSCL2MOOD(U2)","RK4MUSCL5MOOD"]
+    ["EulerUpwind","Analytical Solution","RK2MUSCL2(VKLimiter)","RK2MUSCL2(superbee)","RK2MUSCL2", "RK2MUSCL2MOOD", "ARS233MUSCL2MOOD"]
+    #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
+    #["RK2MUSCL2Smooth", "Analytical Solution"]
+    #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
 );
-
+scene_options = Dict{String, Any}()
+#scene_options = Dict{String, Any}("t" => 6.,"component" => 1, "x_key" => "N", "y_key" => "l2error")
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication);
-#showDynamicDependence(sim_config_burgers; ui_options = :publication)
-#calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2); force_int_param = true)
-#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.25:2); force_int_param = true, initial_calc = true, ui_options = :publication)
-#showConvergencePlot(sim_config_burgers, "delta_relax", 10. .^(0.:0.05:1.5); force_int_param = false, initial_calc = false, ui_options = :publication)
-#showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = false, ui_options = :publication)
-#showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,5); force_int_param = true, initial_calc = true, ui_options = :publication);
+#show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication, scene_options = scene_options);
+#showDynamicDependence(sim_config_burgers; ui_options = :publication, scene_options = scene_options)
+#calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2); calc_stats = false, force_int_param = true)
+#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.75:.25:3); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)
+#showConvergencePlot(sim_config_burgers, "delta_relax", (0.:10^-51:10^-50); force_int_param = false, initial_calc = true, ui_options = :publication)
+#showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = true, ui_options = :publication)
+showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);
 #showConvergencePlot(sim_config_burgers, "relax_velocities", 10. .^(-3:.25:0.); force_int_param = false, initial_calc = true, ui_options = :publication);
 
 # using IPlotPDESols
-test = create_sim_config_from_csv("figures/LA_box_IMEX_direct_comp_params.csv","none")
-show1DSolutionFig(test; calc_stats = false, ui_options = :publication);
+#test = create_sim_config_from_csv("figures/LA_box_IMEX_direct_comp_params.csv","none")
+#show1DSolutionFig(test; calc_stats = false, ui_options = :publication);
