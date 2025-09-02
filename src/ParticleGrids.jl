@@ -5,9 +5,9 @@ using Plots
 using Printf
 using LaTeXStrings
 using Statistics
-using VoronoiCells
-using GeometryBasics
+#using GeometryBasics
 using LinearAlgebra
+using DelaunayTriangulation
 using ..Particles
 using ..SimSettings
 using ..ScalarHyperbolicEquations
@@ -15,6 +15,71 @@ import Meshfree4ScalarEq
 
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, getPeriodicDistance, saveGrid, plotDensity, animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!
 export gridToLinearIndex, linearIndexToGrid, findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, determineVolumes!, getDistance, apply_boundary_conditions!
+
+
+"""
+    calculate_voronoi_volumes_2d(points::Vector{<:NTuple{2, Real}}, xmin, xmax, ymin, ymax) -> Vector{Float64}
+
+Computes the area of the Voronoi cell for each point in `points` within a specified
+bounding box, conforming to the API of DelaunayTriangulation.jl.
+
+This implementation robustly handles cases where particles may lie exactly on the
+boundary corners by reusing their indices instead of creating duplicate points.
+
+# Arguments
+- `points`: A vector of 2D particle locations, e.g., `[(x1, y1), (x2, y2), ...]`.
+- `xmin`, `xmax`, `ymin`, `ymax`: The coordinates defining the bounding box.
+
+# Returns
+- A `Vector{Float64}` where the i-th element is the area of the Voronoi cell for the i-th input particle.
+"""
+function calculate_voronoi_volumes_2d(points::Vector{<:NTuple{2, Real}}, xmin, xmax, ymin, ymax)
+    num_particles = length(points)
+    
+    # Create a mutable copy of the points to potentially add corners.
+    all_points = [p for p in points] 
+
+    # 1. Define the four corner points of the bounding box (CCW order).
+    boundary_corners = [
+        (xmin, ymin), # Lower-Left
+        (xmax, ymin), # Lower-Right
+        (xmax, ymax), # Upper-Right
+        (xmin, ymax)  # Upper-Left
+    ]
+
+    # 2. Build the list of boundary INDICES.
+    #    If a corner point already exists as a particle, reuse its index.
+    #    Otherwise, add the corner to the master list of points and use its new index.
+    boundary_indices = Int[]
+    for corner_point in boundary_corners
+        # `findfirst` is a robust way to check for existing points.
+        idx = findfirst(p -> p == corner_point, all_points)
+        if isnothing(idx)
+            push!(all_points, corner_point)
+            push!(boundary_indices, length(all_points))
+        else
+            push!(boundary_indices, idx)
+        end
+    end
+
+    # 3. CRUCIAL: Close the loop by repeating the first index.
+    push!(boundary_indices, boundary_indices[1])
+
+    # 4. Triangulate using the combined points and the correctly formatted boundary indices.
+    tri = triangulate(all_points; boundary_nodes = boundary_indices)
+
+    # 5. Compute the Voronoi tessellation.
+    vorn = voronoi(tri)
+
+    # 6. Calculate the area for each Voronoi cell for the original particles.
+    volumes = zeros(Float64, num_particles)
+    for i in 1:num_particles
+        volumes[i] = get_area(vorn, i)
+    end
+    
+    return volumes
+end
+
 
 abstract type ParticleGrid end
 
@@ -222,10 +287,8 @@ struct ParticleGrid2D <: ParticleGrid
         regular = (randomness[1] == 0.0) && (randomness[2] == 0.0) ? true : false
 
         # Set volumes
-        points = [Point2(particle.pos) for particle in grid]
-        rect = Rectangle(Point2(xmin-dx, ymin-dy), Point2(xmax+dx, ymax+dy))
-        tess = voronoicells(points, rect)
-        vols = voronoiarea(tess)
+        points = [particle.pos for particle in grid]
+        vols = calculate_voronoi_volumes_2d(points, xmin-dx, xmax+dx,  ymin-dy, ymax+dy)
         for (particleIndex, particle) in enumerate(grid)
             particle.volume = vols[particleIndex]
         end
@@ -427,11 +490,11 @@ function getPeriodicDistance(particleGrid::ParticleGrid2D, particleIndex::Intege
     return (distX - round(distX/domainSizeX)*domainSizeX, distY - round(distY/domainSizeY)*domainSizeY)
 end
 # Create a general getDistance function that dispatches
-function getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)::Float64
+function getDistance(pg::ParticleGrid, i::Integer, j::Integer)::Float64
     if pg.bc == :periodic
         return getPeriodicDistance(pg, i, j)
     else # For :fixed_dirichlet or other non-periodic types
-        return pg.grid[j].pos - pg.grid[i].pos
+        return pg.grid[j].pos .- pg.grid[i].pos
     end
 end
 function getEuclideanDistance(particleGrid::ParticleGridType, particleIndex::Integer, nbParticle::Integer) where {ParticleGridType <: ParticleGrid}
@@ -858,7 +921,6 @@ function determineVolumes!(particleGrid::ParticleGrid1D)
     #     end
     # end
 end
-
 """
     determineVolumes!(particleGrid::ParticleGrid2D)
 
@@ -867,33 +929,36 @@ and updates `particle.volume`. Uses VoronoiCells.jl.
 Assumes particleGrid.grid contains Particle2D objects.
 """
 function determineVolumes!(particleGrid::ParticleGrid2D)
-    N = length(particleGrid.grid)
+    
+    grid = particleGrid.grid
+    N = length(grid)
     if N == 0
         return
     end
 
-    points = [GeometryBasics.Point2(p.pos[1], p.pos[2]) for p in particleGrid.grid]
-    
     # Define a bounding rectangle for Voronoi tessellation.
     # It should encompass all points and handle periodicity if applicable.
     # For simplicity, if your domain is [xmin, xmax] x [ymin, ymax] and periodic,
     # the tessellation should ideally handle that. VoronoiCells.jl can take a Rectangle.
     # The original constructor padded this rectangle.
-    dx_avg = (particleGrid.xmax - particleGrid.xmin) / particleGrid.Nx
-    dy_avg = (particleGrid.ymax - particleGrid.ymin) / particleGrid.Ny
+    xmin = particleGrid.xmin
+    xmax = particleGrid.xmax
+    ymin = particleGrid.ymin
+    ymax = particleGrid.ymax
+    dx_avg = (xmax - xmin) / particleGrid.Nx
+    dy_avg = (ymax - ymin) / particleGrid.Ny
 
     # Bounding box slightly larger than domain, as in your constructor
     # This helps VoronoiCells.jl deal with boundary cells.
     # For periodic, the library might have specific ways, but a common approach
     # is to tile points and take the central cell, or use specific periodic Voronoi algorithms.
     # Assuming VoronoiCells.jl handles this appropriately with a large enough rect.
-    bounding_rect = GeometryBasics.Rectangle(
-        Point2(particleGrid.xmin - dx_avg, particleGrid.ymin - dy_avg),
-        Point2(particleGrid.xmax + dx_avg, particleGrid.ymax + dy_avg)
-    )
-    
-    tess = VoronoiCells.voronoicells(points, bounding_rect)
-    vols = VoronoiCells.voronoiarea(tess)
+        # Set volumes
+    points = [particle.pos for particle in grid]
+    vols = calculate_voronoi_volumes_2d(points, xmin-dx_avg, xmax+dx_avg, ymin-dy_avg, ymax+dy_avg)
+    for (particleIndex, particle) in enumerate(grid)
+        particle.volume = vols[particleIndex]
+    end
 
     if length(vols) == N
         for i in 1:N

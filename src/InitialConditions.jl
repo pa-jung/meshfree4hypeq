@@ -1,13 +1,11 @@
-# Suggested new file: src/InitialConditions.jl
-
 module InitialConditions
 
 # Import necessary types from your main module. Adjust the path as needed.
 using ..ScalarHyperbolicEquations
-using ..HyperbolicSystems 
+using ..HyperbolicSystems
 using ..ParticleGrids
 
-export InitialCondition, SmoothInitialCondition, ShockInitialCondition, 
+export InitialCondition, SmoothInitialCondition, ShockInitialCondition,
        Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,
        getInitialCondition, get_discontinuity_points, euler1D_physical_fluxes
 
@@ -35,46 +33,104 @@ abstract type ShockInitialCondition <: InitialCondition end
 
 # --- 2. Concrete Structs and Functors for t=0 ---
 
-# --- GAUSS (Smooth) ---
-struct Gauss <: SmoothInitialCondition
+# --- UNIFIED GAUSS (1D/2D) ---
+struct Gauss{T} <: SmoothInitialCondition
     a::Float64      # amplitude
-    b::Float64      # mean (center)
+    b::T            # mean (center)
     width::Float64
+
+    function Gauss(a::Real, b::Union{Real, NTuple{2, <:Real}}, width::Real)
+        if b isa Real
+            new{Float64}(a, b, width)
+        else
+            new{NTuple{2, Float64}}(a, b, width)
+        end
+    end
 end
-# Functor for initial condition at t=0
-(ic::Gauss)(x::Real) = ic.a * exp(-((x - ic.b) / ic.width)^2)
-(ic::Gauss)(x::Real, y::Real) = error("2D Gauss IC not implemented.")
+# Functor for 1D initial condition at t=0
+(ic::Gauss{Float64})(x::Real) = ic.a * exp(-((x - ic.b) / ic.width)^2)
+# Functor for 2D initial condition at t=0
+(ic::Gauss{NTuple{2, Float64}})(x::Real, y::Real) = ic.a * exp(-(((x - ic.b[1])^2 + (y - ic.b[2])^2) / ic.width^2))
 
 
-# --- SINE (Smooth) ---
+# --- SINE (1D) ---
 struct Sine <: SmoothInitialCondition
     a::Float64      # amplitude
     b_period::Float64
     c_offset::Float64
 end
 (ic::Sine)(x::Real) = ic.a * sin(2.0 * pi * x / ic.b_period) + ic.c_offset
-(ic::Sine)(x::Real, y::Real) = error("2D Sine IC not implemented.")
 
 
-# --- BOX (Shock) ---
+# --- UNIFIED BOX (1D/2D) ---
 struct Box <: ShockInitialCondition
     u_background::Float64
     u_box::Float64
     x_start::Float64
     x_end::Float64
+    y_start::Union{Float64, Nothing}
+    y_end::Union{Float64, Nothing}
+
+    # Inner constructor for type stability
+    function Box(u_bg, u_box, xs, xe, ys, ye)
+        new(u_bg, u_box, xs, xe, ys, ye)
+    end
+    # 1D outer constructor
+    Box(u_bg::Real, u_box::Real, xs::Real, xe::Real) = new(u_bg, u_box, xs, xe, nothing, nothing)
+    # 2D outer constructor
+    Box(u_bg::Real, u_box::Real, xs::Real, xe::Real, ys::Real, ye::Real) = new(u_bg, u_box, xs, xe, ys, ye)
 end
-(ic::Box)(x::Real) = ic.x_start <= x <= ic.x_end ? ic.u_box : ic.u_background
-(ic::Box)(x::Real, y::Real) = error("2D Box IC not implemented.")
+
+# Functor for 1D initial condition at t=0
+function (ic::Box)(x::Real)
+    @assert ic.y_start === nothing "This is a 2D Box IC, but it was called with a 1D input (x only)."
+    return ic.x_start <= x <= ic.x_end ? ic.u_box : ic.u_background
+end
+# Functor for 2D initial condition at t=0
+function (ic::Box)(x::Real, y::Real)
+    @assert ic.y_start !== nothing "This is a 1D Box IC, but it was called with a 2D input (x, y)."
+    return (ic.x_start <= x <= ic.x_end && ic.y_start <= y <= ic.y_end) ? ic.u_box : ic.u_background
+end
 
 
-# --- RIEMANN (Shock) ---
+# --- RIEMANN (1D) ---
 struct Riemann <: ShockInitialCondition
     uL::Float64
     uR::Float64
     x0::Float64
 end
 (ic::Riemann)(x::Real) = x < ic.x0 ? ic.uL : ic.uR
-(ic::Riemann)(x::Real, y::Real) = error("2D Riemann IC not implemented.")
+
+
+# --- EULER SYSTEM ICS (1D) ---
+struct EulerSmooth <: SmoothInitialCondition
+    rho_spec::NamedTuple
+    u_spec::NamedTuple
+    p_spec::NamedTuple
+end
+function (ic::EulerSmooth)(x::Real)
+    rho_s, u_s, p_s = ic.rho_spec, ic.u_spec, ic.p_spec
+    rho_val = rho_s.off + rho_s.amp * exp(-((x - rho_s.mean) / rho_s.width)^2)
+    u_val   = u_s.off   + u_s.amp   * exp(-((x - u_s.mean) / u_s.width)^2)
+    p_val   = p_s.off   + p_s.amp   * exp(-((x - p_s.mean) / p_s.width)^2)
+    rho_val = max(rho_val, 1e-6); p_val = max(p_val, 1e-6)
+    m_val = rho_val * u_val
+    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
+    return (rho_val, m_val, E_val)
+end
+
+struct EulerShockTube <: ShockInitialCondition
+    stateL::NTuple{3, Float64} # (rho, u, p)
+    stateR::NTuple{3, Float64} # (rho, u, p)
+    x0::Float64
+end
+function (ic::EulerShockTube)(x::Real)
+    rho_val, u_val, p_val = x < ic.x0 ? ic.stateL : ic.stateR
+    rho_val = max(rho_val, 1e-6); p_val = max(p_val, 1e-6)
+    m_val = rho_val * u_val
+    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
+    return (rho_val, m_val, E_val)
+end
 
 
 # --- 3. Analytical Solution Functors (t>0) using Multiple Dispatch ---
@@ -224,36 +280,6 @@ end
 # Fallback for ICs without a specific analytical solution for Burger's
 (ic::Gauss)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D) = NaN
 
-# --- EULER SYSTEM ICS ---
-struct EulerSmooth <: SmoothInitialCondition
-    rho_spec::NamedTuple
-    u_spec::NamedTuple
-    p_spec::NamedTuple
-end
-function (ic::EulerSmooth)(x::Real)
-    rho_s, u_s, p_s = ic.rho_spec, ic.u_spec, ic.p_spec
-    rho_val = rho_s.off + rho_s.amp * exp(-((x - rho_s.mean) / rho_s.width)^2)
-    u_val   = u_s.off   + u_s.amp   * exp(-((x - u_s.mean) / u_s.width)^2)
-    p_val   = p_s.off   + p_s.amp   * exp(-((x - p_s.mean) / p_s.width)^2)
-    rho_val = max(rho_val, 1e-6); p_val = max(p_val, 1e-6)
-    m_val = rho_val * u_val
-    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
-    return (rho_val, m_val, E_val)
-end
-
-struct EulerShockTube <: ShockInitialCondition
-    stateL::NTuple{3, Float64} # (rho, u, p)
-    stateR::NTuple{3, Float64} # (rho, u, p)
-    x0::Float64
-end
-function (ic::EulerShockTube)(x::Real)
-    rho_val, u_val, p_val = x < ic.x0 ? ic.stateL : ic.stateR
-    rho_val = max(rho_val, 1e-6); p_val = max(p_val, 1e-6)
-    m_val = rho_val * u_val
-    E_val = p_val / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho_val * u_val^2
-    return (rho_val, m_val, E_val)
-end
-
 
 # --- 3. Analytical Solution Functors (t>0) ---
 
@@ -386,7 +412,7 @@ function (ic::EulerShockTube)(x::Real, t::Real, eq::EulerEquations, pg::Particle
 end
 
 
-# --- 4. Factory Function ---
+# --- 4. Factory Function (SIMPLIFIED) ---
 function getInitialCondition(name::String, params::Tuple)::InitialCondition
     if name == "gauss"; return Gauss(params...);
     elseif name == "box"; return Box(params...);

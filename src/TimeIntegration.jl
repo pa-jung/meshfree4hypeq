@@ -121,6 +121,7 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
     setCurvatures!(particleGrid, settings)
 
     # Initialize interpolation routine
+p = Progress(convert(Int64,ceil(settings.tmax/settings.dt)), "Running Simulation...")
     initTimeStepper(timeStepper, particleGrid, settings)
     t = 0.0
     k = 1
@@ -141,7 +142,7 @@ function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEqua
         end
         
         k += 1
-        
+        ProgressMeter.next!(p)
     end
     
     # #saveGrid(settings, particleGrid, t)
