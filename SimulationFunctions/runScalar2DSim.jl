@@ -109,7 +109,7 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux()
                          elseif fallback_flux_name == "Upwind"; UpwindFlux()
-                         else error("Fallback Flux '$fallback_flux_name' not implemented.")
+                         elseif !isnothing(fallback_flux_name); error("Fallback Flux '$fallback_flux_name' not implemented.")
                          end
         
         MainGrad = if main_grad_name == "MUSCL"; MUSCL(order; numericalFlux=MainFlux)
@@ -120,7 +120,7 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         FallbackGrad = if isnothing(fallback_grad_name); nothing
                          elseif fallback_grad_name == "Upwind"; UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d)
-                         else error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
+                         elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end
 
         # --- Time Stepper Selection ---
@@ -134,7 +134,7 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # Note: 2D IC functor (x,y) must be implemented in InitialConditions.jl
         setInitialConditions!(particleGrid, (x, y) -> IC(x, y))
 
-        settings = SimSetting(tmax=tmax, dt=dt, interpRange=interp_range, interpAlpha=interp_alpha, saveFreq=save_freq)
+        settings = SimSetting(tmax=tmax, dt=dt, interpRange=interp_range, saveFreq = save_freq, interpAlpha=interp_alpha)
 
         # --- Call Time Integrator ---
         elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)

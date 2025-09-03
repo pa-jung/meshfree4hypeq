@@ -32,6 +32,9 @@ mutable struct SimSetting
         end
         new(convert(Float64, tmax), convert(Float64, dt), convert(Float64, interpRange), convert(Float64, interpAlpha), saveDir, convert(UInt64, saveFreq), UInt64(0))
     end
+    function SimSetting(;tmax::Real, dt::Real, interpRange::Real, interpAlpha::Real, saveFreq::Real)
+        new(convert(Float64, tmax), convert(Float64, dt), convert(Float64, interpRange), convert(Float64, interpAlpha), "/", convert(UInt64, saveFreq), UInt64(0))
+    end
 end
 
 """

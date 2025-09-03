@@ -241,62 +241,115 @@ struct ParticleGrid1D <: ParticleGrid
     end    
 end
 
+# --- MODIFIED: Added bc and interior_indices fields ---
 struct ParticleGrid2D <: ParticleGrid
     grid::Vector{Particle2D}
     xmin::Float64
     xmax::Float64
     ymin::Float64
     ymax::Float64
-    Nx::Int64
-    Ny::Int64
-    dx::Float64
-    dy::Float64
+    Nx::Int64  # Total number of points in x-dir
+    Ny::Int64  # Total number of points in y-dir
+    dx::Float64 # Nominal spacing
+    dy::Float64 # Nominal spacing
     regular::Bool
+    bc::Symbol
+    interior_indices::Vector{Int}
     temp::Matrix{Float64}
 
-    """
-        ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx::Integer, Ny::Integer; randomness::Tuple{Real, Real} = 0.0)
+# --- MODIFIED: Updated periodic constructor to match new struct definition ---
+function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx::Integer, Ny::Integer; randomness::Tuple{Real, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng)
+    @assert Nx >= 2 && Ny >= 2 && xmax > xmin && ymax > ymin
+    grid = Vector{Particle2D}(undef, Nx*Ny)
+    dx = (xmax - xmin)/Nx
+    dy = (ymax - ymin)/Ny
 
-    Construct a ParticleGrid object. This function will generate a 2D periodic grid (particles at the right edge not stored) of Nx x Ny points in [xmin, xmax) x [ymin, ymax).
-    An unstructured grid can be created by setting randomness (uniform variance on position) to something positive.
-    """
-    function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx::Integer, Ny::Integer; randomness::Tuple{Real, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng)
-        @assert Nx >= 2
-        @assert Ny >= 2
-        @assert xmax > xmin
-        @assert ymax > ymin
-
-        grid = Vector{Particle2D}(undef, Nx*Ny)
-
-        dx = (xmax - xmin)/Nx
-        dy = (ymax - ymin)/Ny
-
-        # Create grid
-        index = 1
-        for i = 1:Nx
-            for j = 1:Ny
-                boundary = (i == 1) || (j == 1) ? true : false
-                posX = xmin + dx*(i-0.5) + randomness[1]*(rand(rng, Float64)*2 - 1) 
-                posY = ymin + dy*(j-0.5) + randomness[2]*(rand(rng, Float64)*2 - 1)
-                grid[index] = Particle2D((posX, posY), 0.0, boundary)
-                index += 1
-                @assert (xmin <= posX <= xmax) && (ymin <= posY <= ymax)
-            end
-        end
-
-        regular = (randomness[1] == 0.0) && (randomness[2] == 0.0) ? true : false
-
-        # Set volumes
-        points = [particle.pos for particle in grid]
-        vols = calculate_voronoi_volumes_2d(points, xmin-dx, xmax+dx,  ymin-dy, ymax+dy)
-        for (particleIndex, particle) in enumerate(grid)
-            particle.volume = vols[particleIndex]
-        end
-        
-        new(grid, convert(Float64, xmin), convert(Float64, xmax), convert(Float64, ymin), convert(Float64, ymax), convert(Int64, Nx), convert(Int64, Ny), dx, dy, regular, Matrix{Float64}(undef, Nx*Ny, 2))
+    for i=1:Nx, j=1:Ny
+        index = (i-1)*Ny + j
+        posX = xmin + dx*(i-0.5) + randomness[1]*(rand(rng, Float64)*2 - 1) 
+        posY = ymin + dy*(j-0.5) + randomness[2]*(rand(rng, Float64)*2 - 1)
+        grid[index] = Particle2D((posX, posY), 0.0, false)
     end
+    regular = (randomness[1] == 0.0) && (randomness[2] == 0.0)
+
+    points = [p.pos for p in grid]
+    bounding_box = (xmin - dx, xmax + dx, ymin - dy, ymax + dy)
+    vols = calculate_voronoi_volumes_2d(points, bounding_box...)
+    for (i, p) in enumerate(grid); p.volume = vols[i]; end
+    
+    # For periodic grids, all particles are interior
+    interior_indices = collect(1:(Nx*Ny))
+
+    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Int64(Nx), Int64(Ny), dx, dy, regular, :periodic, interior_indices, zeros(Nx*Ny, 2))
 end
 
+# --- NEW: Constructor for 2D grids with boundary conditions ---
+function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx_interior::Integer, Ny_interior::Integer, N_ghost::Integer, bc::Symbol; 
+    randomness::Tuple{Real, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng)
+
+    if bc == :periodic
+        @assert N_ghost == 0 "Periodic boundary conditions need no ghost cells"
+        return ParticleGrid2D(xmin, xmax, ymin, ymax, Nx_interior, Ny_interior; randomness=randomness, rng=rng)
+    end
+    @assert N_ghost > 0 "N_ghost must be positive for fixed BCs."
+
+    # Calculate grid dimensions
+    Nx_total = Nx_interior + 2 * N_ghost
+    Ny_total = Ny_interior + 2 * N_ghost
+    dx_nominal = (xmax - xmin) / (Nx_interior > 1 ? Nx_interior - 1 : 1.0)
+    dy_nominal = (ymax - ymin) / (Ny_interior > 1 ? Ny_interior - 1 : 1.0)
+    
+    grid = Vector{Particle2D}(undef, Nx_total * Ny_total)
+    interior_indices = Int[]
+    
+    # Create particles row by row, column by column
+    for i in 1:Nx_total, j in 1:Ny_total
+        index = (i - 1) * Ny_total + j
+        
+        # Determine if the particle is in the interior or a ghost cell
+        is_interior = (N_ghost < i <= Nx_interior + N_ghost) && (N_ghost < j <= Ny_interior + N_ghost)
+
+        # Determine particle position
+        local posX, posY
+        # X-position
+        if i <= N_ghost # Left ghosts
+            posX = xmin - (N_ghost - i + 1) * dx_nominal
+        elseif i > Nx_interior + N_ghost # Right ghosts
+            posX = xmax + (i - (Nx_interior + N_ghost)) * dx_nominal
+        else # Interior x-range
+            base_posX = xmin + (i - N_ghost - 1) * dx_nominal
+            posX = base_posX + randomness[1] * (rand(rng, Float64) * 2 - 1)
+        end
+        # Y-position
+        if j <= N_ghost # Bottom ghosts
+            posY = ymin - (N_ghost - j + 1) * dy_nominal
+        elseif j > Ny_interior + N_ghost # Top ghosts
+            posY = ymax + (j - (Ny_interior + N_ghost)) * dy_nominal
+        else # Interior y-range
+            base_posY = ymin + (j - N_ghost - 1) * dy_nominal
+            posY = base_posY + randomness[2] * (rand(rng, Float64) * 2 - 1)
+        end
+        
+        grid[index] = Particle2D((posX, posY), 0.0, !is_interior)
+        if is_interior
+            push!(interior_indices, index)
+        end
+    end
+
+    # Calculate volumes for all particles (interior and ghost)
+    points = [p.pos for p in grid]
+    # Bounding box must encompass all points, including ghosts
+    xmin_b = xmin - (N_ghost + 0.5) * dx_nominal
+    xmax_b = xmax + (N_ghost + 0.5) * dx_nominal
+    ymin_b = ymin - (N_ghost + 0.5) * dy_nominal
+    ymax_b = ymax + (N_ghost + 0.5) * dy_nominal
+    vols = calculate_voronoi_volumes_2d(points, xmin_b, xmax_b, ymin_b, ymax_b)
+    for (i, p) in enumerate(grid); p.volume = vols[i]; end
+
+    regular = (randomness == (0.0, 0.0))
+    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Nx_total, Ny_total, dx_nominal, dy_nominal, regular, bc, interior_indices, zeros(Nx_total*Ny_total, 2))
+end
+end
 
 """
     getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection, interpAlpha::Real, interpRange::Real)
@@ -490,7 +543,7 @@ function getPeriodicDistance(particleGrid::ParticleGrid2D, particleIndex::Intege
     return (distX - round(distX/domainSizeX)*domainSizeX, distY - round(distY/domainSizeY)*domainSizeY)
 end
 # Create a general getDistance function that dispatches
-function getDistance(pg::ParticleGrid, i::Integer, j::Integer)::Float64
+function getDistance(pg::ParticleGrid, i::Integer, j::Integer)
     if pg.bc == :periodic
         return getPeriodicDistance(pg, i, j)
     else # For :fixed_dirichlet or other non-periodic types

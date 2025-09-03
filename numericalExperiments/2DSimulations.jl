@@ -7,13 +7,13 @@ sim_config_2d = SimulationConfig(
         "xmin" => -5.0, "xmax" => 5.0, "ymin" => -5.0, "ymax" => 5.0,
         "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
         "interp_range" => 2.5,
-        "init_func" => "gauss2d", # Use the new 2D function name
+        "init_func" => "gauss", # Use the new 2D function name
         "init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
         "randomness_factor" => (0.0, 0.0), # (x_rand, y_rand)
         "SEED_value" => 42,
         "sim_function" => (:const, "runScalar2DSim"), # Point to the 2D run function
         "PDE" => "linear",
-        "PDE_params" => ((1.0, 0.5),) # 2D velocity vector (vx, vy)
+        "PDE_params" => (1.0, 0.5) # 2D velocity vector (vx, vy)
     ),
     MethodDict(
         "RK4-MUSCL2-2D" => ParamDict(
@@ -44,5 +44,5 @@ sim_config_2d = SimulationConfig(
 # --- How to run this with your IPlotPDESols package ---
 # You would now pass `sim_config_2d` to your plotting functions.
 # For example:
-# show2DSolutionFig(sim_config_2d; ui_options = :publication)
+show2DSolutionFig(sim_config_2d;)
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)

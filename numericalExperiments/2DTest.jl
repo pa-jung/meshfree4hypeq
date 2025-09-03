@@ -5,9 +5,9 @@ using IPlotPDESols # or just `const ParamDict = Dict{String, Any}` if not using 
 
 params = ParamDict(
     # --- Shared Parameters ---
-    "tmax" => 1.0,
-    "Nx" => 10,
-    "Ny" => 10,
+    "tmax" => 2.0,
+    "Nx" => 40,
+    "Ny" => 40,
     "xmin" => -5.0,
     "xmax" => 5.0,
     "ymin" => -5.0,
@@ -24,13 +24,11 @@ params = ParamDict(
     "PDE_params" => (1.0, 0.5), # 2D velocity vector (vx, vy)
 
     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
-    "timestepper" => "RalstonRK2",
+    "timestepper" => "RK4",
     "main_gradient" => "MUSCL",
     "order" => 2,
     "main_flux" => "Rusanov",
     "mood" => "none", # No MOOD for this run
-    "fallback_gradient" => nothing, # No fallback needed if MOOD is off
-    "fallback_flux" => nothing
 )
 
 # --- How to use this for testing ---
@@ -41,6 +39,6 @@ params = ParamDict(
 #
 include("../SimulationFunctions/runScalar2DSim.jl")
 sim_data = runScalar2DSim(params)
-#
+
 # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.
 #
