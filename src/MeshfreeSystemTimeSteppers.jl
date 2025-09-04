@@ -164,7 +164,7 @@ function compute_explicit_tendency_with_mood!(
     settings::SimSettings.SimSetting, # Added SimSettings.
     dt_for_mood_check::Real,
     is_first_mood_stage_in_rk::Bool,
-    interior_indices::UnitRange{Int64}
+    interior_indices::AbstractVector{Int64}
 )
     N_particles = size(U_state_sys, 1)
     N_components = length(scalar_equations)
@@ -470,6 +470,8 @@ function (imex_ts::GeneralIMEXTimeStepper)(
     bt = imex_ts.butcher_tableau
 
     if size(imex_ts.U_n_sys,1) != N_total_particles || size(imex_ts.U_n_sys,2) != N_components
+        println(size(imex_ts.U_n_sys),N_total_particles)
+        println(size(imex_ts.U_n_sys,2), N_components)
         error("GeneralIMEXTimeStepper buffers not sized correctly. Re-initialize instance.")
     end
 
@@ -602,7 +604,7 @@ struct GeneralIMEXTimeStepperS{
     IS <: ImplicitSolvers.AbstractImplicitSolver, # Assuming AbstractImplicitSolver is defined
     ST_OBJ <: SourceTerms.AbstractSourceTerm,    # Assuming AbstractSourceTerm is defined
     BT <: IMEXButcherTableau
-} <: TimeStepper # Qualify TimeStepper if in a different module
+} <: MeshfreeSystemTimeStepper # Qualify TimeStepper if in a different module
 
     # User's modular components
     gradientInterpolator::G1

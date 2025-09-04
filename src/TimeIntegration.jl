@@ -234,8 +234,8 @@ function mainTimeIntegrator2!(
     settings::SimSetting 
 )
     # ... (initial checks and updates for system_pg as before) ...
-
-    xs_data = Vector{Vector{Float64}}()
+    XType = typeof(system_pg[1].grid[1].pos)
+    xs_data = Vector{Vector{XType}}()
     us_data_sys = Vector{Matrix{Float64}}() # Vector of (Vector of Tuples)
 
     for particleGrid in system_pg

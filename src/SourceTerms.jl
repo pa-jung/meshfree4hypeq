@@ -49,7 +49,7 @@ end
 function (rs::RelaxationSourceTerm1D)(
     S_out_particle::AbstractVector{Float64},
     U_particle::AbstractVector{Float64},
-    particle_pos::Float64, # Unused by this specific S
+    particle_pos::Any, # Unused by this specific S
     time::Real             # Unused by this specific S
 )
     if length(U_particle) != rs.num_components || length(S_out_particle) != rs.num_components
@@ -108,7 +108,7 @@ end
 function (rs::RelaxationSourceTerm)(
     S_out_particle::AbstractVector{Float64},
     U_kinetic_particle::AbstractVector{Float64},
-    particle_pos::Float64, 
+    particle_pos::Any, 
     time::Real             
 )
     if length(U_kinetic_particle) != rs.num_total_kinetic_components || length(S_out_particle) != rs.num_total_kinetic_components

@@ -92,7 +92,7 @@ function solve!(
     RHS_const_particle::AbstractVector{Float64},     # Input: This is U_k_base (e.g., U^n or U_temp for ARS2 stages)
     dt_coefficient_for_S::Float64,              # This is the effective dt' (e.g., dt*gamma in ARS2)
     source_term_object::RelaxationSourceTerm1D,     # Must be RelaxationSourceTerm
-    particle_pos::Float64,                      # Unused by this specific solver for this source
+    particle_pos::Any,                      # Unused by this specific solver for this source
     time_for_S_eval::Real,                      # Unused if Maxwellians are not time-dependent
     N_components::Int
 )::Bool                                          # Always "converges" in one step for this direct formula
@@ -137,7 +137,7 @@ function solve!(
     RHS_const_particle::AbstractVector{Float64},     
     dt_coefficient_for_S::Float64,              
     source_term_object::RelaxationSourceTerm,     
-    particle_pos::Float64,                      
+    particle_pos::Any,                      
     time_for_S_eval::Real,                      
     N_total_kinetic_components_arg::Int      
 )::Bool

@@ -342,10 +342,11 @@ sim_config_burgers = SimulationConfig(
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK4MUSCL5MOOD"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
     #["ARS233MUSCL2MOOD","ARS233MUSCL5MOOD","LWMOOD(uniform grid)","RK2MUSCL2MOOD(U1)","RK2MUSCL2MOOD(U2)","RK4MUSCL5MOOD"]
-    ["EulerUpwind","Analytical Solution","RK2MUSCL2(VKLimiter)","RK2MUSCL2(superbee)","RK2MUSCL2", "RK2MUSCL2MOOD", "ARS233MUSCL2MOOD"]
+    #["EulerUpwind","Analytical Solution","RK2MUSCL2(VKLimiter)","RK2MUSCL2(superbee)","RK2MUSCL2", "RK2MUSCL2MOOD", "ARS233MUSCL2MOOD"]
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
+    "ARS233MUSCL2"
 );
 scene_options = Dict{String, Any}()
 #scene_options = Dict{String, Any}("t" => 6.,"component" => 1, "x_key" => "N", "y_key" => "l2error")

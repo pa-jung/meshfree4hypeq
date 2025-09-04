@@ -10,13 +10,13 @@ sim_config_2d = SimulationConfig(
         "init_func" => "riemann", # Use the new 2D function name
         #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
         #"init_params" => (0.,1.,-2.,2.,-2.,2.),
-        "init_params" => (1.,0.,(0.,0.),(1.,1.)),
+        "init_params" => (1.,0.,(0.,0.),(1.,0.)),
         "bc" => :outflow,
         "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
         "SEED_value" => 42,
         "sim_function" => "runScalar2DSim", # Point to the 2D run function
         "PDE" => "linear",
-        "PDE_params" => (2.0, -0.5) # 2D velocity vector (vx, vy)
+        "PDE_params" => (2.0, 0.) # 2D velocity vector (vx, vy)
     ),
     MethodDict(
         "RK4-MUSCL2-2D" => ParamDict(
@@ -51,9 +51,17 @@ sim_config_2d = SimulationConfig(
             "main_gradient" => "Central",
             "order" => 2,
             "MOOD" => "none"
-        )
+        ),
+        "ARS222MUSCL2" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_gradient" => "MUSCL",
+            "order" => 2,
+            "main_flux" => "Rusanov",
+            "MOOD" => "none",
+            "relax_velocities" => [2.], "relax_epsilon" => 1e-6 
+        ),            
     ),
-    ["RK4-MUSCL2-2D-MOOD","Analytical Solution"] # Methods to run by default
+    ["ARS222MUSCL2"] # Methods to run by default
 );
 
 # --- How to run this with your IPlotPDESols package ---

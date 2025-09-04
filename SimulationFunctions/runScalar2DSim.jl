@@ -63,6 +63,9 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
         init_params = get(run_params, "init_params", nothing)
         seed_val = get(run_params, "SEED_value", nothing)
+        relax_vel = get(run_params, "relax_velocities", nothing)
+        relax_eps = get(run_params, "relax_epsilon", nothing)
+        save_relax = get(run_params, "save_relax", false)
         upwind_alg_2d = get(run_params, "upwind_alg_2d", "Classic") # Specific for 2D Upwind
 
 
@@ -132,11 +135,12 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         save_freq = max(1, round(Int, (tmax / snapshots) / dt))
 
 
-        settings = SimSetting(tmax=tmax, dt=dt, interpRange=interp_range, saveFreq = save_freq, interpAlpha=interp_alpha)
+        settings = SimSetting(tmax, dt, interp_range, interp_alpha, save_freq)
 
 
         # --- Build Method Components ---
-        mood_fun = if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
+        mood_fun =   if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
+                     elseif mood_name == "U1"; MOODu1(deltaRelax = delta_relax)
                      elseif mood_name == "none" || isnothing(mood_name); NoMOOD()
                      else error("MOOD '$mood_name' not recognized for 2D.")
                      end
@@ -154,6 +158,7 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         MainGrad = if main_grad_name == "MUSCL"; MUSCL(order; numericalFlux=MainFlux)
                      elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d)
                      elseif main_grad_name == "Central"; CentralGradient(order)
+                     elseif main_grad_name == "WENO"; 
                      else error("Main Gradient '$main_grad_name' not implemented for 2D.")
                      end
 
@@ -162,19 +167,59 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                          elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end
 
+        local source_term
+        local implicit_solver
+        local eqs
+        local pgs
+        if !isnothing(relax_vel)
+            F = u -> flux(eq, u)[1]
+            G = u -> flux(eq, u)[2]
+            eqs = LinearAdvection{Tuple{Float64,Float64}}[]
+            M = Function[]
+            pgs = ParticleGrid2D[]
+            for vel = relax_vel
+                for a = [(vel,0.),(-vel,0.),(0.,vel),(0.,-vel)]
+                    func = a[2] == 0. ? F : G
+                    push!(eqs, LinearAdvection(a))
+                    push!(pgs, deepcopy(particleGrid))
+                    push!(M, rho -> 1/4 * (rho + 2 * func(rho)/sum(a)))
+                end
+            end
+            for (pg_idx,pg) = enumerate(pgs)
+                for particle = pg.grid
+                    particle.rho = M[pg_idx](particle.rho)
+                end
+            end
+            source_term = RelaxationSourceTerm(M, relax_eps, [1:length(M)])
+            implicit_solver = LinearizedRelaxationImplicitSolver()            
+        end
         # --- Time Stepper Selection ---
-        method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun)
-                   elseif timestepper_name == "RK4"; RK4(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun)
-                   else error("Unknown TimeStepper name: '$timestepper_name'")
-                   end
+        method =    if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun)
+                    elseif timestepper_name == "RK4"; RK4(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun)
+                    elseif timestepper_name == "RK3"; RK3(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun)
+                    elseif timestepper_name == "Upwind"; method = Upwind(Nx_total, Ny_total)
+                    elseif timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
+                    elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
+                    elseif timestepper_name == "ARS222"; ARS222(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
+                    elseif timestepper_name == "IMEXRalstonRK2"; RalstonRK2(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
+                    elseif timestepper_name == "ARS232"; ARS232(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4 * length(relax_vel))
+                    elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, Nx_total * Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term, 4 * length(relax_vel))
+                    else error("Unknown TimeStepper name: '$timestepper_name'")
+                    end
 
 
         # --- Call Time Integrator ---
-        elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
+        if isnothing(relax_vel)
+            elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
+        else
+            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator2!(method, eqs, pgs, settings)
+            us = save_relax ? sys_us : [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
+            xs = save_relax ? sys_xs : [sys_x[:,1] for sys_x = sys_xs]
+        end            
         @info "2D Time integration finished in $(round(elapsed_time, digits=2)) seconds."
         
+        local sim_data_result
         sim_data_result = createSimData(xs, us, ts, run_params)
-
         # --- Post-processing ---
         if !isnothing(sim_data_result) && hasproperty(sim_data_result, :stats)
             sim_data_result.stats["time"] = elapsed_time
