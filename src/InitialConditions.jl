@@ -4,10 +4,12 @@ module InitialConditions
 using ..ScalarHyperbolicEquations
 using ..HyperbolicSystems
 using ..ParticleGrids
+using LinearAlgebra
 
 export InitialCondition, SmoothInitialCondition, ShockInitialCondition,
        Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,
        getInitialCondition, get_discontinuity_points, euler1D_physical_fluxes
+
 
 # --- Helper functions for Euler Equations ---
 const GAS_GAMMA_EULER = 1.4
@@ -47,19 +49,12 @@ struct Gauss{T} <: SmoothInitialCondition
         end
     end
 end
-# Functor for 1D initial condition at t=0
-(ic::Gauss{Float64})(x::Real) = ic.a * exp(-((x - ic.b) / ic.width)^2)
-# Functor for 2D initial condition at t=0
-(ic::Gauss{NTuple{2, Float64}})(x::Real, y::Real) = ic.a * exp(-(((x - ic.b[1])^2 + (y - ic.b[2])^2) / ic.width^2))
-
-
 # --- SINE (1D) ---
 struct Sine <: SmoothInitialCondition
     a::Float64      # amplitude
     b_period::Float64
     c_offset::Float64
 end
-(ic::Sine)(x::Real) = ic.a * sin(2.0 * pi * x / ic.b_period) + ic.c_offset
 
 
 # --- UNIFIED BOX (1D/2D) ---
@@ -81,24 +76,30 @@ struct Box <: ShockInitialCondition
     Box(u_bg::Real, u_box::Real, xs::Real, xe::Real, ys::Real, ye::Real) = new(u_bg, u_box, xs, xe, ys, ye)
 end
 
-# Functor for 1D initial condition at t=0
-function (ic::Box)(x::Real)
-    @assert ic.y_start === nothing "This is a 2D Box IC, but it was called with a 1D input (x only)."
-    return ic.x_start <= x <= ic.x_end ? ic.u_box : ic.u_background
-end
-# Functor for 2D initial condition at t=0
-function (ic::Box)(x::Real, y::Real)
-    @assert ic.y_start !== nothing "This is a 1D Box IC, but it was called with a 2D input (x, y)."
-    return (ic.x_start <= x <= ic.x_end && ic.y_start <= y <= ic.y_end) ? ic.u_box : ic.u_background
-end
 
-
-# --- RIEMANN (1D) ---
-struct Riemann <: ShockInitialCondition
+# --- NEW: Unified Riemann (Shock) for 1D and 2D ---
+struct Riemann{T} <: ShockInitialCondition
     uL::Float64
     uR::Float64
-    x0::Float64
+    p0::T # A point on the discontinuity line/plane
+    n::T  # Normal vector pointing from L to R
+    # 1D Constructor: normal vector defaults to 1.0
+    function Riemann(uL::Real, uR::Real, x0::Real)
+        new{Float64}(Float64(uL), Float64(uR), Float64(x0), 1.0)
+    end
+
+    # 2D Constructor: normalizes the provided vector n
+    function Riemann(uL::Real, uR::Real, p0::NTuple{2, Real}, n_vec::NTuple{2, Real})
+        norm_n = norm(n_vec)
+        if norm_n < 1e-14; error("Normal vector for Riemann cannot be a zero vector."); end
+        n_normalized = (n_vec[1] / norm_n, n_vec[2] / norm_n)
+        p0_float = (Float64(p0[1]), Float64(p0[2]))
+        new{NTuple{2, Float64}}(Float64(uL), Float64(uR), p0_float, n_normalized)
+    end
 end
+
+
+
 (ic::Riemann)(x::Real) = x < ic.x0 ? ic.uL : ic.uR
 
 
@@ -132,6 +133,23 @@ function (ic::EulerShockTube)(x::Real)
     return (rho_val, m_val, E_val)
 end
 
+# --- 2. IC Functors
+# --- Functors for t=0 ---
+(ic::Gauss{Float64})(x::Real) = ic.a * exp(-((x - ic.b) / ic.width)^2)
+(ic::Gauss{NTuple{2,Float64}})(x::Real, y::Real) = ic.a * exp(-(((x - ic.b[1])^2 + (y - ic.b[2])^2) / ic.width^2))
+
+(ic::Box)(x::Real) = (isnothing(ic.y_start) && ic.x_start <= x <= ic.x_end) ? ic.u_box : ic.u_background
+(ic::Box)(x::Real, y::Real) = (!isnothing(ic.y_start) && ic.x_start <= x <= ic.x_end && ic.y_start <= y <= ic.y_end) ? ic.u_box : ic.u_background
+
+(ic::Sine)(x::Real) = ic.a * sin(2.0 * pi * x / ic.b_period) + ic.c_offset
+
+# Functors for the new unified Riemann struct
+(ic::Riemann{Float64})(x::Real) = (x - ic.p0) * ic.n >= 0.0 ? ic.uR : ic.uL
+function (ic::Riemann{NTuple{2, Float64}})(x::Real, y::Real)
+    p_vec = (x - ic.p0[1], y - ic.p0[2])
+    dot_product = p_vec[1] * ic.n[1] + p_vec[2] * ic.n[2]
+    return dot_product >= 0.0 ? ic.uR : ic.uL
+end
 
 # --- 3. Analytical Solution Functors (t>0) using Multiple Dispatch ---
 
@@ -155,9 +173,18 @@ function (ic::InitialCondition)(x::Real, t::Real, eq::HyperbolicSystem, pg::Part
     end
 end
 
-
-
-(ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection, pg::ParticleGrid2D) = error("2D analytical linear advection not implemented.")
+function (ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{<:NTuple{2,Float64}}, pg::ParticleGrid)
+    x0 = x - eq.vel[1] * t
+    y0 = y - eq.vel[2] * t
+    if pg.bc == :periodic
+        x0_wrapped = pg.xmin + mod(x0 - pg.xmin, pg.xmax - pg.xmin)
+        y0_wrapped = pg.ymin + mod(y0 - pg.ymin, pg.ymax - pg.ymin)
+        return ic(x0_wrapped, y0_wrapped)
+    else 
+        return ic(x0, y0)
+    end
+end
+(ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{<:Real}, pg::ParticleGrid) = ic(x-eq.vel*t, y) # Dispatch to 2D functor
 
 
 # --- For Burger's Equation (Specific to each IC Type) ---

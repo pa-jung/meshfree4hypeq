@@ -250,6 +250,7 @@ struct ParticleGrid2D <: ParticleGrid
     ymax::Float64
     Nx::Int64  # Total number of points in x-dir
     Ny::Int64  # Total number of points in y-dir
+    N_ghost::Int64
     dx::Float64 # Nominal spacing
     dy::Float64 # Nominal spacing
     regular::Bool
@@ -280,7 +281,7 @@ function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx::Inte
     # For periodic grids, all particles are interior
     interior_indices = collect(1:(Nx*Ny))
 
-    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Int64(Nx), Int64(Ny), dx, dy, regular, :periodic, interior_indices, zeros(Nx*Ny, 2))
+    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Int64(Nx), Int64(Ny), 0, dx, dy, regular, :periodic, interior_indices, zeros(Nx*Ny, 2))
 end
 
 # --- NEW: Constructor for 2D grids with boundary conditions ---
@@ -347,7 +348,7 @@ function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx_inter
     for (i, p) in enumerate(grid); p.volume = vols[i]; end
 
     regular = (randomness == (0.0, 0.0))
-    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Nx_total, Ny_total, dx_nominal, dy_nominal, regular, bc, interior_indices, zeros(Nx_total*Ny_total, 2))
+    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Nx_total, Ny_total, N_ghost, dx_nominal, dy_nominal, regular, bc, interior_indices, zeros(Nx_total*Ny_total, 2))
 end
 end
 
@@ -984,6 +985,7 @@ Assumes particleGrid.grid contains Particle2D objects.
 function determineVolumes!(particleGrid::ParticleGrid2D)
     
     grid = particleGrid.grid
+    N_ghost = particleGrid.N_ghost
     N = length(grid)
     if N == 0
         return
@@ -997,10 +999,14 @@ function determineVolumes!(particleGrid::ParticleGrid2D)
     xmin = particleGrid.xmin
     xmax = particleGrid.xmax
     ymin = particleGrid.ymin
-    ymax = particleGrid.ymax
+    ymax = particleGrid.ymax 
     dx_avg = (xmax - xmin) / particleGrid.Nx
     dy_avg = (ymax - ymin) / particleGrid.Ny
-
+    # Bounding box must encompass all points, including ghosts
+    xmin_b = xmin - (N_ghost + 0.5) * particleGrid.dx
+    xmax_b = xmax + (N_ghost + 0.5) * particleGrid.dx
+    ymin_b = ymin - (N_ghost + 0.5) * particleGrid.dy
+    ymax_b = ymax + (N_ghost + 0.5) * particleGrid.dy
     # Bounding box slightly larger than domain, as in your constructor
     # This helps VoronoiCells.jl deal with boundary cells.
     # For periodic, the library might have specific ways, but a common approach
@@ -1008,7 +1014,7 @@ function determineVolumes!(particleGrid::ParticleGrid2D)
     # Assuming VoronoiCells.jl handles this appropriately with a large enough rect.
         # Set volumes
     points = [particle.pos for particle in grid]
-    vols = calculate_voronoi_volumes_2d(points, xmin-dx_avg, xmax+dx_avg, ymin-dy_avg, ymax+dy_avg)
+    vols = calculate_voronoi_volumes_2d(points, xmin_b-dx_avg, xmax_b+dx_avg, ymin_b-dy_avg, ymax_b+dy_avg)
     for (particleIndex, particle) in enumerate(grid)
         particle.volume = vols[particleIndex]
     end

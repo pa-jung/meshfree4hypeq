@@ -39,12 +39,15 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         xmax::Float64 = run_params["xmax"]
         ymin::Float64 = run_params["ymin"]
         ymax::Float64 = run_params["ymax"]
+        bc::Symbol = run_params["bc"]
         initFunc_name::String = run_params["init_func"]
         cfl = get(run_params, "CFL", nothing)
         dt = get(run_params, "dt", nothing)
         snapshots::Int = run_params["snapshots"]
         eq_name::String = run_params["PDE"]
         eq_params = get(run_params, "PDE_params", nothing)
+
+
 
         # --- Extract OPTIONAL Method Parameters ---
         order = get(run_params, "order", nothing)
@@ -62,6 +65,48 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         seed_val = get(run_params, "SEED_value", nothing)
         upwind_alg_2d = get(run_params, "upwind_alg_2d", "Classic") # Specific for 2D Upwind
 
+
+        IC = getInitialCondition(initFunc_name, init_params)
+        eq = LinearAdvection(eq_params)
+        rng = MersenneTwister(seed_val)
+
+        # --- Grid Creation ---
+        dx_nominal = (xmax - xmin) / Nx
+        dy_nominal = (ymax - ymin) / Ny
+        N_ghost::Int = bc == :periodic ? 0 : get(run_params, "N_ghost", ceil(Int, interp_range_factor) + 1)
+        Nx_total = Nx + 2*N_ghost
+        Ny_total = Ny + 2*N_ghost
+        randomness = (randomness_factor_tuple[1] * dx_nominal, randomness_factor_tuple[2] * dy_nominal)       
+        particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc; rng=rng, randomness=randomness)
+        determineVolumes!(particleGrid) # Essential for 2D to calculate Voronoi areas
+
+
+        # --- Initial Condition ---
+        setInitialConditions!(particleGrid, (x, y) -> IC(x, y))
+
+        # --- ANALYTICAL SOLUTION BLOCK ---
+        if isnothing(timestepper_name)
+            @info "Calculating Analytical Solution for 2D Linear Advection..."
+
+            
+            # The ParticleGrid object is for passing domain info and bc type to the analytical solution
+            #dummy_pg = ParticleGrid2D(xmin, xmax, ymin, ymax, 2, 2, 1, bc; randomness=randomness, rng = rng)
+            analytic_func = (x, y, t) -> IC(x, y, t, eq, particleGrid)
+
+            dt_snapshot = tmax > 0 ? tmax / snapshots : 0.0
+            ts = tmax > 0 ? collect(0.0:dt_snapshot:tmax) : [0.0]
+            if !isempty(ts) && abs(ts[end] - tmax) > 1e-9; push!(ts, tmax); end
+            
+            analytic_points = [(x,y) for y in range(ymin, ymax, length=Ny) for x in range(xmin, xmax, length=Nx)]
+            xs = [analytic_points for _ in ts]
+            us = [[analytic_func(p[1], p[2], t_snap) for p in analytic_points] for t_snap in ts]
+
+            sim_data_result = createSimData(xs, us, ts, run_params)
+            sim_data_result.stats["time"] = 0.0
+            return sim_data_result
+        end
+
+
         # --- Parameter Validation and Setup ---
         @assert eq_name == "linear" "Currently, only 2D Linear Advection is supported."
         @assert timestepper_name != "Analytical Solution" "Analytical solutions for 2D are not yet implemented in InitialConditions.jl."
@@ -70,23 +115,13 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         end
 
         regular::Bool = (randomness_factor_tuple == (0.0, 0.0))
-        rng = MersenneTwister(seed_val)
 
         @info "2D SIM: TimeStepper = $timestepper_name, Main Gradient = $main_grad_name ($order), N = ($Nx, $Ny), Regular = $regular"
 
-        # --- Grid Creation ---
-        dx_nominal = (xmax - xmin) / Nx
-        dy_nominal = (ymax - ymin) / Ny
-        randomness = (randomness_factor_tuple[1] * dx_nominal, randomness_factor_tuple[2] * dy_nominal)
-        println("Starting volume calc")        
-        particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny; rng=rng, randomness=randomness)
-        println("particleGrid finished")
-        determineVolumes!(particleGrid) # Essential for 2D to calculate Voronoi areas
-        println("Finished volume calc")
+
         # --- Calculate Dependent Parameters ---
         interp_range = interp_range_factor * max(particleGrid.dx, particleGrid.dy)
-        
-        eq = LinearAdvection(eq_params)
+
         
         if !isnothing(cfl)
             dt = cfl * getTimeStep(particleGrid, eq, interp_alpha, interp_range)
@@ -95,6 +130,10 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         end
 
         save_freq = max(1, round(Int, (tmax / snapshots) / dt))
+
+
+        settings = SimSetting(tmax=tmax, dt=dt, interpRange=interp_range, saveFreq = save_freq, interpAlpha=interp_alpha)
+
 
         # --- Build Method Components ---
         mood_fun = if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
@@ -124,17 +163,11 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                          end
 
         # --- Time Stepper Selection ---
-        method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, Nx, Ny; fallbackInterpolator=FallbackGrad, mood=mood_fun)
-                   elseif timestepper_name == "RK4"; RK4(MainGrad, Nx, Ny; fallbackInterpolator=FallbackGrad, mood=mood_fun)
+        method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun)
+                   elseif timestepper_name == "RK4"; RK4(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun)
                    else error("Unknown TimeStepper name: '$timestepper_name'")
                    end
 
-        # --- Initial Condition ---
-        IC = getInitialCondition(initFunc_name, init_params)
-        # Note: 2D IC functor (x,y) must be implemented in InitialConditions.jl
-        setInitialConditions!(particleGrid, (x, y) -> IC(x, y))
-
-        settings = SimSetting(tmax=tmax, dt=dt, interpRange=interp_range, saveFreq = save_freq, interpAlpha=interp_alpha)
 
         # --- Call Time Integrator ---
         elapsed_time, xs, us, ts = mainTimeIntegrator2!(method, eq, particleGrid, settings)
@@ -152,11 +185,11 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         return sim_data_result
 
     catch e
-        if isa(e, KeyError)
-            @error "Missing required 2D parameter!" key=e.key params=params
-        else
+        # if isa(e, KeyError)
+        #     @error "Missing required 2D parameter!" key=e.key params=params
+        # else
             @error "Error during 2D simulation!" params=params exception=(e, catch_backtrace())
-        end
+#        end
         return nothing
     end
 end
