@@ -4,7 +4,7 @@ using LinearAlgebra
 using Statistics
 using ..Meshfree4ScalarEq.ParticleGrids
 using ..Meshfree4ScalarEq.SimSettings
-using ..Meshfree4ScalarEq.ScalarHyperbolicEquations
+using ..Meshfree4ScalarEq.HyperbolicPDEs
 using ..Meshfree4ScalarEq.FluxFunctions
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil, LaxFriedrichsGradient, MUSCLlimited,
@@ -400,7 +400,7 @@ function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D
     return vel[1]*upwind.res[1]/settings.interpRange + vel[2]*upwind.res[2]/settings.interpRange
 end
 
-function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
+function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
     particle = particleGrid.grid[particleIndex]
     vel = eq.vel
     if setCurvature

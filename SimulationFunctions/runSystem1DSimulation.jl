@@ -2,8 +2,7 @@
 # File: euler1D_Makie.jl
 
 # --- Module Imports ---
-using Meshfree4ScalarEq.ScalarHyperbolicEquations
-using Meshfree4ScalarEq.HyperbolicSystems
+using Meshfree4ScalarEq.HyperbolicPDEs
 using Meshfree4ScalarEq.ParticleGrids
 using Meshfree4ScalarEq.TimeIntegration 
 using Meshfree4ScalarEq.Interpolations 
@@ -56,7 +55,7 @@ function runSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
 
         # Check for Euler
         @assert system_name == "euler" "Only Euler system supported so far!"
-        system = EulerEquations()
+        system = Euler1D()
 
         # Relaxation Velocities: Vector of Tuples, one pair for each macro var
         relax_velocities_config = get(run_params,"relax_velocities", nothing)
@@ -167,7 +166,7 @@ function runSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
                     M_funcs[global_kinetic_idx_counter] = 
                         (U_macro_args::Vararg{Float64}) -> begin # U_macro_args will be (rho_p, m_p, E_p)
                             # U_macro_args is already a tuple of the macro values
-                            F_macro_vector_at_p = euler1D_physical_fluxes(U_macro_args...) # Splat into fluxes
+                            F_macro_vector_at_p = flux(system,U_macro_args...) # Splat into fluxes
                             
                             U_macro_component_val = U_macro_args[i_macro_phys]
                             F_macro_component_val = F_macro_vector_at_p[i_macro_phys]

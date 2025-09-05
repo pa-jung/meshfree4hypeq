@@ -1,9 +1,6 @@
 # ============== Suggested new file: SourceTerms.jl ==============
 module SourceTerms
 
-# If Maxwellians need physical flux F(u) and it's defined in a shared module:
-# Example: using ..Meshfree4ScalarEq.ScalarHyperbolicEquations # Adjust path
-
 export AbstractSourceTerm, RelaxationSourceTerm1D, RelaxationSourceTerm
 
 abstract type AbstractSourceTerm end

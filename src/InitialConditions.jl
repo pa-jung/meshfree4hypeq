@@ -1,8 +1,7 @@
 module InitialConditions
 
 # Import necessary types from your main module. Adjust the path as needed.
-using ..ScalarHyperbolicEquations
-using ..HyperbolicSystems
+using ..HyperbolicPDEs
 using ..ParticleGrids
 using LinearAlgebra
 
@@ -304,6 +303,39 @@ function (ic::Riemann)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D
     end
 end
 
+# --- NEW: Analytical Solution for 2D Burgers with Planar Riemann IC ---
+function (ic::Riemann{NTuple{2, Float64}})(x::Real, y::Real, t::Real, eq::BurgersEquation2D, pg::ParticleGrid2D)
+    if t <= 1e-12; return ic(x, y); end
+
+    # Project the problem onto the 1D normal direction
+    # d is the perpendicular distance from the initial line
+    d = dot((x - ic.p0[1], y - ic.p0[2]), ic.n)
+    
+    # The effective 1D characteristic speed is u_n = u * (n_x + n_y)
+    n_sum = ic.n[1] + ic.n[2]
+    
+    if ic.uL > ic.uR # --- Shock Wave ---
+        # Rankine-Hugoniot shock speed in the normal direction
+        s = 0.5 * (ic.uL + ic.uR) * n_sum
+        shock_pos_d = s * t
+        return d < shock_pos_d ? ic.uL : ic.uR
+    else # --- Rarefaction Wave ---
+        fan_tail_d = ic.uL * n_sum * t
+        fan_head_d = ic.uR * n_sum * t
+        
+        if d < fan_tail_d
+            return ic.uL
+        elseif d > fan_head_d
+            return ic.uR
+        else # Inside the rarefaction fan
+            if abs(t * n_sum) < 1e-14
+                return 0.5 * (ic.uL + ic.uR) # Avoid division by zero at t=0 or if n_sum=0
+            end
+            return d / (t * n_sum)
+        end
+    end
+end
+
 # Fallback for ICs without a specific analytical solution for Burger's
 (ic::Gauss)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D) = NaN
 
@@ -311,11 +343,11 @@ end
 # --- 3. Analytical Solution Functors (t>0) ---
 
 # --- For Euler Equations ---
-(ic::InitialCondition)(x::Real, t::Real, eq::EulerEquations, pg::ParticleGrid1D) = error("Analytical solution for this Euler IC is not implemented.")
+(ic::InitialCondition)(x::Real, t::Real, eq::Euler1D, pg::ParticleGrid1D) = error("Analytical solution for this Euler IC is not implemented.")
 
 
 # --- Analytical Solution Functor for Euler Shock Tube (t>0) ---
-function (ic::EulerShockTube)(x::Real, t::Real, eq::EulerEquations, pg::ParticleGrid1D)
+function (ic::EulerShockTube)(x::Real, t::Real, eq::Euler1D, pg::ParticleGrid1D)
     if pg.bc == :periodic
         @warn "Analytical Riemann solver for Euler is not defined for periodic BCs."
         return (NaN, NaN, NaN)
@@ -451,13 +483,13 @@ function getInitialCondition(name::String, params::Tuple)::InitialCondition
 end
 
 """
-    get_discontinuity_points(ic::EulerShockTube, eq::EulerEquations, t::Real, pg::ParticleGrid1D)
+    get_discontinuity_points(ic::EulerShockTube, eq::Euler1D, t::Real, pg::ParticleGrid1D)
 
 Calculates the positions of the shock, contact, and rarefaction fan edges
 for the Euler shock tube problem at a given time `t`. This is essential for
 providing accurate integration points to `QuadGK`.
 """
-function get_discontinuity_points(ic::EulerShockTube, eq::EulerEquations, t::Real, pg::ParticleGrid1D)
+function get_discontinuity_points(ic::EulerShockTube, eq::Euler1D, t::Real, pg::ParticleGrid1D)
     # --- 1. Extract Initial States and Parameters ---
     gamma = GAS_GAMMA_EULER
     rho_L, u_L, p_L = ic.stateL

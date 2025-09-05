@@ -1,7 +1,3 @@
-module ScalarHyperbolicEquations
-
-export ScalarHyperbolicEquation, LinearScalarHyperbolicEquation, NonLinearScalarHyperbolicEquation, LinearAdvection, BurgersEquation, velocity, flux
-
 
 """
     ScalarHyperbolicEquation
@@ -10,7 +6,7 @@ Each scalar hyperbolic equation is a struct that is a subtype of the abstract ty
 Each struct then overrides the velocity function which evaluates the velocity f'(u, x, t). See LinearAdvection and 
 BurgersEquation for examples.
 """
-abstract type ScalarHyperbolicEquation end
+abstract type ScalarHyperbolicEquation <: HyperbolicPDE end
 abstract type LinearScalarHyperbolicEquation <: ScalarHyperbolicEquation end
 abstract type NonLinearScalarHyperbolicEquation <: ScalarHyperbolicEquation end
 
@@ -49,5 +45,12 @@ end
     return (u^2)/2
 end
 
+struct BurgersEquation2D <: NonLinearScalarHyperbolicEquation end
 
-end  # module ScalarHyperbolicEquations
+@inline function velocity(eq::BurgersEquation2D, u::Real)
+    return (u,u)
+end
+
+@inline function flux(eq::BurgersEquation2D, u::Real)
+    return ((u^2)/2,(u^2)/2)
+end

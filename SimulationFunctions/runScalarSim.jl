@@ -1,6 +1,5 @@
 # --- Module Imports ---
-using Meshfree4ScalarEq.ScalarHyperbolicEquations
-using Meshfree4ScalarEq.HyperbolicSystems
+using Meshfree4ScalarEq.HyperbolicPDEs
 using Meshfree4ScalarEq.ParticleGrids
 using Meshfree4ScalarEq.TimeIntegration 
 using Meshfree4ScalarEq.Interpolations 

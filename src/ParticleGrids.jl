@@ -10,7 +10,7 @@ using LinearAlgebra
 using DelaunayTriangulation
 using ..Particles
 using ..SimSettings
-using ..ScalarHyperbolicEquations
+using ..HyperbolicPDEs
 import Meshfree4ScalarEq
 
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, getPeriodicDistance, saveGrid, plotDensity, animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!
@@ -621,100 +621,204 @@ function linearIndexToGrid(linearIndex::Integer, nbBoxesX::Integer)::Tuple{Integ
     return (hBox, vBox)
 end
 
-"""
-    updateVoxelInformation!(particleGrid::ParticleGrid2D, maxDist::Real)
+# """
+#     updateVoxelInformation!(particleGrid::ParticleGrid2D, maxDist::Real)
 
+# Sort the particles into boxes of size maxDist x maxDist.
+# """
+# function updateVoxelInformation!(particleGrid::ParticleGrid2D, maxDist::Real)
+#     nbBoxesX = floor(Int64, (particleGrid.xmax - particleGrid.xmin)/maxDist)
+#     nbBoxesY = floor(Int64, (particleGrid.ymax - particleGrid.ymin)/maxDist)
+#     xBoxSize = (particleGrid.xmax - particleGrid.xmin)/nbBoxesX
+#     yBoxSize = (particleGrid.ymax - particleGrid.ymin)/nbBoxesY
+    
+#     for particle in particleGrid.grid
+#         if particle.pos[1] != particleGrid.xmax
+#             hBox = floor(Int64, (particle.pos[1] - particleGrid.xmin)/xBoxSize)
+#         else
+#             hBox = nbBoxesX - 1
+#         end
+#         if particle.pos[2] != particleGrid.ymax
+#             vBox = floor(Int64, (particle.pos[2] - particleGrid.ymin)/yBoxSize)
+#         else
+#             vBox = nbBoxesY - 1
+#         end
+#         particle.voxel = gridToLinearIndex(hBox, vBox, nbBoxesX)
+#     end
+# end
+
+
+# """
+#     findNeighbouringVoxels(linearIndex::Integer, nbBoxesX::Integer, nbBoxesY::Integer)::Tuple{Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer}
+
+# Given the linear index of a box, return the linearIndices of the boxes in which a neighbouring particle can reside (includes voxel linearIndex).
+# """
+# function findNeighbouringVoxels(linearIndex::Integer, nbBoxesX::Integer, nbBoxesY::Integer)::Tuple{Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer}
+#     xBox, yBox = linearIndexToGrid(linearIndex, nbBoxesX)
+#     i1 = gridToLinearIndex(mod(xBox+1, nbBoxesX), yBox, nbBoxesX)
+#     i2 = gridToLinearIndex(mod(xBox+1, nbBoxesX), mod(yBox+1, nbBoxesY), nbBoxesX)
+#     i3 = gridToLinearIndex(mod(xBox+1, nbBoxesX), mod(yBox-1, nbBoxesY), nbBoxesX)
+#     i4 = gridToLinearIndex(mod(xBox-1, nbBoxesX), yBox, nbBoxesX)
+#     i5 = gridToLinearIndex(mod(xBox-1, nbBoxesX), mod(yBox+1, nbBoxesY), nbBoxesX)
+#     i6 = gridToLinearIndex(mod(xBox-1, nbBoxesX), mod(yBox-1, nbBoxesY), nbBoxesX)
+#     i7 = gridToLinearIndex(xBox, mod(yBox+1, nbBoxesY), nbBoxesX)
+#     i8 = gridToLinearIndex(xBox, mod(yBox-1, nbBoxesY), nbBoxesX)
+#     return (i1, i2, i3, i4, i5, i6, i7, i8, linearIndex)
+# end
+
+# """
+#     updateNeighbours!(particleGrid::ParticleGrid2D, maxDist<:Real)
+
+# For each particle, find the other particles within a distance maxDist and add them to neighbourIndices.
+# """
+# function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
+#     nbBoxesX = floor(Int64, (particleGrid.xmax - particleGrid.xmin)/maxDist)
+#     nbBoxesY = floor(Int64, (particleGrid.ymax - particleGrid.ymin)/maxDist)
+
+#     # Put particles into boxes
+#     updateVoxelInformation!(particleGrid::ParticleGrid2D, maxDist::Real)
+
+#     # Make set with all particles per box
+#     d = Dict{Int64, Vector{Int64}}()
+#     for (index, particle) in enumerate(particleGrid.grid)
+#         if particle.voxel in keys(d)
+#             push!(d[particle.voxel], index)
+#         else
+#             d[particle.voxel] = [index;]
+#         end
+#     end
+
+#     # Fill neighbourIndices
+#     for voxel in keys(d)
+#         tup = findNeighbouringVoxels(voxel, nbBoxesX, nbBoxesY)
+#         for particleIndex in d[voxel]
+#             particle = particleGrid.grid[particleIndex]
+#             empty!(particle.neighbourIndices)
+#             for nbVoxel in tup
+#                 if haskey(d, nbVoxel)
+#                     for nbParticle in d[nbVoxel]
+#                         dist = getEuclideanDistance(particleGrid, particleIndex, nbParticle)
+#                         if (dist <= maxDist) && (particleIndex != nbParticle)
+#                             push!(particle.neighbourIndices, nbParticle)
+#                         end
+#                     end
+#                 end
+#             end
+#             particle.A = Matrix{Float64}(undef, length(particle.neighbourIndices), 5)
+#             resize!(particle.alfaij, length(particle.neighbourIndices))
+#             resize!(particle.alfaijBar, length(particle.neighbourIndices))
+#             resize!(particle.betaij, length(particle.neighbourIndices))
+#             resize!(particle.betaijBar, length(particle.neighbourIndices))
+#             resize!(particle.gammaij, length(particle.neighbourIndices))
+#             resize!(particle.dxVec, length(particle.neighbourIndices))
+#             resize!(particle.dyVec, length(particle.neighbourIndices))
+#             resize!(particle.wVec, length(particle.neighbourIndices))
+#             resize!(particle.dfVec, length(particle.neighbourIndices))
+#         end
+#     end
+# end
+
+# --- MODIFIED: BC-Aware updateVoxelInformation! ---
+"""
 Sort the particles into boxes of size maxDist x maxDist.
 """
 function updateVoxelInformation!(particleGrid::ParticleGrid2D, maxDist::Real)
-    nbBoxesX = floor(Int64, (particleGrid.xmax - particleGrid.xmin)/maxDist)
-    nbBoxesY = floor(Int64, (particleGrid.ymax - particleGrid.ymin)/maxDist)
-    xBoxSize = (particleGrid.xmax - particleGrid.xmin)/nbBoxesX
-    yBoxSize = (particleGrid.ymax - particleGrid.ymin)/nbBoxesY
+    # Define the domain for the voxel grid. For non-periodic, expand it to include ghosts.
+    local domain_xmin, domain_xmax, domain_ymin, domain_ymax
+    if particleGrid.bc == :periodic
+        domain_xmin, domain_xmax = particleGrid.xmin, particleGrid.xmax
+        domain_ymin, domain_ymax = particleGrid.ymin, particleGrid.ymax
+    else
+        # Expand domain by the size of the ghost cell region
+        domain_xmin = particleGrid.xmin - particleGrid.N_ghost * particleGrid.dx
+        domain_xmax = particleGrid.xmax + particleGrid.N_ghost * particleGrid.dx
+        domain_ymin = particleGrid.ymin - particleGrid.N_ghost * particleGrid.dy
+        domain_ymax = particleGrid.ymax + particleGrid.N_ghost * particleGrid.dy
+    end
+    
+    nbBoxesX = floor(Int64, (domain_xmax - domain_xmin)/maxDist) + 1
+    nbBoxesY = floor(Int64, (domain_ymax - domain_ymin)/maxDist) + 1
+    xBoxSize = (domain_xmax - domain_xmin)/nbBoxesX
+    yBoxSize = (domain_ymax - domain_ymin)/nbBoxesY
     
     for particle in particleGrid.grid
-        if particle.pos[1] != particleGrid.xmax
-            hBox = floor(Int64, (particle.pos[1] - particleGrid.xmin)/xBoxSize)
-        else
-            hBox = nbBoxesX - 1
-        end
-        if particle.pos[2] != particleGrid.ymax
-            vBox = floor(Int64, (particle.pos[2] - particleGrid.ymin)/yBoxSize)
-        else
-            vBox = nbBoxesY - 1
-        end
+        # Handle potential floating point issues at the max boundary
+        hBox = min(floor(Int64, (particle.pos[1] - domain_xmin)/xBoxSize), nbBoxesX - 1)
+        vBox = min(floor(Int64, (particle.pos[2] - domain_ymin)/yBoxSize), nbBoxesY - 1)
         particle.voxel = gridToLinearIndex(hBox, vBox, nbBoxesX)
     end
 end
 
-
+# --- MODIFIED: BC-Aware findNeighbouringVoxels ---
 """
-    findNeighbouringVoxels(linearIndex::Integer, nbBoxesX::Integer, nbBoxesY::Integer)::Tuple{Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer}
-
-Given the linear index of a box, return the linearIndices of the boxes in which a neighbouring particle can reside (includes voxel linearIndex).
+Given the linear index of a box, return the linearIndices of the neighboring boxes.
+Handles periodic and non-periodic boundaries.
 """
-function findNeighbouringVoxels(linearIndex::Integer, nbBoxesX::Integer, nbBoxesY::Integer)::Tuple{Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer}
+function findNeighbouringVoxels(particleGrid::ParticleGrid2D, linearIndex::Integer, nbBoxesX::Integer, nbBoxesY::Integer)::Vector{Int}
     xBox, yBox = linearIndexToGrid(linearIndex, nbBoxesX)
-    i1 = gridToLinearIndex(mod(xBox+1, nbBoxesX), yBox, nbBoxesX)
-    i2 = gridToLinearIndex(mod(xBox+1, nbBoxesX), mod(yBox+1, nbBoxesY), nbBoxesX)
-    i3 = gridToLinearIndex(mod(xBox+1, nbBoxesX), mod(yBox-1, nbBoxesY), nbBoxesX)
-    i4 = gridToLinearIndex(mod(xBox-1, nbBoxesX), yBox, nbBoxesX)
-    i5 = gridToLinearIndex(mod(xBox-1, nbBoxesX), mod(yBox+1, nbBoxesY), nbBoxesX)
-    i6 = gridToLinearIndex(mod(xBox-1, nbBoxesX), mod(yBox-1, nbBoxesY), nbBoxesX)
-    i7 = gridToLinearIndex(xBox, mod(yBox+1, nbBoxesY), nbBoxesX)
-    i8 = gridToLinearIndex(xBox, mod(yBox-1, nbBoxesY), nbBoxesX)
-    return (i1, i2, i3, i4, i5, i6, i7, i8, linearIndex)
+    
+    if particleGrid.bc == :periodic
+        # Original periodic logic
+        i1 = gridToLinearIndex(mod(xBox+1, nbBoxesX), yBox, nbBoxesX)
+        i2 = gridToLinearIndex(mod(xBox+1, nbBoxesX), mod(yBox+1, nbBoxesY), nbBoxesX)
+        i3 = gridToLinearIndex(mod(xBox+1, nbBoxesX), mod(yBox-1, nbBoxesY), nbBoxesX)
+        i4 = gridToLinearIndex(mod(xBox-1, nbBoxesX), yBox, nbBoxesX)
+        i5 = gridToLinearIndex(mod(xBox-1, nbBoxesX), mod(yBox+1, nbBoxesY), nbBoxesX)
+        i6 = gridToLinearIndex(mod(xBox-1, nbBoxesX), mod(yBox-1, nbBoxesY), nbBoxesX)
+        i7 = gridToLinearIndex(xBox, mod(yBox+1, nbBoxesY), nbBoxesX)
+        i8 = gridToLinearIndex(xBox, mod(yBox-1, nbBoxesY), nbBoxesX)
+        return [i1, i2, i3, i4, i5, i6, i7, i8, linearIndex]
+    else
+        # Non-periodic logic: check bounds
+        neighboring_voxels = Int[]
+        for i_offset in -1:1, j_offset in -1:1
+            search_hBox = xBox + i_offset
+            search_vBox = yBox + j_offset
+            if 0 <= search_hBox < nbBoxesX && 0 <= search_vBox < nbBoxesY
+                push!(neighboring_voxels, gridToLinearIndex(search_hBox, search_vBox, nbBoxesX))
+            end
+        end
+        return neighboring_voxels
+    end
 end
 
-"""
-    updateNeighbours!(particleGrid::ParticleGrid2D, maxDist<:Real)
-
-For each particle, find the other particles within a distance maxDist and add them to neighbourIndices.
-"""
+# --- MODIFIED: updateNeighbours! to call the new helper ---
 function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
-    nbBoxesX = floor(Int64, (particleGrid.xmax - particleGrid.xmin)/maxDist)
-    nbBoxesY = floor(Int64, (particleGrid.ymax - particleGrid.ymin)/maxDist)
+    # Voxel setup: Use the overall domain spanned by all particles (including ghosts)
+    all_x = [p.pos[1] for p in particleGrid.grid]; all_y = [p.pos[2] for p in particleGrid.grid]
+    domain_xmin, domain_xmax = isempty(all_x) ? (0.0,0.0) : (minimum(all_x), maximum(all_x))
+    domain_ymin, domain_ymax = isempty(all_y) ? (0.0,0.0) : (minimum(all_y), maximum(all_y))
+    
+    nbBoxesX = floor(Int64, (domain_xmax - domain_xmin) / maxDist) + 1
+    nbBoxesY = floor(Int64, (domain_ymax - domain_ymin) / maxDist) + 1
 
-    # Put particles into boxes
-    updateVoxelInformation!(particleGrid::ParticleGrid2D, maxDist::Real)
+    updateVoxelInformation!(particleGrid, maxDist)
 
-    # Make set with all particles per box
-    d = Dict{Int64, Vector{Int64}}()
+    d = Dict{Int, Vector{Int}}()
     for (index, particle) in enumerate(particleGrid.grid)
-        if particle.voxel in keys(d)
-            push!(d[particle.voxel], index)
-        else
-            d[particle.voxel] = [index;]
-        end
+        if !haskey(d, particle.voxel); d[particle.voxel] = Int[]; end
+        push!(d[particle.voxel], index)
     end
 
-    # Fill neighbourIndices
-    for voxel in keys(d)
-        tup = findNeighbouringVoxels(voxel, nbBoxesX, nbBoxesY)
-        for particleIndex in d[voxel]
-            particle = particleGrid.grid[particleIndex]
-            empty!(particle.neighbourIndices)
-            for nbVoxel in tup
-                if haskey(d, nbVoxel)
-                    for nbParticle in d[nbVoxel]
-                        dist = getEuclideanDistance(particleGrid, particleIndex, nbParticle)
-                        if (dist <= maxDist) && (particleIndex != nbParticle)
-                            push!(particle.neighbourIndices, nbParticle)
-                        end
+    for p_idx in eachindex(particleGrid.grid)
+        particle = particleGrid.grid[p_idx]
+        empty!(particle.neighbourIndices)
+        neighboring_voxels = findNeighbouringVoxels(particleGrid, particle.voxel, nbBoxesX, nbBoxesY)
+        
+        for nbVoxel in neighboring_voxels
+            if haskey(d, nbVoxel)
+                for nb_idx in d[nbVoxel]
+                    if p_idx != nb_idx && getEuclideanDistance(particleGrid, p_idx, nb_idx) <= maxDist
+                        push!(particle.neighbourIndices, nb_idx)
                     end
                 end
             end
-            particle.A = Matrix{Float64}(undef, length(particle.neighbourIndices), 5)
-            resize!(particle.alfaij, length(particle.neighbourIndices))
-            resize!(particle.alfaijBar, length(particle.neighbourIndices))
-            resize!(particle.betaij, length(particle.neighbourIndices))
-            resize!(particle.betaijBar, length(particle.neighbourIndices))
-            resize!(particle.gammaij, length(particle.neighbourIndices))
-            resize!(particle.dxVec, length(particle.neighbourIndices))
-            resize!(particle.dyVec, length(particle.neighbourIndices))
-            resize!(particle.wVec, length(particle.neighbourIndices))
-            resize!(particle.dfVec, length(particle.neighbourIndices))
         end
+        # Resize internal particle vectors (as before)
+        len_nb = length(particle.neighbourIndices)
+        resize!(particle.alfaij, len_nb); resize!(particle.alfaijBar, len_nb); resize!(particle.betaij, len_nb); resize!(particle.betaijBar, len_nb); resize!(particle.gammaij, len_nb)
+        resize!(particle.dxVec, len_nb); resize!(particle.dyVec, len_nb); resize!(particle.wVec, len_nb); resize!(particle.dfVec, len_nb)
+        particle.A = Matrix{Float64}(undef, len_nb, 5)
     end
 end
 

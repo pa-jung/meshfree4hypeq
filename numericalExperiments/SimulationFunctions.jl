@@ -2,7 +2,6 @@
 # File: euler1D_Makie.jl
 
 # --- Module Imports ---
-using Meshfree4ScalarEq.ScalarHyperbolicEquations
 using Meshfree4ScalarEq.HyperbolicSystems
 using Meshfree4ScalarEq.ParticleGrids
 using Meshfree4ScalarEq.TimeIntegration 

@@ -1,7 +1,7 @@
 # Place this code where your other simulation runner function is defined,
 # ensuring access to necessary modules and types.
 
-using Meshfree4ScalarEq.ScalarHyperbolicEquations
+using Meshfree4ScalarEq.HyperbolicPDEs
 using Meshfree4ScalarEq.ParticleGrids
 using Meshfree4ScalarEq.TimeIntegration
 using Meshfree4ScalarEq.Interpolations

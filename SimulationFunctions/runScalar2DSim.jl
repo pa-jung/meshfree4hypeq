@@ -1,7 +1,6 @@
 # --- Module Imports ---
 # Ensure all necessary modules from your project are accessible
-using Meshfree4ScalarEq.ScalarHyperbolicEquations
-using Meshfree4ScalarEq.HyperbolicSystems
+using Meshfree4ScalarEq.HyperbolicPDEs
 using Meshfree4ScalarEq.ParticleGrids
 using Meshfree4ScalarEq.TimeIntegration
 using Meshfree4ScalarEq.Interpolations
@@ -70,8 +69,12 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
 
         IC = getInitialCondition(initFunc_name, init_params)
-        eq = LinearAdvection(eq_params)
         rng = MersenneTwister(seed_val)
+
+        eq = if eq_name == "linear_advection"; LinearAdvection(eq_params)
+             elseif eq_name == "burgers"; BurgersEquation2D()
+             else error("Requested PDE not implemented yet!")
+             end
 
         # --- Grid Creation ---
         dx_nominal = (xmax - xmin) / Nx
@@ -111,12 +114,6 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
 
         # --- Parameter Validation and Setup ---
-        @assert eq_name == "linear" "Currently, only 2D Linear Advection is supported."
-        @assert timestepper_name != "Analytical Solution" "Analytical solutions for 2D are not yet implemented in InitialConditions.jl."
-        if get(run_params, "relax_method", false)
-            @warn "2D relaxation systems are not yet supported. Ignoring relaxation parameters."
-        end
-
         regular::Bool = (randomness_factor_tuple == (0.0, 0.0))
 
         @info "2D SIM: TimeStepper = $timestepper_name, Main Gradient = $main_grad_name ($order), N = ($Nx, $Ny), Regular = $regular"
@@ -125,9 +122,10 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Calculate Dependent Parameters ---
         interp_range = interp_range_factor * max(particleGrid.dx, particleGrid.dy)
 
-        
+        @assert (!isnothing(relax_vel) || eq isa LinearAdvection) "Only Relaxation methods supported for Non-Linear equations!"
         if !isnothing(cfl)
-            dt = cfl * getTimeStep(particleGrid, eq, interp_alpha, interp_range)
+            eq_lin = eq_name == "linear_advection" ? eq : LinearAdvection((1.,1.))
+            dt = cfl * getTimeStep(particleGrid, eq_lin, interp_alpha, interp_range)
         elseif isnothing(dt)
             error("A time step must be given via the 'dt' key or calculated via the 'CFL' key.")
         end
@@ -141,6 +139,7 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- Build Method Components ---
         mood_fun =   if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
                      elseif mood_name == "U1"; MOODu1(deltaRelax = delta_relax)
+                     elseif mood_name == "only"; OnlyMOOD()
                      elseif mood_name == "none" || isnothing(mood_name); NoMOOD()
                      else error("MOOD '$mood_name' not recognized for 2D.")
                      end
@@ -201,9 +200,8 @@ function runScalar2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                     elseif timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
                     elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
                     elseif timestepper_name == "ARS222"; ARS222(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
-                    elseif timestepper_name == "IMEXRalstonRK2"; RalstonRK2(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4*length(relax_vel))
                     elseif timestepper_name == "ARS232"; ARS232(MainGrad,FallbackGrad, mood_fun, implicit_solver, source_term, Nx_total * Ny_total, 4 * length(relax_vel))
-                    elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, Nx_total * Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term, 4 * length(relax_vel))
+                    elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, Nx_total, Ny_total; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term, Nx_total * Ny_total)
                     else error("Unknown TimeStepper name: '$timestepper_name'")
                     end
 

@@ -4,7 +4,7 @@ using LinearAlgebra
 using ProgressMeter
 using ..ParticleGrids
 using ..SimSettings
-using ..ScalarHyperbolicEquations
+using ..HyperbolicPDEs
 using ..Interpolations
 using ..SourceTerms
 using ..ImplicitSolvers
@@ -253,7 +253,7 @@ function mainTimeIntegrator2!(
 
     t = 0.0
     k_step = 0
-    #p = Progress(convert(Int64,ceil(settings.tmax/settings.dt)), "Running Simulation...")
+    p = Progress(convert(Int64,ceil(settings.tmax/settings.dt)), "Running Simulation...")
     elapsed_time = @elapsed while t < settings.tmax
         actual_dt = min(settings.dt, settings.tmax - t)
         # Check for termination condition BEFORE taking the step
@@ -271,7 +271,7 @@ function mainTimeIntegrator2!(
             appendData!(xs_data, us_data_sys, ts_data, system_pg, t)
             
         end
-        #ProgressMeter.next!(p)
+        ProgressMeter.next!(p)
     end
     if isempty(ts_data) || abs(ts_data[end] - settings.tmax) > 1e-9
         # The last saved time is not tmax, so save the final state.

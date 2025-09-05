@@ -19,11 +19,8 @@ global const SEED = 10
 global const rng = MersenneTwister(SEED)
 
 # Include submodules
-include("ScalarHyperbolicEquations.jl")
-using .ScalarHyperbolicEquations
-
-include("HyperbolicSystems.jl")
-using .HyperbolicSystems
+include("HyperbolicPDEs.jl")
+using .HyperbolicPDEs
 
 include("FluxFunctions.jl")
 using .FluxFunctions

@@ -159,7 +159,7 @@ function compute_explicit_tendency_with_mood!(
     gradientInterpolator::Interpolations.GradientInterpolator, # Added Interpolations.
     fallbackInterpolator::Union{Interpolations.GradientInterpolator, Nothing}, # Added Interpolations.
     mood_criterion::MOODCriterion, # Assuming MOODCriterion is defined and imported
-    scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation}, # Added ScalarHyperbolicEquations.
+    scalar_equations::Vector{<:ScalarHyperbolicEquation}, # Added ScalarHyperbolicEquations.
     component_grids::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.
     settings::SimSettings.SimSetting, # Added SimSettings.
     dt_for_mood_check::Real,
@@ -270,7 +270,7 @@ function initTimeStepper(
 end
 
 function (ars2::ARS2IMEX)(
-        scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation}, # Added ScalarHyperbolicEquations.
+        scalar_equations::Vector{<:ScalarHyperbolicEquation}, # Added ScalarHyperbolicEquations.
         system_pg::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.                       
         settings::SimSetting, # Added SimSettings.
         time_n::Real, 
@@ -456,7 +456,7 @@ end
 
 # --- Corrected Functor for GeneralIMEXTimeStepper ---
 function (imex_ts::GeneralIMEXTimeStepper)(
-        scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation},
+        scalar_equations::Vector{<:ScalarHyperbolicEquation},
         system_pg::Vector{<:ParticleGrids.ParticleGrid},
         settings::SimSettings.SimSetting,
         time_n::Real,
@@ -675,7 +675,7 @@ end
 
 # --- Corrected Functor for GeneralIMEXTimeStepper ---
 function (imex_ts::GeneralIMEXTimeStepperS)(
-        scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation},
+        scalar_equations::Vector{<:ScalarHyperbolicEquation},
         system_pg::Vector{<:ParticleGrids.ParticleGrid},
         settings::SimSettings.SimSetting,
         time_n::Real,
