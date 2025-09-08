@@ -9,6 +9,7 @@ using Meshfree4ScalarEq.SourceTerms
 using Meshfree4ScalarEq.ImplicitSolvers 
 using Meshfree4ScalarEq.InitialConditions
 using Random
+using LinearAlgebra
 using IPlotPDESols
 
 """
@@ -22,7 +23,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
     @info "\n--- Running 2D System Simulation (Relaxation Method) ---"
     run_params = copy(params)
 
-    try
+    #try
         # --- 1. Load All Required Parameters (Strict Loading) ---
         
         # Domain and Discretization
@@ -106,7 +107,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                 # For 2D, flux is split. We assume a simple model where x-velocities link to F, y-velocities to G
                 for speed_vec in speeds_for_macro
                     kinetic_eqs[global_k_idx] = LinearAdvection(speed_vec)
-                    
+                        
                     # Determine which flux (F or G) to use based on velocity direction
                     local macro_flux_func
                     local relax_speed
@@ -119,7 +120,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                     end
 
                     # This Maxwellian assumes a two-point quadrature model (+a, -a) for the chosen direction
-                    M_funcs[global_k_idx] = (U...) -> 0.5 * (U[i_macro] + macro_flux_func(U...) / relax_speed)
+                    M_funcs[global_k_idx] = (U...) -> 0.25 * (U[i_macro] + 2 * macro_flux_func(U...) / relax_speed)
                     
                     global_k_idx += 1
                 end
@@ -130,8 +131,12 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         # --- 4. Grid & Initial Condition Setup ---
         N_ghost = bc == :periodic ? 0 : ceil(Int, interp_range_factor) + 1
         rng = MersenneTwister(seed_val)
-        particleGrid_template = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx_interior, Ny_interior, N_ghost, bc; rng=rng, randomness=randomness_factor_tuple)
-        
+        dx_nominal = (xmax - xmin) / Nx_interior
+        dy_nominal = (ymax - ymin) / Ny_interior
+        randomness = (randomness_factor_tuple[1] * dx_nominal, randomness_factor_tuple[2] * dy_nominal) 
+
+        particleGrid_template = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx_interior, Ny_interior, N_ghost, bc; rng=rng, randomness=randomness)
+        interp_range = interp_range_factor * max(particleGrid_template.dx, particleGrid_template.dy)
         IC = getInitialCondition(initFunc_name, init_params)
         macro_ic_at_points = [IC(p.pos...) for p in particleGrid_template.grid]
 
@@ -154,7 +159,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
             if max_abs_speed < 1e-9; max_abs_speed = 1.0; end
             # Use a dummy 2D LA equation for getTimeStep
             temp_eq_for_dt = LinearAdvection((max_abs_speed, max_abs_speed))
-            dt = cfl * getTimeStep(particleGrid_template, temp_eq_for_dt, interp_alpha, interp_range_factor * max(particleGrid_template.dx, particleGrid_template.dy))
+            dt = cfl * getTimeStep(particleGrid_template, temp_eq_for_dt, interp_alpha, interp_range)
         elseif !isnothing(dt_val)
             dt = dt_val
         else
@@ -162,7 +167,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         end
         
         save_freq = max(1, round(Int, (tmax / snapshots) / dt))
-        settings = SimSetting(tmax=tmax, dt=dt, saveFreq=save_freq)
+        settings = SimSetting(tmax, dt, interp_range, interp_alpha, save_freq)
         
         # --- 6. Build Numerical Method ---
         mood_fun = if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
@@ -188,16 +193,23 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         elapsed_time, _, sys_us_kinetic, ts = mainTimeIntegrator2!(system_method, kinetic_eqs, particleGrids, settings)
         @info "2D System integration finished in $(round(elapsed_time, digits=2)) seconds."
 
-        # --- 8. Post-process & Return ---
+        # --- 8. Post-process & Return (CORRECTED) ---
         interior_indices_vec = particleGrid_template.interior_indices
+        N_interior_particles = length(interior_indices_vec)
         us_macro = Vector{Matrix{Float64}}(undef, length(ts))
+        
         for t_idx in eachindex(ts)
-            us_macro[t_idx] = zeros(Float64, length(interior_indices_vec), N_macro_vars)
+            us_macro[t_idx] = zeros(Float64, N_interior_particles, N_macro_vars)
+            
+            # sys_us_kinetic[t_idx] has dimensions (N_interior, N_total_kinetic)
+            kinetic_data_at_t = sys_us_kinetic[t_idx] 
+            
             for i_macro in 1:N_macro_vars
-                for k_idx in kinetic_to_macro_map[i_macro]
-                    kinetic_interior_data_k = [sys_us_kinetic[t_idx][p_idx, k_idx] for p_idx in interior_indices_vec]
-                    us_macro[t_idx][:, i_macro] .+= kinetic_interior_data_k
-                end
+                # Sum the relevant kinetic components for all interior particles at once
+                kinetic_indices_for_this_macro = kinetic_to_macro_map[i_macro]
+                
+                # Summing columns of the matrix slice
+                us_macro[t_idx][:, i_macro] = sum(kinetic_data_at_t[:, k_idx] for k_idx in kinetic_indices_for_this_macro)
             end
         end
         interior_pos = [p.pos for p in particleGrid_template.grid[interior_indices_vec]]
@@ -206,10 +218,10 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         sim_data_result.stats["time"] = elapsed_time
         return sim_data_result
 
-    catch e
-        @error "Error during 2D System simulation!" params=params exception=(e, catch_backtrace())
-        return nothing
-    end
+    #catch e
+    #    @error "Error during 2D System simulation!" params=params exception=(e, catch_backtrace())
+    #    return nothing
+    #end
 end
 
 

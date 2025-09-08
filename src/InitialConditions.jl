@@ -7,7 +7,7 @@ using LinearAlgebra
 
 export InitialCondition, SmoothInitialCondition, ShockInitialCondition,
        Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,
-       getInitialCondition, get_discontinuity_points, euler1D_physical_fluxes
+       getInitialCondition, get_discontinuity_points, euler1D_physical_fluxes, GAS_GAMMA_EULER
 
 
 # --- Helper functions for Euler Equations ---
@@ -30,77 +30,104 @@ end
 abstract type InitialCondition end
 abstract type SmoothInitialCondition <: InitialCondition end
 abstract type ShockInitialCondition <: InitialCondition end
-
-
 # --- 2. Concrete Structs and Functors for t=0 ---
+# --- GENERALIZED, PARAMETRIC STRUCTS ---
 
-# --- UNIFIED GAUSS (1D/2D) ---
-struct Gauss{T} <: SmoothInitialCondition
-    a::Float64      # amplitude
-    b::T            # mean (center)
+"Gaussian distribution for scalar or system states."
+struct Gauss{T, S} <: SmoothInitialCondition
+    a::S      # Amplitude (can be a scalar or a vector/tuple)
+    b::T      # Center (Float64 for 1D, NTuple for 2D)
     width::Float64
-
-    function Gauss(a::Real, b::Union{Real, NTuple{2, <:Real}}, width::Real)
-        if b isa Real
-            new{Float64}(a, b, width)
-        else
-            new{NTuple{2, Float64}}(a, b, width)
-        end
-    end
 end
-# --- SINE (1D) ---
-struct Sine <: SmoothInitialCondition
-    a::Float64      # amplitude
-    b_period::Float64
-    c_offset::Float64
-end
+# Functors work for both scalar and system types due to broadcasting (vector * scalar)
+(ic::Gauss{Float64, S})(x::Real) where S = ic.a .* exp(-((x - ic.b) / ic.width)^2)
+(ic::Gauss{NTuple{2, Float64}, S})(x::Real, y::Real) where S = ic.a .* exp(-(((x - ic.b[1])^2 + (y - ic.b[2])^2) / ic.width^2))
 
 
-# --- UNIFIED BOX (1D/2D) ---
-struct Box <: ShockInitialCondition
-    u_background::Float64
-    u_box::Float64
+"Box (Top-hat) distribution for scalar or system states."
+struct Box{S} <: ShockInitialCondition
+    u_background::S
+    u_box::S
     x_start::Float64
     x_end::Float64
     y_start::Union{Float64, Nothing}
     y_end::Union{Float64, Nothing}
 
-    # Inner constructor for type stability
-    function Box(u_bg, u_box, xs, xe, ys, ye)
-        new(u_bg, u_box, xs, xe, ys, ye)
-    end
-    # 1D outer constructor
-    Box(u_bg::Real, u_box::Real, xs::Real, xe::Real) = new(u_bg, u_box, xs, xe, nothing, nothing)
-    # 2D outer constructor
-    Box(u_bg::Real, u_box::Real, xs::Real, xe::Real, ys::Real, ye::Real) = new(u_bg, u_box, xs, xe, ys, ye)
+    # 1D Constructor
+    Box(bg::S, val::S, xs, xe) where S = new{S}(bg, val, xs, xe, nothing, nothing)
+    # 2D Constructor
+    Box(bg::S, val::S, xs, xe, ys, ye) where S = new{S}(bg, val, xs, xe, ys, ye)
 end
+(ic::Box)(x::Real) = ic.x_start <= x <= ic.x_end ? ic.u_box : ic.u_background
+(ic::Box)(x::Real, y::Real) = (ic.x_start <= x <= ic.x_end && !isnothing(ic.y_start) && ic.y_start <= y <= ic.y_end) ? ic.u_box : ic.u_background
 
 
-# --- NEW: Unified Riemann (Shock) for 1D and 2D ---
-struct Riemann{T} <: ShockInitialCondition
-    uL::Float64
-    uR::Float64
-    p0::T # A point on the discontinuity line/plane
-    n::T  # Normal vector pointing from L to R
-    # 1D Constructor: normal vector defaults to 1.0
-    function Riemann(uL::Real, uR::Real, x0::Real)
-        new{Float64}(Float64(uL), Float64(uR), Float64(x0), 1.0)
+"Sine wave for scalar states (systems would require more specific definition)."
+struct Sine <: SmoothInitialCondition
+    a::Float64
+    b_period::Float64
+    c_offset::Float64
+end
+(ic::Sine)(x::Real) = ic.a * sin(2.0 * pi * x / ic.b_period) + ic.c_offset
+
+
+"Riemann problem (shock/rarefaction) for scalar or system states in 1D or 2D."
+struct Riemann{T, S} <: ShockInitialCondition
+    uL::S
+    uR::S
+    p0::T  # 1D: x0 position. 2D: point on line.
+    n::T   # 1D: defaults to 1.0. 2D: normal vector.
+
+    # 1D Constructor
+    function Riemann(uL::S, uR::S, x0::Real) where S
+        new{Float64, S}(uL, uR, Float64(x0), 1.0)
     end
 
-    # 2D Constructor: normalizes the provided vector n
-    function Riemann(uL::Real, uR::Real, p0::NTuple{2, Real}, n_vec::NTuple{2, Real})
-        norm_n = norm(n_vec)
+    # 2D Constructor
+    function Riemann(uL::S, uR::S, p0::NTuple{2, Real}, n_vec::NTuple{2, Real}) where S
+        norm_n = LinearAlgebra.norm(n_vec)
         if norm_n < 1e-14; error("Normal vector for Riemann cannot be a zero vector."); end
         n_normalized = (n_vec[1] / norm_n, n_vec[2] / norm_n)
         p0_float = (Float64(p0[1]), Float64(p0[2]))
-        new{NTuple{2, Float64}}(Float64(uL), Float64(uR), p0_float, n_normalized)
+        new{NTuple{2, Float64}, S}(uL, uR, p0_float, n_normalized)
+    end
+end
+(ic::Riemann{Float64, S})(x::Real) where S = x < ic.p0 ? ic.uL : ic.uR
+(ic::Riemann{NTuple{2, Float64}, S})(x::Real, y::Real) where S = dot((x - ic.p0[1], y - ic.p0[2]), ic.n) < 0 ? ic.uL : ic.uR
+
+# --- NEW: Generalized Quadrant-based Riemann Problem ---
+struct QuadrantRiemann{T, S} <: ShockInitialCondition
+    u_states::Vector{S} # Vector of states for each quadrant
+    p0::T               # Center point of the quadrants
+
+    function QuadrantRiemann(u_states::Vector{S}, p0::T) where {S, T}
+        D = T isa Real ? 1 : length(p0)
+        num_expected_states = 2^D
+        if length(u_states) != num_expected_states
+            error("For a D-dimensional problem, expected $num_expected_states states, but got $(length(u_states)).")
+        end
+        new{T, S}(u_states, p0)
     end
 end
 
+# 1D Functor (2 states: left, right)
+function (ic::QuadrantRiemann{Float64, S})(x::Real) where S
+    return x < ic.p0 ? ic.u_states[1] : ic.u_states[2]
+end
 
-
-(ic::Riemann)(x::Real) = x < ic.x0 ? ic.uL : ic.uR
-
+# 2D Functor (4 states: BL, BR, TL, TR)
+function (ic::QuadrantRiemann{NTuple{2, Float64}, S})(x::Real, y::Real) where S
+    x0, y0 = ic.p0
+    if x < x0 && y < y0       # Bottom-Left
+        return ic.u_states[1]
+    elseif x >= x0 && y < y0  # Bottom-Right
+        return ic.u_states[2]
+    elseif x < x0 && y >= y0  # Top-Left
+        return ic.u_states[3]
+    else # x >= x0 && y >= y0 # Top-Right
+        return ic.u_states[4]
+    end
+end
 
 # --- EULER SYSTEM ICS (1D) ---
 struct EulerSmooth <: SmoothInitialCondition
@@ -134,21 +161,21 @@ end
 
 # --- 2. IC Functors
 # --- Functors for t=0 ---
-(ic::Gauss{Float64})(x::Real) = ic.a * exp(-((x - ic.b) / ic.width)^2)
-(ic::Gauss{NTuple{2,Float64}})(x::Real, y::Real) = ic.a * exp(-(((x - ic.b[1])^2 + (y - ic.b[2])^2) / ic.width^2))
+# (ic::Gauss{Float64})(x::Real) = ic.a * exp(-((x - ic.b) / ic.width)^2)
+# (ic::Gauss{NTuple{2,Float64}})(x::Real, y::Real) = ic.a * exp(-(((x - ic.b[1])^2 + (y - ic.b[2])^2) / ic.width^2))
 
-(ic::Box)(x::Real) = (isnothing(ic.y_start) && ic.x_start <= x <= ic.x_end) ? ic.u_box : ic.u_background
-(ic::Box)(x::Real, y::Real) = (!isnothing(ic.y_start) && ic.x_start <= x <= ic.x_end && ic.y_start <= y <= ic.y_end) ? ic.u_box : ic.u_background
+# (ic::Box)(x::Real) = (isnothing(ic.y_start) && ic.x_start <= x <= ic.x_end) ? ic.u_box : ic.u_background
+# (ic::Box)(x::Real, y::Real) = (!isnothing(ic.y_start) && ic.x_start <= x <= ic.x_end && ic.y_start <= y <= ic.y_end) ? ic.u_box : ic.u_background
 
-(ic::Sine)(x::Real) = ic.a * sin(2.0 * pi * x / ic.b_period) + ic.c_offset
+# (ic::Sine)(x::Real) = ic.a * sin(2.0 * pi * x / ic.b_period) + ic.c_offset
 
-# Functors for the new unified Riemann struct
-(ic::Riemann{Float64})(x::Real) = (x - ic.p0) * ic.n >= 0.0 ? ic.uR : ic.uL
-function (ic::Riemann{NTuple{2, Float64}})(x::Real, y::Real)
-    p_vec = (x - ic.p0[1], y - ic.p0[2])
-    dot_product = p_vec[1] * ic.n[1] + p_vec[2] * ic.n[2]
-    return dot_product >= 0.0 ? ic.uR : ic.uL
-end
+# # Functors for the new unified Riemann struct
+# (ic::Riemann{Float64})(x::Real) = (x - ic.p0) * ic.n >= 0.0 ? ic.uR : ic.uL
+# function (ic::Riemann{NTuple{2, Float64}})(x::Real, y::Real)
+#     p_vec = (x - ic.p0[1], y - ic.p0[2])
+#     dot_product = p_vec[1] * ic.n[1] + p_vec[2] * ic.n[2]
+#     return dot_product >= 0.0 ? ic.uR : ic.uL
+# end
 
 # --- 3. Analytical Solution Functors (t>0) using Multiple Dispatch ---
 
@@ -477,6 +504,7 @@ function getInitialCondition(name::String, params::Tuple)::InitialCondition
     elseif name == "box"; return Box(params...);
     elseif name == "sine"; return Sine(params...);
     elseif name == "riemann"; return Riemann(params...);
+    elseif name == "q_riemann"; return QuadrantRiemann(params...);
     elseif name == "eulerSmooth"; return EulerSmooth(params...);
     elseif name == "eulerShockTube"; return EulerShockTube(params...);
     else error("Unknown initFunc name: $name"); end
