@@ -48,7 +48,7 @@ sim_config_2d = SimulationConfig(
         #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
         "init_params" => implosionInit(),
         "bc" => :fixed_dirichlet,
-        "randomness_factor" => (0., 0.), # (x_rand, y_rand)
+        "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
         "SEED_value" => 42,
         "sim_function" => "runSystem2DSim", # Point to the 2D run function
         "PDE" => "euler2d",
@@ -83,7 +83,7 @@ sim_config_2d = SimulationConfig(
             "upwind_alg_2d" => "Praveen",
             "MOOD" => "none",
         ),    
-        "ARS222MUSCL2MOOD" => ParamDict(
+        "ARS222MUSCL2MOOD(Praveen)" => ParamDict(
             "timestepper" => "ARS222",
             "main_gradient" => "MUSCL",
             "order" => 2,
@@ -92,24 +92,50 @@ sim_config_2d = SimulationConfig(
             "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Praveen",
             "MOOD" => "U2", "delta_relax" => 0.,
         ), 
-        "ARS222MUSCL2TotalFallback" => ParamDict(
+        "ARS222MUSCL2MOOD(Tiwari)" => ParamDict(
             "timestepper" => "ARS222",
             "main_gradient" => "MUSCL",
             "order" => 2,
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
-            "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Praveen",
-            "MOOD" => "only",
+            "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Tiwari",
+            "MOOD" => "U2","delta_relax" => 0.,
         ),            
     ),
-    "ARS222Upwind"
-    #["ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222Upwind"]
-    #["ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222MUSCL2TotalFallback","RK2MUSCL2","RK2MUSCL2MOOD","ARS222Upwind"] # Methods to run by default
+    #"ARS222Upwind"
+    ["ARS222MUSCL2","ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Praveen)","ARS222Upwind"]
 );
 
 # --- How to run this with your IPlotPDESols package ---
 # You would now pass `sim_config_2d` to your plotting functions.
 # For example:
-show2DSolutionFig(sim_config_2d;)
+#@profview show2DSolutionFig(sim_config_2d;)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,1.)))
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
+
+### Single ParamDict for testing
+
+params = ParamDict(
+        "tmax" => 1., "Nx" => 10, "Ny" => 10,
+        "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
+        "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
+        "interp_range" => 3.5,
+        "init_func" => "q_riemann", # Use the new 2D function name
+        #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
+        #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
+        "init_params" => implosionInit(),
+        "bc" => :fixed_dirichlet,
+        "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
+        "SEED_value" => 42,
+        "sim_function" => "runSystem2DSim", # Point to the 2D run function
+        "PDE" => "euler2d",
+        "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
+        "timestepper" => "ARS222",
+        "main_gradient" => "MUSCL",
+        "order" => 2,
+        "main_flux" => "Rusanov",
+        "MOOD" => "none",
+        #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
+    )
+
+@profview runSystem2DSim(params);

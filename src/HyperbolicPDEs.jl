@@ -1,7 +1,7 @@
 module HyperbolicPDEs
 
 export ScalarHyperbolicEquation, LinearScalarHyperbolicEquation, NonLinearScalarHyperbolicEquation, LinearAdvection, 
-       BurgersEquation, BurgersEquation2D, velocity, flux, HyperbolicSystem, Euler1D, Euler2D, pressure_from_euler_conserved
+       BurgersEquation, BurgersEquation2D, velocity, flux, HyperbolicSystem, Euler1D, Euler2D, pressure_from_euler_conserved, HyperbolicPDE
 
 abstract type HyperbolicPDE end
 

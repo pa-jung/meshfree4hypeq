@@ -28,7 +28,7 @@ end
 
 Given a reconstruction of the state at the midpoint from the cell center flux1, and a state reconstruction from the neighbouring point, return the left and right state in x and y direction.
 """
-function sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real, deltaY::Real)::Tuple{<:Real, <:Real, <:Real, <:Real}
+function sortFlux(flux_ij::Float64, flux_ji::Float64, deltaX::Float64, deltaY::Float64)::Tuple{Float64, Float64, Float64, Float64}
     if deltaX > 0.0 && deltaY > 0.0
         return (flux_ij, flux_ji, flux_ij, flux_ji)
     elseif deltaX > 0.0 && deltaY < 0.0 
@@ -75,8 +75,8 @@ wVec and res are overwritten.
 - `res::AbstractVector`: Vector that will contains the result. res[1] is always the interpolated value, res[2] the first order derivative at x(i), res[3] the second order derivative ... Derivatives are only returned if the order is high enough.
 - `order::Int64`: Order of polynomial approximation.
 """
-function functionInterpolation!(dxVec::AV1, wVec::AV2, fVec::AV3, res::AV4; order::Int64=2) where {AV1 <: AbstractVector{<:Real}, AV2 <: AbstractVector{<:Real},
-                                                                                                AV3 <: AbstractVector{<:Real}, AV4 <: AbstractVector{<:Real}}
+function functionInterpolation!(dxVec::AV1, wVec::AV2, fVec::AV3, res::AV4; order::Int64=2) where {AV1 <: AbstractVector{Float64}, AV2 <: AbstractVector{Float64},
+                                                                                                AV3 <: AbstractVector{Float64}, AV4 <: AbstractVector{Float64}}
     @assert length(dxVec) == length(wVec)
     @assert length(wVec) == length(fVec)
     @assert length(res) >= order + 1
@@ -136,8 +136,8 @@ end
 Same as `functionInterpolation!` but interpolation for the gradient. dfVec now contains (f(x(j))-f(x(i)), ...)
 
 """
-function gradInterpolation!(dxVec::AV1, wVec::AV2, dfVec::AV3, res::AV4; order::Int64=2) where {AV1 <: AbstractVector{<:Real}, AV2 <: AbstractVector{<:Real},
-                                                                                                AV3 <: AbstractVector{<:Real}, AV4 <: AbstractVector{<:Real}}
+function gradInterpolation!(dxVec::AV1, wVec::AV2, dfVec::AV3, res::AV4; order::Int64=2) where {AV1 <: AbstractVector{Float64}, AV2 <: AbstractVector{Float64},
+                                                                                                AV3 <: AbstractVector{Float64}, AV4 <: AbstractVector{Float64}}
     @assert length(dxVec) == length(wVec)
     @assert length(wVec) == length(dfVec)
     @assert length(res) >= order

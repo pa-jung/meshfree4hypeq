@@ -80,8 +80,21 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
              # For 2D, we assume a simple splitting of fluxes for this general model
             system_eq = Euler2D()
             N_macro_vars = 4 # rho, mx, my, E
-            F_fluxes = [ (U...) -> flux(system_eq, U...)[1][i] for i in 1:N_macro_vars ]
-            G_fluxes = [ (U...) -> flux(system_eq, U...)[2][i] for i in 1:N_macro_vars ]
+            # F_fluxes = [ (U...)::NTuple{4, Float64} -> flux(system_eq, U...)[1][i] for i in 1:N_macro_vars ]
+            # G_fluxes = [ (U...)::NTuple{4, Float64} -> flux(system_eq, U...)[2][i] for i in 1:N_macro_vars ]
+            # Pre-allocate the output array of functions
+            # F_fluxes = Vector{Function}(undef, N_macro_vars)
+            # G_fluxes = Vector{Function}(undef, N_macro_vars)
+
+            # for i in 1:N_macro_vars
+            #     # Use a let block to create a new scope for `i`.
+            #     # This captures `i` in a way that avoids allocations in most cases.
+            #     let captured_i = i
+            #         # Define the function with explicit, typed arguments
+            #         F_fluxes[captured_i] = (u1::Float64, u2::Float64, u3::Float64, u4::Float64) -> flux(system_eq, u1, u2, u3, u4)[1][captured_i]
+            #         G_fluxes[captured_i] = (u1::Float64, u2::Float64, u3::Float64, u4::Float64) -> flux(system_eq, u1, u2, u3, u4)[2][captured_i]
+            #     end
+            # end
         else
             error("System '$system_name' is not implemented.")
         end
@@ -91,7 +104,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         N_total_kinetic = sum(num_kinetic_per_macro)
         
         kinetic_eqs = Vector{LinearAdvection{Tuple{Float64,Float64}}}(undef, N_total_kinetic)
-        M_funcs = Vector{Function}(undef, N_total_kinetic)
+        M_funcs = Vector{MaxwellianFunctor}(undef, N_total_kinetic)
         
         kinetic_to_macro_map = Vector{Vector{Int}}(undef, N_macro_vars)
         current_offset = 0
@@ -100,30 +113,65 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
             current_offset += num_kinetic_per_macro[i]
         end
 
+        
+        # for i_macro_loop in 1:N_macro_vars
+        #     let i_macro = i_macro_loop # <--- CRITICAL FIX FOR SCOPING
+        #         speeds_for_macro = relax_velocities_config[i_macro]
+        #         # For 2D, flux is split. We assume a simple model where x-velocities link to F, y-velocities to G
+        #         for speed_vec in speeds_for_macro
+        #             kinetic_eqs[global_k_idx] = LinearAdvection(speed_vec)
+                        
+        #             # Determine which flux (F or G) to use based on velocity direction
+        #             local macro_flux_func
+        #             local relax_speed
+        #             if abs(speed_vec[1]) > 1e-12 # Has x-component
+        #                 macro_flux_func = F_fluxes[i_macro]
+        #                 relax_speed = speed_vec[1]
+        #             else # Has y-component
+        #                 macro_flux_func = G_fluxes[i_macro]
+        #                 relax_speed = speed_vec[2]
+        #             end
+
+        #             # This Maxwellian assumes a two-point quadrature model (+a, -a) for the chosen direction
+        #             M_funcs[global_k_idx] = (U...) -> 0.25 * (U[i_macro] + 2 * macro_flux_func(U...) / relax_speed)
+                    
+        #             global_k_idx += 1
+        #         end
+        #     end
+        # end
+# --- Example instantiation inside the loop ---
         global_k_idx = 1
         for i_macro_loop in 1:N_macro_vars
-            let i_macro = i_macro_loop # <--- CRITICAL FIX FOR SCOPING
-                speeds_for_macro = relax_velocities_config[i_macro]
-                # For 2D, flux is split. We assume a simple model where x-velocities link to F, y-velocities to G
-                for speed_vec in speeds_for_macro
-                    kinetic_eqs[global_k_idx] = LinearAdvection(speed_vec)
-                        
-                    # Determine which flux (F or G) to use based on velocity direction
-                    local macro_flux_func
-                    local relax_speed
-                    if abs(speed_vec[1]) > 1e-12 # Has x-component
-                        macro_flux_func = F_fluxes[i_macro]
-                        relax_speed = speed_vec[1]
-                    else # Has y-component
-                        macro_flux_func = G_fluxes[i_macro]
-                        relax_speed = speed_vec[2]
-                    end
+            i_macro = i_macro_loop
+            speeds_for_macro = relax_velocities_config[i_macro]
 
-                    # This Maxwellian assumes a two-point quadrature model (+a, -a) for the chosen direction
-                    M_funcs[global_k_idx] = (U...) -> 0.25 * (U[i_macro] + 2 * macro_flux_func(U...) / relax_speed)
-                    
-                    global_k_idx += 1
+            for speed_vec in speeds_for_macro
+                kinetic_eqs[global_k_idx] = LinearAdvection(speed_vec)
+
+                # --- Selection logic ---
+                local macro_flux_func, relax_speed, i_dim
+                if abs(speed_vec[1]) > 1e-12
+                    i_dim = 1
+                    relax_speed = speed_vec[1]
+                else
+                    i_dim = 2
+                    relax_speed = speed_vec[2]
                 end
+                
+                # Define the interior factor for this specific case.
+                # This could also be calculated inside the if/else block if needed.
+
+                # Instantiate the functor with the new argument
+                M_funcs[global_k_idx] = MaxwellianFunctor(
+                    system_eq,
+                    i_macro,
+                    i_dim,
+                    relax_speed,
+                    .25,
+                    .5
+                )
+                
+                global_k_idx += 1
             end
         end
         source_term = RelaxationSourceTerm(M_funcs, relax_eps, kinetic_to_macro_map)
@@ -143,7 +191,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         particleGrids = [deepcopy(particleGrid_template) for _ in 1:N_total_kinetic]
         for k in 1:N_total_kinetic
             for p_idx in 1:length(particleGrids[k].grid)
-                particleGrids[k].grid[p_idx].rho = M_funcs[k](macro_ic_at_points[p_idx]...)
+                particleGrids[k].grid[p_idx].rho = M_funcs[k](macro_ic_at_points[p_idx])
             end
         end
         

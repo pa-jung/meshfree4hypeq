@@ -454,14 +454,24 @@ function initTimeStepper(
     end
 end
 
-# --- Corrected Functor for GeneralIMEXTimeStepper ---
-function (imex_ts::GeneralIMEXTimeStepper)(
+# ============== CORRECTED FUNCTOR SIGNATURE ==============
+
+# Add ALL type parameters from the struct definition to the function signature
+function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         scalar_equations::Vector{<:ScalarHyperbolicEquation},
         system_pg::Vector{<:ParticleGrids.ParticleGrid},
         settings::SimSettings.SimSetting,
         time_n::Real,
         dt::Real
-    )
+    ) where {
+        # Also add them to the `where` clause
+        G1 <: Interpolations.GradientInterpolator,
+        G2 <: Union{Interpolations.GradientInterpolator, Nothing},
+        M <: MOODCriterion,
+        IS <: ImplicitSolvers.AbstractImplicitSolver,
+        ST_OBJ <: SourceTerms.AbstractSourceTerm,
+        BT <: IMEXButcherTableau
+    }
 
     interior_indices = system_pg[1].interior_indices
     N_total_particles = length(system_pg[1].grid)

@@ -147,18 +147,22 @@ function solve!(
 
     coeff_sum_inv = 1.0 / (epsilon + dt_coefficient_for_S)
 
-    # General coupled case: reconstruct U_macro_base
+    # General coupled case: reconstruct U_macro_base as a TUPLE
     kinetic_map = source_term_object.kinetic_indices
     N_macro_vars = source_term_object.num_macro_variables
-    U_macro_base_values = Vector{Float64}(undef, N_macro_vars)
-    for i_macro in 1:N_macro_vars
-        U_macro_base_values[i_macro] = sum(RHS_const_particle[kinetic_map[i_macro]])
+
+    # Create a tuple directly. `ntuple` is type-stable and non-allocating.
+    U_macro_base_tuple = ntuple(N_macro_vars) do i_macro
+        # Using a generator `( ... for ...)` inside sum is good practice
+        sum(RHS_const_particle[k] for k in kinetic_map[i_macro])
     end
 
     for k_global_comp in 1:N_total_kinetic_components_arg
         v_k_base_kinetic = RHS_const_particle[k_global_comp]
-        # M_k here expects N_macro_vars arguments, splatted from U_macro_base_values
-        Mk_val = maxwellians[k_global_comp](U_macro_base_values...)
+        
+        # The Maxwellian now receives the TUPLE, which can be splatted efficiently
+        Mk_val = maxwellians[k_global_comp](U_macro_base_tuple)
+        
         Y_out_particle[k_global_comp] = (epsilon * v_k_base_kinetic + dt_coefficient_for_S * Mk_val) * coeff_sum_inv
     end
     return true 

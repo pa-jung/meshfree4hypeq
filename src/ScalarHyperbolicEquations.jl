@@ -22,35 +22,35 @@ struct LinearAdvection{T} <: LinearScalarHyperbolicEquation
     end
 end
 
-@inline function velocity(eq::LinearAdvection, rho::Real)
+@inline function velocity(eq::LinearAdvection, rho::Float64)
     return eq.vel
 end
 
-@inline function flux(eq::LinearAdvection{T}, u::Real) where {T <: Real}
+@inline function flux(eq::LinearAdvection{T}, u::Float64) where {T <: Real}
     return eq.vel*u
 end
 
-@inline function flux(eq::LinearAdvection{T}, u::Real) where {T <: Tuple{<:Real, <:Real}}
+@inline function flux(eq::LinearAdvection{T}, u::Float64) where {T <: Tuple{<:Real, <:Real}}
     return (eq.vel[1]*u, eq.vel[2]*u)
 end
 
 
 struct BurgersEquation <: NonLinearScalarHyperbolicEquation end
 
-@inline function velocity(eq::BurgersEquation, u::Real)
+@inline function velocity(eq::BurgersEquation, u::Float64)
     return u
 end
 
-@inline function flux(eq::BurgersEquation, u::Real)
+@inline function flux(eq::BurgersEquation, u::Float64)
     return (u^2)/2
 end
 
 struct BurgersEquation2D <: NonLinearScalarHyperbolicEquation end
 
-@inline function velocity(eq::BurgersEquation2D, u::Real)
+@inline function velocity(eq::BurgersEquation2D, u::Float64)
     return (u,u)
 end
 
-@inline function flux(eq::BurgersEquation2D, u::Real)
+@inline function flux(eq::BurgersEquation2D, u::Float64)
     return ((u^2)/2,(u^2)/2)
 end
