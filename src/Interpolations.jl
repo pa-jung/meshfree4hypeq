@@ -279,7 +279,7 @@ struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: Upw
     end
 end
 
-function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
+function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {D}
     nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, nbNeighbours)
     dfVec = Vector{Float64}(undef, nbNeighbours)
@@ -333,7 +333,7 @@ end
 #     return 2*laxFriedrichs.res[1]/settings.interpRange
 # end
 
-function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
+function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real    
     vel = eq.vel
     nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, nbNeighbours)
@@ -373,7 +373,7 @@ function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D,
     return ddx*vel[1] + ddy*vel[2]
 end
 
-function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
+function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real    
     vel = eq.vel
     dxVec = Vector{Float64}(undef, 0)
     dyVec = Vector{Float64}(undef, 0)
@@ -400,7 +400,7 @@ function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D
     return vel[1]*upwind.res[1]/settings.interpRange + vel[2]*upwind.res[2]/settings.interpRange
 end
 
-function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real    
+function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real    
     particle = particleGrid.grid[particleIndex]
     vel = eq.vel
     if setCurvature
@@ -441,7 +441,7 @@ function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D
     return div
 end
 
-function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real    
+function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {D}   
     particle = particleGrid.grid[particleIndex]
     vel = eq.vel
     if setCurvature
@@ -518,7 +518,7 @@ struct CentralGradient <: GradientInterpolator
     end
 end
 
-function (central::CentralGradient)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractArray{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real
+function (central::CentralGradient)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractArray{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, Npts)
     dyVec = Vector{Float64}(undef, Npts)
@@ -546,7 +546,7 @@ function (central::CentralGradient)(particleGrid::ParticleGrid2D, particleIndex:
     return eq.vel[1]*central.res[1]/particleGrid.dx + eq.vel[2]*central.res[2]/particleGrid.dx
 end
 
-function (central::CentralGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{<:Real}, settings::SimSetting; setCurvature::Bool=true)::Real
+function (central::CentralGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{1}, settings::SimSetting; setCurvature::Bool=true)::Real
     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, Npts)
     dfVec = Vector{Float64}(undef, Npts)
@@ -587,7 +587,7 @@ struct WENO <: GradientInterpolator
     end
 end
 
-function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{<:Real}, settings::SimSetting; setCurvature::Bool=true)::Real
+function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{1}, settings::SimSetting; setCurvature::Bool=true)::Real
     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, Npts)
     dfVec = Vector{Float64}(undef, Npts)
@@ -635,7 +635,7 @@ function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec
     return res*eq.vel
 end
 
-function (weno::WENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real
+function (weno::WENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, Npts)
     dyVec = Vector{Float64}(undef, Npts)
@@ -734,7 +734,7 @@ struct DumbserWENO <: GradientInterpolator
     end
 end
 
-function (weno::DumbserWENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection, settings::SimSetting; setCurvature::Bool=true)::Real
+function (weno::DumbserWENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
     @assert settings.interpRange >= sqrt(5.0^2 + 3.0^2)*particleGrid.dx "Interpolation must be sufficiently larger, otherwise one cannot guarantee sufficient neighbours are found." 
     particle = particleGrid.grid[particleIndex]
     Npts = length(particle.neighbourIndices)
@@ -888,7 +888,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid1D, interpA
     end
 end
 
-function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER}
+function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER, D}
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
@@ -994,7 +994,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid2D, interpA
     end
 end
 
-function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER}
+function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER,D}
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
@@ -1332,10 +1332,10 @@ function (muscl::MUSCLlimited{MUSCLORDER1})(
     particleGrid::ParticleGrid1D, 
     particleIndex::Integer, 
     fVec::AbstractVector{<:Real}, 
-    eq::ScalarHyperbolicEquation, 
+    eq::ScalarHyperbolicEquation{D}, 
     settings::SimSetting; 
     setCurvature::Bool=true,
-)::Real
+)::Real where {D}
     # ... (code as you provided, it is correct) ...
     particle_i_data = particleGrid.grid[particleIndex]
     ui = fVec[particleIndex]

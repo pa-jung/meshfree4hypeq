@@ -8,7 +8,11 @@ struct Upwind <: FixedGridTimeStepper
     end
 end
 
-function (upwind::Upwind)(eq::LinearAdvection, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+function (upwind::Upwind)(eq::HyperbolicPDE, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+    error("Upwind method for nonlinear hyperbolic equations (Roe's scheme) not yet implemented.")
+end
+
+function (upwind::Upwind)(eq::LinearAdvection{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
     map!(particle -> particle.rho, upwind.rhoOld, particleGrid.grid)
     vel = velocity(eq, particleGrid.grid[1].rho)  # Velocity is constant so just evaluate it at the first particle
     λ = vel*dt/particleGrid.dx
@@ -25,10 +29,6 @@ function (upwind::Upwind)(eq::LinearAdvection, particleGrid::ParticleGrid1D, set
     end
 end
 
-function (upwind::Upwind)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
-    error("Upwind method for nonlinear hyperbolic equations (Roe's scheme) not yet implemented.")
-end
-
 struct LaxFriedrich <: FixedGridTimeStepper 
     rhoOld::Vector{Float64}
     function LaxFriedrich(Nx::Integer)
@@ -36,7 +36,7 @@ struct LaxFriedrich <: FixedGridTimeStepper
     end
 end
 
-function (lf::LaxFriedrich)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+function (lf::LaxFriedrich)(eq::ScalarHyperbolicEquation{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
     map!(particle -> particle.rho, lf.rhoOld, particleGrid.grid)
     λ = dt/(2*particleGrid.dx)
     for i in 2:particleGrid.N-1
@@ -72,7 +72,7 @@ Functor for the Classical Finite Volume (Fixed Grid) Time Stepper.
 Handles both periodic and fixed boundary conditions.
 """
 function (cts::ClassicalTimeStepper)(
-    eq::ScalarHyperbolicEquation, 
+    eq::ScalarHyperbolicPDE{1}, 
     particleGrid::ParticleGrid1D, 
     settings::SimSetting, 
     time::Real, 
@@ -153,7 +153,7 @@ struct ClassicalRK2LWTimeStepper <: FixedGridTimeStepper
     end
 end
 
-function (crk2::ClassicalRK2LWTimeStepper)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+function (crk2::ClassicalRK2LWTimeStepper)(eq::ScalarHyperbolicEquation{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
     map!(particle -> particle.rho, crk2.rhoOld, particleGrid.grid)
     N = particleGrid.N
     dx = particleGrid.dx
@@ -238,7 +238,7 @@ function initTimeStepper(cts_mood::ClassicalRichtmyerLWMOOD, particleGrid::Parti
 end
 
 function (cts_mood::ClassicalRichtmyerLWMOOD)(
-    eq::ScalarHyperbolicEquation, 
+    eq::ScalarHyperbolicEquation{1}, 
     particleGrid::ParticleGrid1D, 
     settings::SimSetting, 
     time::Real, 

@@ -103,7 +103,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         num_kinetic_per_macro = [length(v) for v in relax_velocities_config]
         N_total_kinetic = sum(num_kinetic_per_macro)
         
-        kinetic_eqs = Vector{LinearAdvection{Tuple{Float64,Float64}}}(undef, N_total_kinetic)
+        kinetic_eqs = Vector{LinearAdvection{2}}(undef, N_total_kinetic)
         M_funcs = Vector{MaxwellianFunctor}(undef, N_total_kinetic)
         
         kinetic_to_macro_map = Vector{Vector{Int}}(undef, N_macro_vars)
@@ -114,31 +114,6 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         end
 
         
-        # for i_macro_loop in 1:N_macro_vars
-        #     let i_macro = i_macro_loop # <--- CRITICAL FIX FOR SCOPING
-        #         speeds_for_macro = relax_velocities_config[i_macro]
-        #         # For 2D, flux is split. We assume a simple model where x-velocities link to F, y-velocities to G
-        #         for speed_vec in speeds_for_macro
-        #             kinetic_eqs[global_k_idx] = LinearAdvection(speed_vec)
-                        
-        #             # Determine which flux (F or G) to use based on velocity direction
-        #             local macro_flux_func
-        #             local relax_speed
-        #             if abs(speed_vec[1]) > 1e-12 # Has x-component
-        #                 macro_flux_func = F_fluxes[i_macro]
-        #                 relax_speed = speed_vec[1]
-        #             else # Has y-component
-        #                 macro_flux_func = G_fluxes[i_macro]
-        #                 relax_speed = speed_vec[2]
-        #             end
-
-        #             # This Maxwellian assumes a two-point quadrature model (+a, -a) for the chosen direction
-        #             M_funcs[global_k_idx] = (U...) -> 0.25 * (U[i_macro] + 2 * macro_flux_func(U...) / relax_speed)
-                    
-        #             global_k_idx += 1
-        #         end
-        #     end
-        # end
 # --- Example instantiation inside the loop ---
         global_k_idx = 1
         for i_macro_loop in 1:N_macro_vars

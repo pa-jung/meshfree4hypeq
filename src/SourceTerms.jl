@@ -90,50 +90,47 @@ function (rs::RelaxationSourceTerm1D)(
     end
 end
 
-struct RelaxationSourceTerm{MF <: AbstractVector{<:MaxwellianFunctor}} <: AbstractSourceTerm
-    maxwellians::MF         # M_k(u_macro_1, u_macro_2, ...)
+struct RelaxationSourceTerm{MF <: Tuple, KI <: Tuple} <: AbstractSourceTerm
+    maxwellians::MF
+    kinetic_indices::KI
     epsilon::Float64
-    kinetic_indices::Vector{Vector{Int64}} # Defines how kinetic components sum to form each u_macro_j
-    num_total_kinetic_components::Int64  # Total number of v_k
-    num_macro_variables::Int64           # Number of arguments M_k expects (length of U_macro vector)
+    num_total_kinetic_components::Int64
+    num_macro_variables::Int64
+end
+# This is the user-friendly constructor that accepts Vectors
+function RelaxationSourceTerm(
+    maxwellian_functions_input::AbstractVector{<:MaxwellianFunctor},
+    epsilon::Float64,
+    kinetic_indices_input::AbstractVector{<:AbstractVector{Int}}
+)   
+    # Convert the input vectors to tuples
+    maxwellian_tuple = Tuple(maxwellian_functions_input)
 
-    # Constructor for general coupled systems
-    function RelaxationSourceTerm(
-        maxwellian_functions::MF,
-        epsilon::Float64,
-        kinetic_indices::Vector{Vector{Int64}}
-    ) where {MF <: AbstractVector{<:MaxwellianFunctor}}
-        # ... (parameter checks as before) ...
-        num_total_kin = length(maxwellian_functions)
-        num_macro_vars = length(kinetic_indices)
-        # For coupled systems, num_macro_vars <= num_total_kin generally.
-        # Each M_k will receive `num_macro_vars` arguments.
-        new{MF}(maxwellian_functions, epsilon, kinetic_indices, num_total_kin, num_macro_vars)
-    end
+    # A cleaner way to convert the nested vector to a tuple of tuples
+    kinetic_indices_tuple = Tuple(Tuple(indices) for indices in kinetic_indices_input)
 
-    # Constructor for "scalar-like" relaxation: each v_k relaxes towards M_k(v_k)
-    function RelaxationSourceTerm(
-        maxwellian_functions_scalar_like::MF, # Each M_k here should expect 1 argument (its own v_k)
-        epsilon::Float64
-    ) where {MF <: AbstractVector{<:MaxwellianFunctor}}
-        # ... (parameter checks) ...
-        num_total_kin = length(maxwellian_functions_scalar_like)
-        # For this case, each kinetic var is its own "macro" variable for its Maxwellian
-        kinetic_map = [Vector(1:num_total_kin)] 
-        num_macro_vars_effective = 1 # Each M_k effectively sees a "macro state" of length 1 (just itself)
-        
-        println("INFO: RelaxationSourceTerm created for scalar-like relaxation. Each M_k will be called with its corresponding v_k as the single argument.")
-        # We use the main constructor, but the flag indicates special handling in functor
-        new{MF}(maxwellian_functions_scalar_like, epsilon, kinetic_map, num_total_kin, num_macro_vars_effective)
-    end
+    # Calculate the remaining properties
+    num_total_kin = length(maxwellian_tuple)
+    num_macro_vars = length(kinetic_indices_tuple)
+    
+    # Call the default constructor with the performant tuple types.
+    # Julia will automatically create a concrete instance, e.g.:
+    # RelaxationSourceTerm{Tuple{MaxwellianFunctor{...}}, NTuple{...}}(...)
+    return RelaxationSourceTerm(
+        maxwellian_tuple, 
+        kinetic_indices_tuple,
+        epsilon,
+        num_total_kin,
+        num_macro_vars
+    )
 end
 
-function (rs::RelaxationSourceTerm{MF})(
+function (rs::RelaxationSourceTerm{MF,KI})(
     S_out_particle::AbstractVector{Float64},
     U_kinetic_particle::AbstractVector{Float64},
     particle_pos::Any, 
     time::Real             
-) where {MF <: AbstractVector{<:MaxwellianFunctor}}
+) where {MF <: Tuple, KI <: Tuple}
     if length(U_kinetic_particle) != rs.num_total_kinetic_components || length(S_out_particle) != rs.num_total_kinetic_components
         error("Dimension mismatch in RelaxationSourceTerm functor.")
     end

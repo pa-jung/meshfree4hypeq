@@ -32,7 +32,7 @@ function initTimeStepper(method::RelaxationStepper, particleGrids::Vector{T}, se
     initTimeStepper(method.timestepper, particleGrids[1], settings)
 end
 
-function(relax_ts::RelaxationStepper)(eqs::Vector{LinearAdvection{T}}, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real) where T <: Float64
+function(relax_ts::RelaxationStepper)(eqs::Vector{LinearAdvection{1}}, particleGrids::Vector{<:ParticleGrid1D}, settings::SimSetting, time::Real, dt::Real)
     for (i,pg) = enumerate(particleGrids)
         relax_ts.timestepper(eqs[i], pg, settings, time, dt)
     end
@@ -96,12 +96,12 @@ end
 Functor for the SimpleSplitting timestepper.
 """
 function (ss::SimpleSplitting)(
-    eqs::Vector{<:LinearAdvection}, # The kinetic equations
+    eqs::Vector{<:LinearAdvection{D}}, # The kinetic equations
     particleGrids::Vector{<:ParticleGrid}, 
     settings::SimSetting, 
     time::Real, 
     dt::Real
-)
+) where {D}
     # --- 1. Advection Step ---
     # Apply the scalar timestepper to each kinetic component grid.
     # This updates the .rho field of each particle to the post-advection state v_k^*.
@@ -159,13 +159,13 @@ function compute_explicit_tendency_with_mood!(
     gradientInterpolator::Interpolations.GradientInterpolator, # Added Interpolations.
     fallbackInterpolator::Union{Interpolations.GradientInterpolator, Nothing}, # Added Interpolations.
     mood_criterion::MOODCriterion, # Assuming MOODCriterion is defined and imported
-    scalar_equations::Vector{<:ScalarHyperbolicEquation}, # Added ScalarHyperbolicEquations.
+    scalar_equations::Vector{<:ScalarHyperbolicEquation{D}}, # Added ScalarHyperbolicEquations.
     component_grids::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.
     settings::SimSettings.SimSetting, # Added SimSettings.
     dt_for_mood_check::Real,
     is_first_mood_stage_in_rk::Bool,
     interior_indices::AbstractVector{Int64}
-)
+) where {D}
     N_particles = size(U_state_sys, 1)
     N_components = length(scalar_equations)
 

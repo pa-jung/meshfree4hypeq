@@ -178,9 +178,16 @@ end
 # end
 
 # --- 3. Analytical Solution Functors (t>0) using Multiple Dispatch ---
+function (ic::InitialCondition)(x::Real, t::Real, eq::HyperbolicPDE{D,N}, pg::ParticleGrid1D) where {D,N}
+    if hasfield(ic,:reference)
+        return reference(x,t)
+    else
+        error("No analytic solution implemented! A reference solution has to be given!")
+    end
+end
 
 # --- For Linear Advection (General Solution) ---
-function (ic::InitialCondition)(x::Real, t::Real, eq::LinearAdvection, pg::ParticleGrid1D)
+function (ic::InitialCondition)(x::Real, t::Real, eq::LinearAdvection{1}, pg::ParticleGrid1D)
     x0 = x - eq.vel * t
     if pg.bc == :periodic
         domain_length = pg.xmax - pg.xmin
@@ -191,15 +198,9 @@ function (ic::InitialCondition)(x::Real, t::Real, eq::LinearAdvection, pg::Parti
     end
 end
 
-function (ic::InitialCondition)(x::Real, t::Real, eq::HyperbolicSystem, pg::ParticleGrid1D)
-    if hasfield(ic,:reference)
-        return reference(x,t)
-    else
-        error("No analytic solution implemented! A reference solution has to be given!")
-    end
-end
 
-function (ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{<:NTuple{2,Float64}}, pg::ParticleGrid)
+
+function (ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{2}, pg::ParticleGrid2D)
     x0 = x - eq.vel[1] * t
     y0 = y - eq.vel[2] * t
     if pg.bc == :periodic
@@ -210,7 +211,7 @@ function (ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{<
         return ic(x0, y0)
     end
 end
-(ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{<:Real}, pg::ParticleGrid) = ic(x-eq.vel*t, y) # Dispatch to 2D functor
+(ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{1}, pg::ParticleGrid) = ic(x-eq.vel*t, y) # Dispatch to 2D functor
 
 
 # --- For Burger's Equation (Specific to each IC Type) ---
@@ -606,10 +607,10 @@ Calculates the current positions of any discontinuities for QuadGK.
 Uses multiple dispatch on the initial condition type and equation type.
 """
 # Default for smooth ICs with linear advection -> no discontinuities
-get_discontinuity_points(ic::SmoothInitialCondition, eq::LinearAdvection, t::Real, pg::ParticleGrid) = Float64[]
+get_discontinuity_points(ic::SmoothInitialCondition, eq::LinearAdvection{D}, t::Real, pg::ParticleGrid) where {D} = Float64[]
 
 # For shock ICs with linear advection -> track the initial jumps
-function get_discontinuity_points(ic::ShockInitialCondition, eq::LinearAdvection, t::Real, pg::ParticleGrid1D)
+function get_discontinuity_points(ic::ShockInitialCondition, eq::LinearAdvection{1}, t::Real, pg::ParticleGrid1D)
     points = Float64[]
     xmin, xmax = pg.xmin, pg.xmax
     domain_length = xmax - xmin

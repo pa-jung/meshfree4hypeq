@@ -138,4 +138,66 @@ params = ParamDict(
         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
     )
 
-@profview runSystem2DSim(params);
+#@profview runSystem2DSim(params);
+
+#using Test # You might need to run `using Pkg; Pkg.add("Test")` if not in a test environment.
+
+# Assume your modules are loaded, e.g.:
+# using .HyperbolicPDEs
+# using .SourceTerms
+
+# --- 1. Create dummy objects to build a valid `RelaxationSourceTerm` ---
+
+# Assume your modules are loaded
+# using .HyperbolicPDEs
+# using .SourceTerms
+
+# Assume your modules are loaded
+# using .HyperbolicPDEs
+# using .SourceTerms
+
+# Assume your modules are loaded
+# using .HyperbolicPDEs
+# using .SourceTerms
+
+# println("--- Starting Debug Script using the `code_warntype` function ---")
+
+# try
+#     # --- 1. Setup (same as before) ---
+#     euler_eq = Euler2D() 
+#     sample_maxwellian = MaxwellianFunctor(euler_eq, 1, 1, 1.0, 0.25, 2.0)
+#     maxwellians_vec = [sample_maxwellian, sample_maxwellian]
+#     epsilon = 0.01
+#     kinetic_indices = [[1], [2]]
+#     rs = RelaxationSourceTerm(maxwellians_vec, epsilon, kinetic_indices)
+#     num_components = 2
+#     S_out = zeros(Float64, num_components)
+#     U_kinetic = ones(Float64, num_components)
+#     pos = 0.0
+#     time = 0.0
+
+#     println("Step 1: Setup complete.")
+
+#     # --- 2. Use the `code_warntype` function directly ---
+#     println("Step 2: Calling `code_warntype` function to capture output...")
+
+#     buffer = IOBuffer()
+
+#     # Get the types of the arguments for the function call
+#     arg_types = (typeof(S_out), typeof(U_kinetic), typeof(pos), typeof(time))
+
+#     # Call the function directly, passing the buffer as the output destination,
+#     # the function to analyze (our functor `rs`), and the types of its arguments.
+#     code_warntype(buffer, rs, arg_types)
+
+#     output_string = String(take!(buffer))
+
+#     println("\n--- COMPILER ANALYSIS ---")
+#     println(output_string)
+#     println("--- END OF ANALYSIS ---")
+
+# catch e
+#     println("\nERROR: An error occurred.")
+#     showerror(stdout, e, catch_backtrace())
+#     println()
+# end
