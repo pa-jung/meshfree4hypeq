@@ -1,4 +1,4 @@
-include("../SimulationFunctions/runSystem1DSimulation.jl")
+include("../SimulationFunctions/runSystemSimulation.jl")
 
 # --- Example SimulationConfig for 1D Euler System ---
 euler_smooth_params = (
@@ -23,25 +23,25 @@ sim_config_euler1d_system = SimulationConfig(
         "CFL" => 0.2, "snapshots" => 11, 
         "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
         "init_func" => "eulerShockTube",
-        "system" => "euler", "sim_function" => "runSystem1DSimulation",
+        "PDE" => "euler1d", "sim_function" => "runSystemSimulation",
         #"init_params" => euler_smooth_params, 
         "init_params" => sod_euler_params, 
         "randomness_factor" => 0., 
-        "SEED" => SEED_value,
-        "relax_velocities" => [ (2.0, -2.0), (3.0, -3.0), (4.0, -4.0) ], # Pairs for rho, m, E kinetic components
+        "SEED" => SEED_value, "save_relax" => false, "weight_function" => "exponential",
+        "relax_velocities" => [ [2.0, -2.0], [3.0, -3.0], [4.0, -4.0] ], # Pairs for rho, m, E kinetic components
     ),
     MethodDict( 
-        "ARS222MUSCL2limiter" => ParamDict(
+        "ARS222MUSCL2(superbee)" => ParamDict(
             "timestepper" => "ARS222",
-            "main_gradient" => "MUSCLlimit", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
-            "main_flux" => "Rusanov",
+            "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
+            "main_flux" => "Rusanov", "limiter" => "superbee",
             "MOOD" => "none",
             "relax_epsilon" => 1e-6
         ),
-        "SimpleSplittingMUSCL2limiter" => ParamDict(
+        "SSMUSCL2(superbee)" => ParamDict(
             "timestepper" => "SimpleSplitting",
-            "main_gradient" => "MUSCLlimit", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
-            "main_flux" => "Rusanov",
+            "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
+            "main_flux" => "Rusanov", "limiter" => "superbee",
             "MOOD" => "none",
             "relax_epsilon" => 1e-6
         ),
@@ -116,8 +116,8 @@ sim_config_euler1d_system = SimulationConfig(
             "relax_epsilon" => 1e-6
         ),
         "Analytical Solution" => ParamDict(
-            "randomness_factor" => (:const,0.),
-            "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order", "relax_velocities"]
+            "timestepper" => "Analytic",
+            "ignore" => ["interp_range", "interp_alpha","weight_function", "randomness_factor", "SEED", "order", "relax_velocities"]
              # No randomness_factor needed when regular=true
         ),
         "Reference" => ParamDict(
@@ -129,15 +129,39 @@ sim_config_euler1d_system = SimulationConfig(
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
         )
     ),
-    ["Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2limiter", "ARS222MUSCL2MOOD", "SimpleSplittingMUSCL2limiter", "ARS222WENO2"]
+    ["Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(superbee)", "ARS222MUSCL2MOOD", "SSMUSCL2(superbee)", "ARS222WENO2"]
     #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 # To run:
 
-#show1DSolutionFig(sim_config_euler1d_system; ui_options = :publication) 
+show1DSolutionFig(sim_config_euler1d_system; ui_options = :default) 
 #showDynamicDependence(sim_config_euler1d_system; calc_stats = true)
 #showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
 # This will require show1DSolutionFig to be adapted to handle SimData1D.u as Vector{Matrix}
 # and use the component selector. For now, it will plot the first component (rho_macro).
-sim_config = create_sim_config_from_csv("numericalExperiments/Euler/ShockTubeSolution(uniform)/figures/euler_shocktube_limiter_uniform_params.csv","none")
-show1DSolutionFig(sim_config; ui_options = :publication) 
+#sim_config = create_sim_config_from_csv("numericalExperiments/Euler/ShockTubeSolution(uniform)/figures/euler_shocktube_limiter_uniform_params.csv","none")
+#show1DSolutionFig(sim_config; ui_options = :publication) 
+
+### Test
+
+params = ParamDict(
+        "tmax" => 0.2, "N" => 200, "bc" => :outflow,
+        "xmin" => -0.5, "xmax" => .5, 
+        "CFL" => 0.2, "snapshots" => 11, 
+        "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
+        "init_func" => "eulerShockTube",
+        "PDE" => "euler1d", "sim_function" => "runSystemSimulation",
+        #"init_params" => euler_smooth_params, 
+        "init_params" => sod_euler_params, 
+        "randomness_factor" => 0., "relax_epsilon" => 1e-6,
+        "SEED" => SEED_value, "save_relax" => false, "weight_function" => "exponential",
+        "relax_velocities" => [ [2.0, -2.0], [3.0, -3.0], [4.0, -4.0] ], # Pairs for rho, m, E kinetic components
+        "timestepper" => "ARS222",
+        "main_gradient" => "MUSCL",
+        "order" => 2,
+        "main_flux" => "Rusanov",
+        "MOOD" => "none",
+        #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
+    )
+
+#runSystemSimulation(params)

@@ -1,4 +1,4 @@
-include("../SimulationFunctions/runSystem2DSim.jl")
+include("../SimulationFunctions/runSystemSimulation.jl")
 
 function _relax_velocities(a::Float64, N::Int)
     res = []
@@ -39,7 +39,7 @@ end
 # Example SimulationConfig for 2D Linear Advection
 sim_config_2d = SimulationConfig(
     ParamDict(
-        "tmax" => 1., "Nx" => 30, "Ny" => 30,
+        "tmax" => 1., "Nx" => 15, "Ny" => 15,
         "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
         "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
         "interp_range" => 3.5,
@@ -49,10 +49,11 @@ sim_config_2d = SimulationConfig(
         "init_params" => implosionInit(),
         "bc" => :fixed_dirichlet,
         "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
-        "SEED_value" => 42,
-        "sim_function" => "runSystem2DSim", # Point to the 2D run function
+        "SEED" => 42,
+        "sim_function" => "runSystemSimulation", # Point to the 2D run function
         "PDE" => "euler2d",
-        "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6 
+        "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
+        "save_relax" => false, "weight_function" => "exponential"
         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
     ),
     MethodDict(
@@ -109,7 +110,7 @@ sim_config_2d = SimulationConfig(
 # --- How to run this with your IPlotPDESols package ---
 # You would now pass `sim_config_2d` to your plotting functions.
 # For example:
-#@profview show2DSolutionFig(sim_config_2d;)
+show2DSolutionFig(sim_config_2d;)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,1.)))
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
 
@@ -119,7 +120,9 @@ params = ParamDict(
         "tmax" => 1., "Nx" => 10, "Ny" => 10,
         "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
         "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
+        "save_relax" => false,
         "interp_range" => 3.5,
+        "weight_function" => "exponential",
         "init_func" => "q_riemann", # Use the new 2D function name
         #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
         #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
@@ -127,7 +130,7 @@ params = ParamDict(
         "bc" => :fixed_dirichlet,
         "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
         "SEED_value" => 42,
-        "sim_function" => "runSystem2DSim", # Point to the 2D run function
+        "sim_function" => "runSystemSimulation", # Point to the 2D run function
         "PDE" => "euler2d",
         "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
         "timestepper" => "ARS222",
@@ -139,7 +142,7 @@ params = ParamDict(
     )
 
 #@profview runSystem2DSim(params);
-
+#runSystemSimulation(params);
 #using Test # You might need to run `using Pkg; Pkg.add("Test")` if not in a test environment.
 
 # Assume your modules are loaded, e.g.:

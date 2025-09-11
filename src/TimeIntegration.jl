@@ -9,7 +9,7 @@ using ..Interpolations
 using ..SourceTerms
 using ..ImplicitSolvers
 
-export mainTimeIntegrator!, mainTimeIntegrator2!
+export mainTimeIntegrator!, mainTimeIntegratorNew!
 
 """
     TimeStepper
@@ -23,7 +23,7 @@ abstract type MeshfreeTimeStepper <: TimeStepper end
 abstract type FixedGridTimeStepper <: TimeStepper end
 abstract type MeshfreeSystemTimeStepper <: MeshfreeTimeStepper end
 
-function (method::TimeStepper)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (method::TimeStepper)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     error("Each `TimeStepper' must override the ()-operator.")
 end
 
@@ -59,7 +59,7 @@ include("MeshfreeSystemTimeSteppers.jl")
 This method performs that actual time integration. Provided with a timeStepper, equation, an initialized grid and simulation settings, it will perform
 time integration.
 """
-function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting)
+function mainTimeIntegrator!(timeStepper::TimeStepper, eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting)
 
     if !particleGrid.regular
         @assert timeStepper isa MeshfreeTimeStepper "Must use a MeshfreeTimeStepper for unstructured grids."
@@ -101,7 +101,7 @@ This version uses the format required for the IPlotPDESols package. It will save
 Note that the usage differs from the function above: It does not save the grid! Instead the complete simulation data is returned.
 This allows us to use the mainTimeIntegrator inside of the defining function for the simulationConfig!
 """
-# function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicEquation{D}, particleGrid::ParticleGrid, settings::SimSetting) where {D}
+# function mainTimeIntegrator2!(timeStepper::TimeStepper, eq::ScalarHyperbolicPDE{D}, particleGrid::ParticleGrid, settings::SimSetting) where {D}
     
 #     if !particleGrid.regular
 #         @assert timeStepper isa MeshfreeTimeStepper "Must use a MeshfreeTimeStepper for unstructured grids."
@@ -229,7 +229,7 @@ This allows us to use the mainTimeIntegrator inside of the defining function for
 
 # function mainTimeIntegrator2!(
 #     system_timestepper::TimeStepper, 
-#     system_eq::Vector{T} where T <: ScalarHyperbolicEquation, # Your system equation type
+#     system_eq::Vector{T} where T <: ScalarHyperbolicPDE, # Your system equation type
 #     system_pg::Vector{T} where T <: ParticleGrid,
 #     settings::SimSetting 
 # )
@@ -373,10 +373,10 @@ Optimized main time integrator for a SYSTEM of equations, using Tuples for perfo
 """
 function mainTimeIntegratorNew!(
     system_timestepper::TimeStepper, 
-    system_eqs::Tuple{Vararg{<:ScalarHyperbolicPDE}},
-    system_pgs::Tuple{Vararg{<:ParticleGrid}},
+    system_eqs::DiagonalHyperbolicSystem{N,D},
+    system_pgs::ParticleGridSystem{N},
     settings::SimSetting 
-)
+) where {N,D}
     # --- Initialization ---
     for pg in system_pgs
         updateNeighbours!(pg, settings.interpRange)

@@ -69,13 +69,11 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
 
         # --- 2. Define Macroscopic System Physics ---
         local N_macro_vars::Int
-        local system_eq::HyperbolicSystem
-        local flux_funcs::Vector{Function}
+        local system_eq::HyperbolicPDESystem
 
         if system_name == "euler1d" # This runner can also do 1D systems if needed
             system_eq = Euler1D()
             N_macro_vars = 3 # rho, m, E
-            flux_funcs = [ (U...) -> flux(system_eq, U...)[i] for i in 1:N_macro_vars ]
         elseif system_name == "euler2d"
              # For 2D, we assume a simple splitting of fluxes for this general model
             system_eq = Euler2D()
@@ -150,7 +148,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
             end
         end
         source_term = RelaxationSourceTerm(M_funcs, relax_eps, kinetic_to_macro_map)
-
+        kinetic_eqs = Tuple(kinetic_eqs)
         # --- 4. Grid & Initial Condition Setup ---
         N_ghost = bc == :periodic ? 0 : ceil(Int, interp_range_factor) + 1
         rng = MersenneTwister(seed_val)
@@ -163,7 +161,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
         IC = getInitialCondition(initFunc_name, init_params)
         macro_ic_at_points = [IC(p.pos...) for p in particleGrid_template.grid]
 
-        particleGrids = [deepcopy(particleGrid_template) for _ in 1:N_total_kinetic]
+        particleGrids = ntuple(N_total_kinetic) do _ deepcopy(particleGrid_template) end
         for k in 1:N_total_kinetic
             for p_idx in 1:length(particleGrids[k].grid)
                 particleGrids[k].grid[p_idx].rho = M_funcs[k](macro_ic_at_points[p_idx])
@@ -213,7 +211,7 @@ function runSystem2DSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
                         else error("Unknown TimeStepper name for system: '$timestepper_name'") end
 
         # --- 7. Run Simulation ---
-        elapsed_time, _, sys_us_kinetic, ts = mainTimeIntegrator2!(system_method, kinetic_eqs, particleGrids, settings)
+        elapsed_time, _, sys_us_kinetic, ts = mainTimeIntegratorNew!(system_method, kinetic_eqs, particleGrids, settings)
         @info "2D System integration finished in $(round(elapsed_time, digits=2)) seconds."
 
         # --- 8. Post-process & Return (CORRECTED) ---

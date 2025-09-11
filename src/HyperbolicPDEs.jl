@@ -1,8 +1,8 @@
 module HyperbolicPDEs
 
-export ScalarHyperbolicEquation, LinearAdvection, BurgersEquation, BurgersEquation2D,
-       velocity, flux, HyperbolicSystem, Euler1D, Euler2D, pressure_from_euler_conserved,
-       HyperbolicPDE, n_dimensions
+export ScalarHyperbolicPDE, LinearAdvection, BurgersEquation, BurgersEquation2D,
+       velocity, flux, HyperbolicPDESystem, Euler1D, Euler2D, pressure_from_euler_conserved,
+       HyperbolicPDE, n_dimensions, DiagonalHyperbolicSystem
 
 # A PDE in D dimensions with N variables.
 abstract type HyperbolicPDE{D, N} end
@@ -11,7 +11,7 @@ abstract type HyperbolicPDE{D, N} end
 abstract type ScalarHyperbolicPDE{D} <: HyperbolicPDE{D, 1} end
 
 # A helper for systems of PDEs
-abstract type SystemHyperbolicPDE{D, N} <: HyperbolicPDE{D, N} end
+abstract type HyperbolicPDESystem{D, N} <: HyperbolicPDE{D, N} end
 
 const DiagonalHyperbolicSystem{N, D} = NTuple{N, <:ScalarHyperbolicPDE{D}}
 
@@ -22,7 +22,7 @@ n_dimensions(::HyperbolicPDE{D, N}) where {D, N} = D
 # --- Scalar Equation Examples --- #
 #----------------------------------#
 
-struct LinearAdvection{D} <: ScalarHyperbolicPDE{D}
+struct LinearAdvection{D} <: ScalarHyperbolicPDE{D} 
     vel::NTuple{D, Float64} # Store velocity as a tuple of length D
 end
 
@@ -39,6 +39,7 @@ LinearAdvection(vel::Tuple{<:Real, <:Real}) = LinearAdvection{2}(Float64.(vel))
 
 # Use broadcasting (`.*`) to create one `flux` method for any dimension D
 @inline flux(eq::LinearAdvection{D}, u::Float64) where {D} = eq.vel .* u
+@inline flux(eq::LinearAdvection{1}, u::Float64) = eq.vel[1] * u
 
 
 struct BurgersEquation <: ScalarHyperbolicPDE{1} end
@@ -57,7 +58,7 @@ struct BurgersEquation2D <: ScalarHyperbolicPDE{2} end
 const GAS_GAMMA_EULER = 1.4 # --- REFINEMENT 2: Use a single constant ---
 
 # --- 1D Euler Equations ---
-struct Euler1D <: SystemHyperbolicPDE{1, 3} end
+struct Euler1D <: HyperbolicPDESystem{1, 3} end
 
 function pressure_from_euler_conserved(rho::Float64, m::Float64, E::Float64)::Float64
     if rho < 1e-9; return 1e-9; end
@@ -75,7 +76,7 @@ end
 
 
 # --- 2D Euler Equations ---
-struct Euler2D <: SystemHyperbolicPDE{2, 4} end
+struct Euler2D <: HyperbolicPDESystem{2, 4} end
 
 function pressure_from_euler_conserved(U::NTuple{4, Float64})::Float64
     rho, mx, my, E = U

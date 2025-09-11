@@ -4,18 +4,19 @@ export RelaxationStepper, ARS2IMEX, GeneralIMEXTimeStepper, ARS233, PareschiRuss
 
 include("ButcherTableaus.jl")
 
-function (ts::TimeStepper)(eqs::Vector{<:ScalarHyperbolicEquation}, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real)
+function (ts::TimeStepper)(eqs::DiagonalHyperbolicSystem{N,D}, particleGrids::ParticleGridSystem{N}, settings::SimSetting, time::Real, dt::Real) where {N,D}
     @warn "No dedicated system timestepper found. System will be treated independently using the given scalar timestepper."
     for (i,particleGrid) = enumerate(particleGrids)
         ts(eqs[i], particleGrid, settings, time, dt)
     end
 end
 
-function (ts::TimeStepper)(eq::ScalarHyperbolicEquation, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting, time::Real, dt::Real)
+function (ts::TimeStepper)(eq::ScalarHyperbolicPDE{D}, particleGrids::ParticleGridSystem{N}, settings::SimSetting, time::Real, dt::Real) where {N,D}
     @warn "Only one scalar hyperbolic equation for a system is found. The scalar equation will be used for all components!"
     ts([eq for _ = eachindex(particleGrids)], particleGrids, settings, time, dt)
 end
 
+# Deprecated, use Simple Splitting
 struct RelaxationStepper <: MeshfreeSystemTimeStepper
     timestepper::TimeStepper
     M::Vector{T} where T <: Function
@@ -49,7 +50,7 @@ end
 # In your TimeIntegration.jl or a similar module
 
 # Ensure all necessary types are accessible via `using` statements
-# using ..ParticleGrids, ..SimSettings, ..ScalarHyperbolicEquations, ..SourceTerms
+# using ..ParticleGrids, ..SimSettings, ..ScalarHyperbolicPDEs, ..SourceTerms
 
 """
     SimpleSplitting <: MeshfreeSystemTimeStepper
@@ -82,7 +83,7 @@ struct SimpleSplitting{T <: TimeStepper, S <: AbstractSourceTerm} <: MeshfreeSys
     end
 end
 
-function initTimeStepper(method::SimpleSplitting, particleGrids::Vector{<:ParticleGrid}, settings::SimSetting)
+function initTimeStepper(method::SimpleSplitting, particleGrids::ParticleGridSystem{N}, settings::SimSetting) where {N}
     # Initialize the underlying scalar timestepper for each component grid
     # (This assumes the initTimeStepper for the scalar method is defined)
     for pg in particleGrids
@@ -96,12 +97,12 @@ end
 Functor for the SimpleSplitting timestepper.
 """
 function (ss::SimpleSplitting)(
-    eqs::Vector{<:LinearAdvection{D}}, # The kinetic equations
-    particleGrids::Vector{<:ParticleGrid}, 
+    eqs::DiagonalHyperbolicSystem{N,D}, # The kinetic equations
+    particleGrids::ParticleGridSystem{N}, 
     settings::SimSetting, 
     time::Real, 
     dt::Real
-) where {D}
+) where {N,D}
     # --- 1. Advection Step ---
     # Apply the scalar timestepper to each kinetic component grid.
     # This updates the .rho field of each particle to the post-advection state v_k^*.
@@ -143,7 +144,7 @@ function (ss::SimpleSplitting)(
             U_macro_star_at_p = NTuple{rs.num_macro_variables, Float64}(ss.macro_state_buffer[p_idx, i] for i in 1:rs.num_macro_variables)
 
             # Evaluate the Maxwellian by splatting the macroscopic state tuple
-            equilibrium_val_k = maxwellian_func_k(U_macro_star_at_p...)
+            equilibrium_val_k = maxwellian_func_k(U_macro_star_at_p)
             
             # Update particle.rho to the final state v_k^{n+1}
             particle.rho = coeff_ep * v_k_star_at_p + coeff_dt * equilibrium_val_k
@@ -159,13 +160,13 @@ function compute_explicit_tendency_with_mood!(
     gradientInterpolator::Interpolations.GradientInterpolator, # Added Interpolations.
     fallbackInterpolator::Union{Interpolations.GradientInterpolator, Nothing}, # Added Interpolations.
     mood_criterion::MOODCriterion, # Assuming MOODCriterion is defined and imported
-    scalar_equations::Vector{<:ScalarHyperbolicEquation{D}}, # Added ScalarHyperbolicEquations.
-    component_grids::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.
+    scalar_equations::DiagonalHyperbolicSystem{N,D}, # Added ScalarHyperbolicPDEs.
+    component_grids::ParticleGridSystem{N}, # Added ParticleGrids.
     settings::SimSettings.SimSetting, # Added SimSettings.
     dt_for_mood_check::Real,
     is_first_mood_stage_in_rk::Bool,
     interior_indices::AbstractVector{Int64}
-) where {D}
+) where {N,D}
     N_particles = size(U_state_sys, 1)
     N_components = length(scalar_equations)
 
@@ -205,177 +206,6 @@ function compute_explicit_tendency_with_mood!(
         for p_idx_cv in interior_indices; scalar_grid_k.grid[p_idx_cv].rho = temp_rho_backup_k[p_idx_cv]; end
     end
 end
-
-# DEPRECATED, use general time stepper
-# --- ARS2IMEX Time Stepper Struct ---
-struct ARS2IMEX{
-    G1 <: GradientInterpolator, # Added Interpolations.
-    G2 <: Union{GradientInterpolator, Nothing}, # Added Interpolations.
-    M <: MOODCriterion, # Assuming MOODCriterion is defined
-    IS <: AbstractImplicitSolver # Added ImplicitSolvers.
-} <: TimeStepper # Added 
-
-    gradientInterpolator::G1
-    fallbackInterpolator::G2 
-    mood::M
-    implicit_solver::IS
-    source_term::AbstractSourceTerm
-
-    U_n_sys::Matrix{Float64}
-    U_stage1_sys::Matrix{Float64} 
-    U_stage2_sys::Matrix{Float64} 
-    U_temp_sys::Matrix{Float64}   
-    K_E1_sys::Matrix{Float64}     
-    K_E2_sys::Matrix{Float64}     
-    S_U_stage1_sys::Matrix{Float64} 
-    S_U_stage2_sys::Matrix{Float64} 
-    gamma_ars::Float64 
-
-    function ARS2IMEX(
-            gradientInterpolator::G1, 
-            fallbackInterpolator::G2,
-            mood::M,
-            implicit_solver::IS, 
-            source::AbstractSourceTerm,
-            N_particles::Int, 
-            N_components::Int;
-            gamma_val::Float64 = 1.0 - 1.0 / sqrt(2.0)
-        ) where {G1 <: Interpolations.GradientInterpolator, G2 <: Union{Interpolations.GradientInterpolator, Nothing}, M <: MOODCriterion, IS <: ImplicitSolvers.AbstractImplicitSolver} # Added Scopes
-        
-        
-        new{G1,G2,M,IS}(
-            gradientInterpolator, fallbackInterpolator, mood, implicit_solver, source,
-            zeros(N_particles, N_components), zeros(N_particles, N_components),
-            zeros(N_particles, N_components), zeros(N_particles, N_components),
-            zeros(N_particles, N_components), zeros(N_particles, N_components),
-            zeros(N_particles, N_components), zeros(N_particles, N_components),
-            gamma_val
-        )
-    end
-end
-
-function initTimeStepper(
-    ars2::ARS2IMEX,
-    system_pg::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.
-    settings::SimSettings.SimSetting # Added SimSettings.
-)
-    if isempty(system_pg) return end
-    for k_comp in 1:length(system_pg)
-        scalar_grid_k = system_pg[k_comp]
-        initTimeStep(ars2.gradientInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
-        if !isnothing(ars2.fallbackInterpolator)
-            initTimeStep(ars2.fallbackInterpolator, scalar_grid_k, settings.interpAlpha, settings.interpRange)
-        end
-    end
-end
-
-function (ars2::ARS2IMEX)(
-        scalar_equations::Vector{<:ScalarHyperbolicEquation}, # Added ScalarHyperbolicEquations.
-        system_pg::Vector{<:ParticleGrids.ParticleGrid}, # Added ParticleGrids.                       
-        settings::SimSetting, # Added SimSettings.
-        time_n::Real, 
-        dt::Real
-    )
-
-    N_particles = length(system_pg[1].grid) 
-    N_components = length(scalar_equations)
-    gamma = ars2.gamma_ars
-
-    if size(ars2.U_n_sys) != (N_particles, N_components)
-        error("ARS2IMEX buffers not sized correctly. Expected ($(N_particles)x$(N_components)), got $(size(ars2.U_n_sys)). Re-initialize ARS2IMEX instance if N changes.")
-    end
-
-    for k_comp in 1:N_components
-        for p_idx in interior_indices
-            ars2.U_n_sys[p_idx, k_comp] = system_pg[k_comp].grid[p_idx].rho
-        end
-    end
-
-    time_s1_implicit_eval = time_n + dt * gamma
-    ars2.U_stage1_sys .= ars2.U_n_sys 
-    
-    u_particle_iter_buffer = Vector{Float64}(undef, N_components)
-    rhs_const_buffer       = Vector{Float64}(undef, N_components)
-
-    for p_idx in interior_indices
-        particle_pos = system_pg[1].grid[p_idx].pos 
-        u_particle_iter_buffer .= @view ars2.U_n_sys[p_idx, :] 
-        rhs_const_buffer       .= @view ars2.U_n_sys[p_idx, :] 
-        
-        solve!(ars2.implicit_solver, # Added ImplicitSolvers.
-            u_particle_iter_buffer, rhs_const_buffer, dt * gamma,
-            ars2.source_term, particle_pos, time_s1_implicit_eval, N_components
-        )
-        ars2.U_stage1_sys[p_idx, :] .= u_particle_iter_buffer
-    end
-
-    for p_idx in interior_indices
-        particle_pos = system_pg[1].grid[p_idx].pos
-        u_stage1_p_view = @view ars2.U_stage1_sys[p_idx, :]
-        s_u_stage1_p_view = @view ars2.S_U_stage1_sys[p_idx, :]
-        ars2.source_term(s_u_stage1_p_view, u_stage1_p_view, particle_pos, time_s1_implicit_eval)
-    end
-    
-    compute_explicit_tendency_with_mood!(
-        ars2.K_E1_sys, ars2.U_n_sys, 
-        ars2.gradientInterpolator, ars2.fallbackInterpolator, ars2.mood,
-        scalar_equations, system_pg, settings, dt, true 
-    )
-
-    for p_idx in interior_indices
-        for k_comp in 1:N_components
-            ars2.U_temp_sys[p_idx, k_comp] = ars2.U_n_sys[p_idx, k_comp] + 
-                                            dt * (1.0 - 2.0*gamma) * ars2.K_E1_sys[p_idx, k_comp] +
-                                            dt * gamma * ars2.S_U_stage1_sys[p_idx, k_comp]
-        end
-    end
-
-    time_s2_implicit_eval = time_n + dt 
-    ars2.U_stage2_sys .= ars2.U_temp_sys
-
-    for p_idx in interior_indices
-        particle_pos = system_pg[1].grid[p_idx].pos
-        u_particle_iter_buffer .= @view ars2.U_temp_sys[p_idx, :]
-        rhs_const_s2_view = @view ars2.U_temp_sys[p_idx, :]
-        
-        ImplicitSolvers.solve!(ars2.implicit_solver, # Added ImplicitSolvers.
-            u_particle_iter_buffer, rhs_const_s2_view, dt * gamma,
-            ars2.source_term, particle_pos, time_s2_implicit_eval, N_components
-        )
-        ars2.U_stage2_sys[p_idx, :] .= u_particle_iter_buffer
-    end
-
-    for p_idx in interior_indices
-        particle_pos = system_pg[1].grid[p_idx].pos
-        u_stage2_p_view = @view ars2.U_stage2_sys[p_idx, :]
-        s_u_stage2_p_view = @view ars2.S_U_stage2_sys[p_idx, :]
-        ars2.source_term(s_u_stage2_p_view, u_stage2_p_view, particle_pos, time_s2_implicit_eval)
-    end
-
-    compute_explicit_tendency_with_mood!(
-        ars2.K_E2_sys, ars2.U_stage1_sys, 
-        ars2.gradientInterpolator, ars2.fallbackInterpolator, ars2.mood,
-        scalar_equations, system_pg, settings, dt, false
-    )
-
-    for p_idx in interior_indices
-        for k_comp in 1:N_components
-            u_np1_k_p = ars2.U_n_sys[p_idx, k_comp] + 
-                        0.5 * dt * (ars2.K_E1_sys[p_idx, k_comp] + ars2.K_E2_sys[p_idx, k_comp]) +
-                        0.5 * dt * (ars2.S_U_stage1_sys[p_idx, k_comp] + ars2.S_U_stage2_sys[p_idx, k_comp])
-            system_pg[k_comp].grid[p_idx].rho = u_np1_k_p
-        end
-    end
-    
-    for k_comp in 1:N_components
-        for p_obj in system_pg[k_comp].grid
-            p_obj.moodEvent = false 
-        end
-    end
-end
-
-
-
 
 # --- GeneralIMEXTimeStepper Struct ---
 struct GeneralIMEXTimeStepper{
@@ -437,9 +267,9 @@ end
 # initTimeStepper for GeneralIMEXTimeStepper (for geometric precomputations of interpolators)
 function initTimeStepper(
     imex_ts::GeneralIMEXTimeStepper,
-    system_pg::Vector{<:ParticleGrids.ParticleGrid}, # Vector of ParticleGrid (1D or 2D)
+    system_pg::ParticleGridSystem{N}, # Vector of ParticleGrid (1D or 2D)
     settings::SimSettings.SimSetting
-)
+) where {N}
     if isempty(system_pg) return end
     # For each component's grid, call the standard initTimeStep (without fVec)
     # for the interpolators. This is for purely geometric setup.
@@ -458,8 +288,8 @@ end
 
 # Add ALL type parameters from the struct definition to the function signature
 function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
-        scalar_equations::Vector{<:ScalarHyperbolicEquation},
-        system_pg::Vector{<:ParticleGrids.ParticleGrid},
+        scalar_equations::DiagonalHyperbolicSystem{N,D},
+        system_pg::ParticleGridSystem{N},
         settings::SimSettings.SimSetting,
         time_n::Real,
         dt::Real
@@ -470,7 +300,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         M <: MOODCriterion,
         IS <: ImplicitSolvers.AbstractImplicitSolver,
         ST_OBJ <: SourceTerms.AbstractSourceTerm,
-        BT <: IMEXButcherTableau
+        BT <: IMEXButcherTableau, N,D
     }
 
     interior_indices = system_pg[1].interior_indices
@@ -666,9 +496,9 @@ end
 # initTimeStepper for GeneralIMEXTimeStepper (for geometric precomputations of interpolators)
 function initTimeStepper(
     imex_ts::GeneralIMEXTimeStepperS,
-    system_pg::Vector{<:ParticleGrids.ParticleGrid}, # Vector of ParticleGrid (1D or 2D)
+    system_pg::ParticleGridSystem{N}, # Vector of ParticleGrid (1D or 2D)
     settings::SimSettings.SimSetting
-)
+) where {N}
     if isempty(system_pg) return end
     # For each component's grid, call the standard initTimeStep (without fVec)
     # for the interpolators. This is for purely geometric setup.
@@ -685,12 +515,12 @@ end
 
 # --- Corrected Functor for GeneralIMEXTimeStepper ---
 function (imex_ts::GeneralIMEXTimeStepperS)(
-        scalar_equations::Vector{<:ScalarHyperbolicEquation},
-        system_pg::Vector{<:ParticleGrids.ParticleGrid},
+        scalar_equations::DiagonalHyperbolicSystem{N,D},
+        system_pg::ParticleGridSystem{N},
         settings::SimSettings.SimSetting,
         time_n::Real,
         dt::Real
-    )
+    ) where {N,D}
 
     interior_indices = system_pg[1].interior_indices
     N_total_particles = length(system_pg[1].grid)
@@ -833,7 +663,7 @@ end
 
 # # --- REVISED Functor for GeneralIMEXTimeStepper (Explicit-First Logic) ---
 # function (imex_ts::GeneralIMEXTimeStepper)(
-#         scalar_equations::Vector{<:ScalarHyperbolicEquations.ScalarHyperbolicEquation},
+#         scalar_equations::Vector{<:ScalarHyperbolicPDEs.ScalarHyperbolicPDE},
 #         system_pg::Vector{<:ParticleGrids.ParticleGrid},
 #         settings::SimSettings.SimSetting,
 #         time_n::Real,

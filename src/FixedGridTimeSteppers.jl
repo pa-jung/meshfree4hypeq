@@ -36,7 +36,7 @@ struct LaxFriedrich <: FixedGridTimeStepper
     end
 end
 
-function (lf::LaxFriedrich)(eq::ScalarHyperbolicEquation{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+function (lf::LaxFriedrich)(eq::ScalarHyperbolicPDE{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
     map!(particle -> particle.rho, lf.rhoOld, particleGrid.grid)
     λ = dt/(2*particleGrid.dx)
     for i in 2:particleGrid.N-1
@@ -153,7 +153,7 @@ struct ClassicalRK2LWTimeStepper <: FixedGridTimeStepper
     end
 end
 
-function (crk2::ClassicalRK2LWTimeStepper)(eq::ScalarHyperbolicEquation{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+function (crk2::ClassicalRK2LWTimeStepper)(eq::ScalarHyperbolicPDE{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
     map!(particle -> particle.rho, crk2.rhoOld, particleGrid.grid)
     N = particleGrid.N
     dx = particleGrid.dx
@@ -238,7 +238,7 @@ function initTimeStepper(cts_mood::ClassicalRichtmyerLWMOOD, particleGrid::Parti
 end
 
 function (cts_mood::ClassicalRichtmyerLWMOOD)(
-    eq::ScalarHyperbolicEquation{1}, 
+    eq::ScalarHyperbolicPDE{1}, 
     particleGrid::ParticleGrid1D, 
     settings::SimSetting, 
     time::Real, 

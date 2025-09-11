@@ -26,7 +26,7 @@ function runSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
         tmax::Float64 = run_params["tmax"]
         N_particles::Int = run_params["N"]
         bc::Symbol = run_params["bc"]
-        system_name::String = run_params["system"]
+        system_name::String = run_params["PDE"]
 
         xmin = run_params["xmin"]
         xmax = run_params["xmax"]
@@ -56,6 +56,7 @@ function runSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
         # Check for Euler
         @assert system_name == "euler" "Only Euler system supported so far!"
         system = Euler1D()
+        N_macro_vars = 3
 
         # Relaxation Velocities: Vector of Tuples, one pair for each macro var
         relax_velocities_config = get(run_params,"relax_velocities", nothing)
@@ -143,6 +144,8 @@ function runSystem1DSimulation(params::ParamDictType)::Union{AbstractSimData, No
             # --- REFINED: Setup for Kinetic System using relax_velocities_config ---
             num_kinetic_components_per_macro_var = [length(speed_group) for speed_group in relax_velocities_config]
             N_total_kinetic_components = sum(num_kinetic_components_per_macro_var)
+            kinetic_eqs = Vector{LinearAdvection{2}}(undef, N_total_kinetic)
+            M_funcs = Vector{MaxwellianFunctor}(undef, N_total_kinetic)
 
             kinetic_to_macro_map = Vector{Vector{Int}}(undef, N_macro_vars)
             current_kinetic_idx_offset = 0

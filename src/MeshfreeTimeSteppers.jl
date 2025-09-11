@@ -255,7 +255,7 @@ struct EulerUpwind <: MeshfreeTimeStepper
     end
 end
 
-function (euler::EulerUpwind)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (euler::EulerUpwind)(eq::ScalarHyperbolicPDE{D}, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {D}
     map!(particle -> particle.rho, euler.rhoOld, particleGrid.grid)
     initTimeStep(euler.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
     for (particleIndex, particle) in enumerate(particleGrid.grid)
@@ -282,7 +282,7 @@ end
 #     end
 # end
 
-# function (euler::EulerUpwindMood)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+# function (euler::EulerUpwindMood)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
 #     map!(particle -> particle.rho, euler.rhoOld, particleGrid.grid)
 #     initTimeStep(euler.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
 #     for (particleIndex, particle) in enumerate(particleGrid.grid)
@@ -319,7 +319,7 @@ function initTimeStepper(rk3::RK3, particleGrid::ParticleGrid, settings::SimSett
     end  # In case the fallbackInterpolator also starts populating the particle.alfaij fields, unpredictable things will start to happen.
 end
 
-function (rk3::RK3)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (rk3::RK3)(eq::ScalarHyperbolicPDE{D}, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {D}
     # Fill stage 1
     map!(particle -> particle.rho, rk3.rhoInit, particleGrid.grid)
     copyCurvatures!(particleGrid)
@@ -397,7 +397,7 @@ function initTimeStepper(rk4::RK4, particleGrid::ParticleGrid, settings::SimSett
     end
 end
 
-function (rk4::RK4)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (rk4::RK4)(eq::ScalarHyperbolicPDE{D}, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {D}
     # Fill stage 1
     map!(particle -> particle.rho, rk4.rhoInit, particleGrid.grid)    
     copyCurvatures!(particleGrid)
@@ -478,7 +478,7 @@ struct RalstonRK2{G1 <: GradientInterpolator, G2 <: Union{GradientInterpolator, 
     end
 end
 
-function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE{D}, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {D}
     # First stage
     initTimeStep(ralston.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
     if !isnothing(ralston.fallbackInterpolator)
@@ -514,7 +514,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::Parti
 end
 
 # # Alternative MOOD implementation with full RK1 fallback
-# function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+# function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
 #     # First stage
 #     map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
 #     copyCurvatures!(particleGrid)
@@ -559,7 +559,7 @@ function initTimeStepper(ralston::RalstonRK2SmoothSwitch, particleGrid::Particle
     initTimeStep(ralston.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
     initTimeStep(ralston.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)  # In case the fallbackInterpolator also starts populating the particle.alfaij fields, unpredictable things will start to happen.
 end
-function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicPDE{D}, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {D}
     # # First stage
     # map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid)
     # copyCurvatures!(particleGrid)
@@ -634,7 +634,7 @@ function initTimeStepper(ralston::RalstonRK2SmoothSwitch2, particleGrid::Particl
     initTimeStep(ralston.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)  # In case the fallbackInterpolator also starts populating the particle.alfaij fields, unpredictable things will start to happen.
 end
 
-function (ralston::RalstonRK2SmoothSwitch2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (ralston::RalstonRK2SmoothSwitch2)(eq::ScalarHyperbolicPDE{D}, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {D}
     
     
     target_mass = 0.
@@ -695,7 +695,7 @@ function (ralston::RalstonRK2SmoothSwitch2)(eq::ScalarHyperbolicEquation, partic
     end
 end
 # # Assume RalstonRK2SmoothSwitch is the type, though function signature uses RalstonRK2
-# function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+# function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
 #     # --- Stage 1: Calculate k1 and intermediate u* ---
 #     map!(particle -> particle.rho, ralston.rhoInit, particleGrid.grid) # Store u_n
 #     copyCurvatures!(particleGrid) # For MOOD check or high-order interpolator based on u_n
@@ -822,7 +822,7 @@ end
 # (Keep the original RalstonRK2 struct definition with fallbackInterpolator and mood)
 
 # Replace the function (ralston::RalstonRK2)(...) with this conservative MOOD version:
-# function (ralston::RalstonRK2)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+# function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
 #     N = length(particleGrid.grid)
 #     # Temporary storage for high-order tendencies at each stage
 #     k1_high = Vector{Float64}(undef, N)
@@ -959,7 +959,7 @@ end
 
 
 # Functor for RalstonRK2Limiter
-function (limiter_rk2::RalstonRK2Limiter)(eq::ScalarHyperbolicEquation, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+function (limiter_rk2::RalstonRK2Limiter)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = length(particleGrid.grid)
     # Temporary storage for k2 (tendency from stage 2)
     div2 = Vector{Float64}(undef, N)

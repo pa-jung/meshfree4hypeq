@@ -9,14 +9,14 @@ abstract type NumericalFluxFunction end;
 # ---------- RusanovFlux (LLF)
 struct RusanovFlux <: NumericalFluxFunction end
 
-function (rusanov::RusanovFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation{D})::Real where {D}
+function (rusanov::RusanovFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicPDE{D})::Real where {D}
     leftFlux = flux(eq, leftState)
     rightFlux = flux(eq, rightState)
     s = max(abs(velocity(eq, leftState)), abs(velocity(eq, rightState)))
     return 0.5*(leftFlux + rightFlux - s*(rightState - leftState))
 end
 
-function (rusanov::RusanovFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation{D}, ind::Int)::Real where {D} # In case of 2D, select correct velocity (1 for x, 2 for y)
+function (rusanov::RusanovFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicPDE{D}, ind::Int)::Real where {D} # In case of 2D, select correct velocity (1 for x, 2 for y)
     leftFlux = flux(eq, leftState)
     rightFlux = flux(eq, rightState) 
     a_l = velocity(eq, leftState)
@@ -28,14 +28,14 @@ end
 # ---------- UpwindFlux
 struct UpwindFlux <: NumericalFluxFunction end
 
-function (upwind::UpwindFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation{D}) where {D} 
+function (upwind::UpwindFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicPDE{D}) where {D} 
     leftFlux = flux(eq, leftState)
     rightFlux = flux(eq, rightState)
     a = leftState == rightState ?  velocity(eq, leftState) : (leftFlux - rightFlux)/(leftState - rightState)
     return 0.5*(leftFlux + rightFlux - abs(a)*(rightState - leftState))
 end
 
-function (upwind::UpwindFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation{D}, ind::Int) where {D} 
+function (upwind::UpwindFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicPDE{D}, ind::Int) where {D} 
     leftFlux = flux(eq, leftState)
     rightFlux = flux(eq, rightState)
     a = leftState == rightState ?  velocity(eq, leftState)[ind] : (leftFlux[ind] - rightFlux[ind])/(leftState - rightState)
@@ -45,7 +45,7 @@ end
 #--------------- RoeDiffusiveFlux (Lax Wendroff without λ scaling)
 struct RoeDiffusiveFlux <: NumericalFluxFunction end
 
-function (lw::RoeDiffusiveFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicEquation{D})::Real where {D}
+function (lw::RoeDiffusiveFlux)(leftState::Real, rightState::Real, eq::ScalarHyperbolicPDE{D})::Real where {D}
     F_L = flux(eq, leftState)
     F_R = flux(eq, rightState)
     

@@ -13,8 +13,11 @@ using ..SimSettings
 using ..HyperbolicPDEs
 import Meshfree4ScalarEq
 
-export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, getPeriodicDistance, saveGrid, plotDensity, animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!
-export gridToLinearIndex, linearIndexToGrid, findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, determineVolumes!, getDistance, apply_boundary_conditions!
+export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, getPeriodicDistance, saveGrid, plotDensity, 
+       animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
+       findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, 
+       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem
+
 
 
 """
@@ -82,6 +85,8 @@ end
 
 
 abstract type ParticleGrid end
+const ParticleGridSystem{N} = NTuple{N,<:ParticleGrid}
+
 
 struct ParticleGrid1D <: ParticleGrid
     grid::Vector{Particle1D}  # Vector containing Particle objects
@@ -256,6 +261,7 @@ struct ParticleGrid2D <: ParticleGrid
     regular::Bool
     bc::Symbol
     interior_indices::Vector{Int}
+    voxel_map::Dict{Int, Vector{Int}}
     temp::Matrix{Float64}
 
 # --- MODIFIED: Updated periodic constructor to match new struct definition ---
@@ -272,7 +278,7 @@ function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx::Inte
         grid[index] = Particle2D((posX, posY), 0.0, false)
     end
     regular = (randomness[1] == 0.0) && (randomness[2] == 0.0)
-
+    voxel_map = Dict{Int, Vector{Int}}()
     points = [p.pos for p in grid]
     bounding_box = (xmin - dx, xmax + dx, ymin - dy, ymax + dy)
     vols = calculate_voronoi_volumes_2d(points, bounding_box...)
@@ -281,7 +287,7 @@ function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx::Inte
     # For periodic grids, all particles are interior
     interior_indices = collect(1:(Nx*Ny))
 
-    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Int64(Nx), Int64(Ny), 0, dx, dy, regular, :periodic, interior_indices, zeros(Nx*Ny, 2))
+    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Int64(Nx), Int64(Ny), 0, dx, dy, regular, :periodic, interior_indices, voxel_map, zeros(Nx*Ny, 2))
 end
 
 # --- NEW: Constructor for 2D grids with boundary conditions ---
@@ -302,6 +308,7 @@ function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx_inter
     
     grid = Vector{Particle2D}(undef, Nx_total * Ny_total)
     interior_indices = Int[]
+    voxel_map = Dict{Int, Vector{Int}}()
     
     # Create particles row by row, column by column
     for i in 1:Nx_total, j in 1:Ny_total
@@ -348,7 +355,7 @@ function ParticleGrid2D(xmin::Real, xmax::Real, ymin::Real, ymax::Real, Nx_inter
     for (i, p) in enumerate(grid); p.volume = vols[i]; end
 
     regular = (randomness == (0.0, 0.0))
-    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Nx_total, Ny_total, N_ghost, dx_nominal, dy_nominal, regular, bc, interior_indices, zeros(Nx_total*Ny_total, 2))
+    new(grid, Float64(xmin), Float64(xmax), Float64(ymin), Float64(ymax), Nx_total, Ny_total, N_ghost, dx_nominal, dy_nominal, regular, bc, interior_indices, voxel_map, zeros(Nx_total*Ny_total, 2))
 end
 end
 
@@ -357,7 +364,7 @@ end
 
 Return the maximum time step for which the first-order euler & upwind method is a positive scheme (for linear advection equation).
 """
-function getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection, interpAlpha::Real, interpRange::Real)
+function getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection{1}, interpAlpha::Real, interpRange::Real)
     dtMax = Inf
     updateNeighbours!(particleGrid, interpRange)
     for particleIndex in particleGrid.interior_indices
@@ -367,14 +374,14 @@ function getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection, interpAl
         for nbIndex in particle.neighbourIndices
             dx = getDistance(particleGrid, particleIndex, nbIndex)
             
-            if ((eq.vel >= 0.0) && (dx <= 0.0)) || ((eq.vel <= 0.0) && (dx >= 0.0))
+            if ((eq.vel[1] >= 0.0) && (dx <= 0.0)) || ((eq.vel[1] <= 0.0) && (dx >= 0.0))
                 w = exp(-interpAlpha*((dx)^2))
                 num += w*dx
                 denum += w*dx*dx
 
             end
         end
-        dtMax = min(-denum/(eq.vel*num), dtMax)
+        dtMax = min(-denum/(eq.vel[1]*num), dtMax)
     end
     return dtMax
 end
@@ -384,7 +391,7 @@ end
 
 Return the maximum time step for which Praveen's upwind method is a positive scheme (for linear advection equation).
 """
-function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection, interpAlpha::Real, interpRange::Real)
+function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection{2}, interpAlpha::Real, interpRange::Real)
     dtMax = Inf
     updateNeighbours!(particleGrid, interpRange)
 
@@ -429,7 +436,7 @@ end
 Sets the initial state for all particles in the grid, including ghost cells.
 This function is called ONCE at the beginning of a simulation.
 """
-function setInitialConditions!(particleGrid::ParticleGrid, initFunc::Function)
+function setInitialConditions!(particleGrid::PG, initFunc::Function) where PG <: ParticleGrid
     # For ANY grid type, we initialize all particles (including ghosts)
     # based on their position. This gives a correct state at t=0.
     # The `apply_boundary_conditions!` function will then be responsible
@@ -455,14 +462,14 @@ function setInitialConditions!(particleGrid::ParticleGrid2D, initFunc::Function)
     end
 end
 
-function setInitialConditions!(particleGrids::Vector{T}, initFuncs::Vector{Function}) where T <: ParticleGrid
+function setInitialConditions!(particleGrids::ParticleGridSystem{N}, initFuncs::Vector{Function}) where {N}
     @assert length(particleGrids) == length(initFuncs) "For each equation a initial condition has to be given!"
     for i = eachindex(particleGrids)
         setInitialConditions!(particleGrids[i], initFuncs[i])
     end
 end
 
-function setInitialConditions!(particleGrids::Vector{T}, initFunc::Function) where T <: ParticleGrid
+function setInitialConditions!(particleGrids::ParticleGridSystem{N}, initFunc::Function) where {N}
     @warn "Only one initial condition for a given system found! The same initial condition will be set for all components!"
     for i = eachindex(particleGrids)
         setInitialConditions!(particleGrids[i], initFunc)
@@ -544,7 +551,7 @@ function getPeriodicDistance(particleGrid::ParticleGrid2D, particleIndex::Intege
     return (distX - round(distX/domainSizeX)*domainSizeX, distY - round(distY/domainSizeY)*domainSizeY)
 end
 # Create a general getDistance function that dispatches
-function getDistance(pg::ParticleGrid, i::Integer, j::Integer)
+function getDistance(pg::PG, i::Integer, j::Integer) where PG <: ParticleGrid
     if pg.bc == :periodic
         return getPeriodicDistance(pg, i, j)
     else # For :fixed_dirichlet or other non-periodic types
@@ -794,10 +801,20 @@ function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
 
     updateVoxelInformation!(particleGrid, maxDist)
 
-    d = Dict{Int, Vector{Int}}()
+    d = particleGrid.voxel_map
+    # Clear all data from the previous time step
+    for key in keys(d)
+        empty!(d[key]) # Empty the vectors
+    end
+    empty!(d) # Clear the dictionary itself (optional, but good practice)
+
+    # Refill the dictionary with current particle locations (this is fast)
     for (index, particle) in enumerate(particleGrid.grid)
-        if !haskey(d, particle.voxel); d[particle.voxel] = Int[]; end
-        push!(d[particle.voxel], index)
+        voxel_idx = particle.voxel
+        if !haskey(d, voxel_idx)
+            d[voxel_idx] = Int[]
+        end
+        push!(d[voxel_idx], index)
     end
 
     for p_idx in eachindex(particleGrid.grid)
@@ -827,7 +844,7 @@ end
 
 Find the minima and the maxima in the neighbourhood of particleIndex in fVec.
 """
-function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, fVec::AbstractVector{Float64})::Tuple{Float64, Float64}
+function findLocalExtrema!(particleGrid::PG, particleIndex::Integer, fVec::AbstractVector{Float64})::Tuple{Float64, Float64} where PG <: ParticleGrid
     mini = fVec[particleIndex]
     maxi = fVec[particleIndex]
     for i in particleGrid.grid[particleIndex].neighbourIndices
@@ -879,7 +896,7 @@ end
 
 Find the minima and the maxima in the neighbourhood of particleIndex in every column of fMatrix.
 """
-function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, fMatrix::AbstractMatrix{Float64})::Array{Float64}
+function findLocalExtrema!(particleGrid::PG, particleIndex::Integer, fMatrix::AbstractMatrix{Float64})::Array{Float64} where PG <: ParticleGrid
     @assert size(fMatrix, 2) == 2  # Assume two columns
     minxx = fMatrix[particleIndex, 1]
     maxxx = fMatrix[particleIndex, 1]

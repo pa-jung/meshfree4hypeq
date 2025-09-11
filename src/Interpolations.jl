@@ -15,7 +15,7 @@ export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInter
 
 Given a reconstruction of the state at the midpoint from the cell center flux1, and a state reconstruction from the neighbouring point, return the left and right state based on the relative orientation of the points.
 """
-function sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
+function sortFlux(flux_ij::Float64, flux_ji::Float64, deltaX::Float64)::Tuple{Float64, Float64}
     if deltaX > 0.0
         return (flux_ij, flux_ji)  # left state, right state
     else
@@ -279,7 +279,7 @@ struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: Upw
     end
 end
 
-function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {D}
+function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicPDE{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {D}
     nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
     dxVec = Vector{Float64}(undef, nbNeighbours)
     dfVec = Vector{Float64}(undef, nbNeighbours)
@@ -299,39 +299,6 @@ function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::I
     end
     return 2*upwind.res[1]/settings.interpRange
 end
-
-# deprecated
-# struct LaxFriedrichsGradient <: GradientInterpolator
-#     res::Vector{Float64}
-#     weightFunction::MLSWeightFunction
-#     numericalFlux::NumericalFluxFunction
-
-#     function LaxFriedrichsGradient(; weightFunction::MLSWeightFunction = exponentialWeightFunction())
-#         new(Vector{Float64}(undef, 2), weightFunction, LaxFriedrichsFlux())
-#     end
-# end
-
-# function (laxFriedrichs::LaxFriedrichsGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
-#     nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
-#     dxVec = Vector{Float64}(undef, nbNeighbours)
-#     dfVec = Vector{Float64}(undef, nbNeighbours)
-#     maxFlux = maximum(map(particle -> velocity(eq, particle.rho), particleGrid.grid))
-#     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
-#         deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
-#         fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
-#         dxVec[index] = deltaPos/settings.interpRange
-#         dfVec[index] = laxFriedrichs.numericalFlux(fm, fp, eq, maxFlux) - flux(eq, fVec[particleIndex])
-#     end
-#     wVec = laxFriedrichs.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
-#     @assert !any(isnan, wVec) && !any(isinf, wVec) "Infs or Nan's in wVec: $(wVec)"
-
-#     gradInterpolation!(dxVec, wVec, dfVec, laxFriedrichs.res; order=1)
-
-#     if setCurvature
-#         particleGrid.grid[particleIndex].curvature = 0.0
-#     end
-#     return 2*laxFriedrichs.res[1]/settings.interpRange
-# end
 
 function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real    
     vel = eq.vel
@@ -441,7 +408,7 @@ function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D
     return div
 end
 
-function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {D}   
+function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::ScalarHyperbolicPDE{DIM}, settings::SimSetting; setCurvature::Bool=true)::Real where {DIM}   
     particle = particleGrid.grid[particleIndex]
     vel = eq.vel
     if setCurvature
@@ -567,7 +534,7 @@ function (central::CentralGradient)(particleGrid::ParticleGrid1D, particleIndex:
         particleGrid.grid[particleIndex].curvature = central.res[2]/(particleGrid.dx^2)
     end
 
-    return eq.vel*central.res[1]/particleGrid.dx
+    return eq.vel[1]*central.res[1]/particleGrid.dx
 end
 
 # ------------------------------- WENO -------------------------------
@@ -602,7 +569,7 @@ function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec
     wVec = weno.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
 
     # One-sided stencil
-    if eq.vel > 0.0
+    if eq.vel[1] > 0.0
         # Left stencil
         gradInterpolation!(dxVec[leftWindow], wVec[leftWindow], dfVec[leftWindow], weno.res; order=weno.order)
     else
@@ -632,7 +599,7 @@ function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec
 
     res = resS1*ω_s + resC1*ω_c
     @assert !isnan(res) "$(weno.res), $(weno.res), $(betaS), $(betaC), $(ω_s), $(ω_c), $(dfVec)"
-    return res*eq.vel
+    return res*eq.vel[1]
 end
 
 function (weno::WENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
@@ -888,7 +855,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid1D, interpA
     end
 end
 
-function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER, D}
+function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicPDE{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER, D}
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
@@ -994,7 +961,7 @@ function initTimeStep(muscl::MUSCL{ORDER}, particleGrid::ParticleGrid2D, interpA
     end
 end
 
-function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER,D}
+function (muscl::MUSCL{ORDER})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicPDE{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {ORDER<:MUSCLORDER,D}
     particle = particleGrid.grid[particleIndex]
     div = 0.0
     for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
@@ -1332,7 +1299,7 @@ function (muscl::MUSCLlimited{MUSCLORDER1})(
     particleGrid::ParticleGrid1D, 
     particleIndex::Integer, 
     fVec::AbstractVector{<:Real}, 
-    eq::ScalarHyperbolicEquation{D}, 
+    eq::ScalarHyperbolicPDE{D}, 
     settings::SimSetting; 
     setCurvature::Bool=true,
 )::Real where {D}
@@ -1546,7 +1513,7 @@ end
 
 # # --- Functor for MUSCLlimited{MUSCLORDER1} ---
 # # This uses the pre-calculated limited slopes from its cache
-# function (muscl::MUSCLlimited{MUSCLORDER1})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicEquation, settings::SimSetting; setCurvature::Bool=true)::Real
+# function (muscl::MUSCLlimited{MUSCLORDER1})(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicPDE, settings::SimSetting; setCurvature::Bool=true)::Real
 
 #     # Note: This function *assumes* that `initTimeStep(muscl, particleGrid, ..., fVec)`
 #     # has already been called for the relevant `fVec` stage, populating
