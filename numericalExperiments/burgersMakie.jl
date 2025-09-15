@@ -1,4 +1,4 @@
-include("../SimulationFunctions/runScalarSim.jl")
+include("../SimulationFunctions/runScalarSimulation.jl")
 
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
@@ -9,9 +9,9 @@ sim_config_burgers = SimulationConfig(
         "init_func" => "box",
         "init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "randomness_factor" => 0., # Provide default needed when regular=false
-        "SEED" => 10, "sim_function" => (:const, "runScalarSim"),
+        "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :periodic,
-        "order" => 1, "PDE" => "linear", "PDE_params" => (1.,)
+        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
     ),
 
     MethodDict(
@@ -130,7 +130,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "limiter" => "superbee",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
@@ -141,7 +141,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "limiter" => "superbee",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
@@ -152,7 +152,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "limiter" => "minmod",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
@@ -163,7 +163,7 @@ sim_config_burgers = SimulationConfig(
             "interp_range" => 3.5,
             "main_flux" => "Rusanov",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
@@ -183,7 +183,7 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
@@ -194,7 +194,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "limiter" => "superbee",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
@@ -253,7 +253,7 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "order" => 5,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none",
@@ -263,7 +263,7 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "order" => 5,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "U2", "delta_relax" => 0.,
@@ -274,7 +274,7 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "Upwind",
             "main_flux" => "Rusanov",
             "order" => 1,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none",
@@ -294,10 +294,10 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
-            "MOOD" => "none"
+            "MOOD" => "none", "save_relax" => false
         ),
         "LWMOOD(uniform grid)" => ParamDict(
             "timestepper" => "LW",
@@ -316,7 +316,7 @@ sim_config_burgers = SimulationConfig(
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "order" => 2,
-            "relax_method" => true,
+            "save_relax" => false,
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "U2", "delta_relax" => 0.,
@@ -347,6 +347,7 @@ sim_config_burgers = SimulationConfig(
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
     "ARS233MUSCL2"
+    #"RK2Upwind"
 );
 scene_options = Dict{String, Any}()
 #scene_options = Dict{String, Any}("t" => 6.,"component" => 1, "x_key" => "N", "y_key" => "l2error")

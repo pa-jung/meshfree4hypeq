@@ -144,17 +144,13 @@ function runScalarSim(params::ParamDictType)::Union{AbstractSimData, Nothing}
             @assert (main_grad_name == "MUSCL") "Slope limiter only supported for MUSCL-schemes!"
             @assert (order == 2) "Only linear reconstruction supported at the moment!"
         end 
-        if lim == "minmod"
-            limiter = MinmodLimiter()
-        elseif lim == "superbee"
-            limiter = SuperbeeLimiter()
-        elseif lim == "VK"
-            limiter = VenkatakrishnanLimiter()
-        elseif lim == "BJ"
-            limiter = BarthJespersenLimiter()
-        elseif lim == "none"
-            limiter = NoLimiter()
-        elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
+        limiter = if lim == "minmod"; MinmodLimiter()
+                  elseif lim == "superbee"; SuperbeeLimiter()
+                  elseif lim == "VK"; VenkatakrishnanLimiter()
+                  elseif lim == "BJ"; BarthJespersenLimiter()
+                  elseif lim == "none"; NoLimiter()
+                  elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
+                  
         local MainFlux
         if main_flux_name == "LW"; MainFlux = LaxWendroffFlux()
         elseif main_flux_name == "Rusanov"; MainFlux = RusanovFlux()

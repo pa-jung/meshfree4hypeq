@@ -190,17 +190,14 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             @assert (main_grad_name == "MUSCL") "Slope limiter only supported for MUSCL-schemes!"
             @assert (order == 2) "Only linear reconstruction supported at the moment!"
         end 
-        if lim == "minmod"
-            limiter = MinmodLimiter()
-        elseif lim == "superbee"
-            limiter = SuperbeeLimiter()
-        elseif lim == "VK"
-            limiter = VenkatakrishnanLimiter()
-        elseif lim == "BJ"
-            limiter = BarthJespersenLimiter()
-        elseif lim == "none"
-            limiter = NoLimiter()
-        elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
+        
+        limiter = if lim == "minmod"; MinmodLimiter()
+                  elseif lim == "superbee"; SuperbeeLimiter()
+                  elseif lim == "VK"; VenkatakrishnanLimiter()
+                  elseif lim == "BJ"; BarthJespersenLimiter()
+                  elseif lim == "none"; NoLimiter()
+                  elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
+                  
 
         MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() 
             elseif main_grad_name!="WENO" error("Flux $main_flux_name NYI");
@@ -209,7 +206,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux() 
                        elseif fallback_flux_name == "Upwind"; FallbackFlux = UpwindFlux()
                        elseif !isnothing(fallback_flux_name); error("Flux $fallback_flux_name NYI"); end
-        upwind_alg_2d = get(run_params, "upwind_alg_2d", "Classic")
+        upwind_alg_2d = dimension == 2 ? run_params["upwind_alg_2d"] : "Classic"
         MainGrad = if main_grad_name == "MUSCL"
                     isnothing(lim) ? MUSCL(order-1; weightFunction = weight_func, numericalFlux = MainFlux) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                     elseif main_grad_name == "WENO"
@@ -239,7 +236,6 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
         # --- 8. Post-process & Return ---
-        interior_indices_vec = particleGrid_template.interior_indices
         
         local us_final, xs_final
         if save_relax

@@ -22,9 +22,10 @@ params = ParamDict(
     "SEED_value" => 42,
     "PDE" => "linear",
     "PDE_params" => (1.0, 0.5), # 2D velocity vector (vx, vy)
+    "bc" => :periodic,
 
     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
-    "timestepper" => "RK4",
+    "timestepper" => "RalstonRK2",
     "main_gradient" => "MUSCL",
     "order" => 2,
     "main_flux" => "Rusanov",
@@ -37,8 +38,8 @@ params = ParamDict(
 #
 # 2. You can then call your function directly:
 #
-include("../SimulationFunctions/runScalar2DSim.jl")
-sim_data = runScalar2DSim(params)
+include("../SimulationFunctions/runScalarSimulation.jl")
+sim_data = runScalarSimulation(params)
 
 # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.
 #

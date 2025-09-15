@@ -103,8 +103,8 @@ sim_config_2d = SimulationConfig(
             "MOOD" => "U2","delta_relax" => 0.,
         ),            
     ),
-    #"ARS222Upwind"
-    ["ARS222MUSCL2","ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Praveen)","ARS222Upwind"]
+    "ARS222Upwind"
+    #["ARS222MUSCL2","ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Praveen)","ARS222Upwind"]
 );
 
 # --- How to run this with your IPlotPDESols package ---

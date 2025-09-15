@@ -18,8 +18,18 @@ end
     return flux_result[i_dim][i_macro]
 end
 
+# Helper for 1D PDEs: flux_result is a single tuple
+@inline function get_flux_component(flux_result::Float64, i_dim::Int, ::Val{1})
+    return flux_result
+end
+
+# Helper for 2D PDEs: flux_result is a tuple of tuples
+@inline function get_flux_component(flux_result::Tuple, i_dim::Int, ::Val{2})
+    return flux_result[i_dim]
+end
+
 # F is a parameter for the concrete type of the flux function.
-struct MaxwellianFunctor{E <: HyperbolicPDE}
+struct MaxwellianFunctor{D,N,E <: HyperbolicPDE{D, N}}
     system_eq::E
     i_macro::Int64
     i_dim::Int64
@@ -28,16 +38,37 @@ struct MaxwellianFunctor{E <: HyperbolicPDE}
     interior_factor::Float64
 end
 
-function (m::MaxwellianFunctor{E})(U::Tuple)::Float64 where {E <: HyperbolicPDE}
+# --- Method 1: Specialized for SCALAR PDEs (N=1) ---
+
+# This method is only called if the functor's type is MaxwellianFunctor{D, 1, E}
+function (m::MaxwellianFunctor{D, 1, E})(U::Tuple{Float64})::Float64 where {D, E}
+    # For a scalar equation, U is a 1-tuple, e.g., (rho,). We extract the value.
+    u_scalar = U[1]
+    
+    # The flux function for a scalar PDE expects a single Float64
+    flux_result = flux(m.system_eq, u_scalar)
+    
+    # Use the helper to handle 1D (scalar) vs 2D (tuple) flux results
+    flux_val = get_flux_component(flux_result, m.i_dim, Val(D))
+
+    # Note: For scalar relaxation, U[m.i_macro] is just u_scalar.
+    return m.coefficient * (u_scalar + m.interior_factor * flux_val / m.relax_speed)
+end
+
+
+# --- Method 2: General for SYSTEM PDEs (any N, any D) ---
+
+# This method is called for any MaxwellianFunctor, but because we defined a more
+# specific one for N=1, this one will be used for all N > 1 cases.
+function (m::MaxwellianFunctor{D, N, E})(U::Tuple)::Float64 where {D, N, E}
     macro_val = U[m.i_macro]
     
-    # Get the flux result (either a tuple or a tuple-of-tuples)
+    # The flux function for a system PDE expects a tuple
     flux_result = flux(m.system_eq, U)
     
-    # Use the trait and Val-dispatch to get the correct component
-    flux_val = get_flux_component(flux_result, m.i_macro, m.i_dim, Val(n_dimensions(m.system_eq)))
+    # Use the helper to handle 1D vs 2D system flux results
+    flux_val = get_flux_component(flux_result, m.i_macro, m.i_dim, Val(D))
 
-    # The rest of the calculation is unchanged
     return m.coefficient * (macro_val + m.interior_factor * flux_val / m.relax_speed)
 end
 
