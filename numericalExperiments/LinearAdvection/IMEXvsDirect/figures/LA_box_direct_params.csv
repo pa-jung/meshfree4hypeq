@@ -10,7 +10,7 @@ Scene,,t,10.0
 Shared,,CFL,0.2
 Shared,,N,100
 Shared,,PDE,linear
-Shared,,PDE_params,"(1.0,)"
+Shared,,PDE_params,"1.0"
 Shared,,SEED,10
 Shared,,bc,:periodic
 Shared,,init_func,box
@@ -19,11 +19,12 @@ Shared,,interp_alpha,1.0
 Shared,,interp_range,1.5
 Shared,,order,1
 Shared,,randomness_factor,0.0
-Shared,,sim_function,runScalarSim
+Shared,,sim_function,runScalarSimulation
 Shared,,snapshots,5
 Shared,,tmax,10.0
 Shared,,xmax,5.0
 Shared,,xmin,-5.0
+Shared,,weight_function,"exponential"
 UI,,animation_duration_s,10.0
 UI,,animation_fps,30
 UI,,colors,"[:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy]"
@@ -90,6 +91,4 @@ Method,RK2WENO,interp_range,2.5
 Method,RK2WENO,main_flux,Rusanov
 Method,RK2WENO,main_gradient,WENO
 Method,RK2WENO,order,2
-Method,RK2WENO,relax_epsilon,1.0e-8
-Method,RK2WENO,relax_velocities,"(1.0, -1.0)"
 Method,RK2WENO,timestepper,RalstonRK2

@@ -81,6 +81,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             
             sim_data = createSimData(xs, us, ts, run_params)
             sim_data.stats["time"] = 0.0
+            calculateAllStats!(sim_data, (x,t) -> IC(x,t,eq,grid_analytic); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, grid_analytic), quad_tol = 10e-9, dierckx_k = 4)
             return sim_data
         end
         
@@ -93,12 +94,16 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         randomness_factor = get(run_params, "randomness_factor", 0.0)
         mood_name = get(run_params, "MOOD", nothing)
         delta_relax = get(run_params, "delta_relax", nothing)
-        main_grad_name = run_params["main_gradient"]
+        main_grad_name = get(run_params,"main_gradient",nothing)
         fallback_grad_name = get(run_params, "fallback_gradient", nothing)
         main_flux_name = get(run_params, "main_flux", nothing)
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
         seed_val = get(run_params, "SEED_value", nothing)
         relax_vel = get(run_params, "relax_velocities", nothing)
+        weight_func_name = get(run_params, "weight_function", nothing)
+        lim = get(run_params, "limiter", nothing)
+
+        @assert (isnothing(lim) || order == 2) "Only 2nd order supported with limiter!"
 
         # --- 5. Grid Creation (Dimension-Aware) ---
         N_ghost::Int = bc == :periodic ? 0 : get(run_params, "N_ghost", ceil(Int, interp_range_factor) + 1)
@@ -138,6 +143,13 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         save_freq = max(1, round(Int, (tmax / snapshots) / dt))
         settings = SimSetting(tmax, dt, interp_range, interp_alpha, save_freq)
 
+        limiter = if lim == "minmod"; MinmodLimiter()
+                  elseif lim == "superbee"; SuperbeeLimiter()
+                  elseif lim == "VK"; VenkatakrishnanLimiter()
+                  elseif lim == "BJ"; BarthJespersenLimiter()
+                  elseif lim == "none"; NoLimiter()
+                  elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
+
         # --- Build Method Components ---
         mood_fun =   if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
                      elseif mood_name == "U1"; MOODu1(deltaRelax = delta_relax)
@@ -149,41 +161,45 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         MainFlux = if main_flux_name == "Rusanov"; RusanovFlux()
                      elseif main_flux_name == "Upwind"; UpwindFlux()
                      elseif main_flux_name == "LW"; MainFlux = LaxWendroffFlux()
-                     else error("Main Flux '$main_flux_name' not implemented.")
+                     elseif !isnothing(main_flux_name); error("Main Flux '$main_flux_name' not implemented.")
                      end
 
         FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux()
                          elseif fallback_flux_name == "Upwind"; UpwindFlux()
                          elseif !isnothing(fallback_flux_name); error("Fallback Flux '$fallback_flux_name' not implemented.")
                          end
+                    
+        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction()
+                      elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         
-        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order; numericalFlux=MainFlux)
-                     elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d)
-                     elseif main_grad_name == "Central"; CentralGradient(order)
-                     elseif main_grad_name == "WENO"; 
-                     else error("Main Gradient '$main_grad_name' not implemented for 2D.")
+        is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
+        MainGrad = if main_grad_name == "MUSCL"; isnothing(lim) ? MUSCL(order-1; weightFunction = weight_func, numericalFlux = MainFlux) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
+                     elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
+                     elseif main_grad_name == "Central"; CentralGradient(order; weightFunction=weight_func)
+                     elseif main_grad_name == "WENO"; WENO(order; weightFunction = weight_func)
+                     elseif !is_classic; error("Main Gradient '$main_grad_name' not implemented for 2D.")
                      end
 
         FallbackGrad = if isnothing(fallback_grad_name); nothing
-                         elseif fallback_grad_name == "Upwind"; UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d)
+                         elseif fallback_grad_name == "Upwind"; UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                          elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end
-        
+
         N_total_particles = length(particleGrid.grid)
-        local xs, us, ts, elapsed_time
+        local xs, us, ts, elapsed_time, save_relax
         if isnothing(relax_vel)
             method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
-            elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(N; gradientInterpolator = MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
-            elseif timestepper_name == "RK3"; method = RK3(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
-            elseif timestepper_name == "RK4"; method = RK4(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun)
-            elseif timestepper_name == "LF"; method = LaxFriedrich(N)
-            elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(N; mood = mood_fun)
-            elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(N, MainFlux)
-            elseif timestepper_name == "Upwind"; method = Upwind(N)
-            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = switch_tol)
+            elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(N_total_particles; gradientInterpolator = MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
+            elseif timestepper_name == "RK3"; method = RK3(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+            elseif timestepper_name == "RK4"; method = RK4(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+            elseif timestepper_name == "LF"; method = LaxFriedrich(N_total_particles)
+            elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(N_total_particles; mood = mood_fun)
+            elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(N_total_particles, MainFlux)
+            elseif timestepper_name == "Upwind"; method = Upwind(N_total_particles)
+            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = switch_tol)
             else error("Unknown Timestepper!") end
 
-
+            save_relax = false
             # --- 8. Run Simulation ---
             elapsed_time, xs, us, ts = mainTimeIntegratorNew!(method, eq, particleGrid, settings)
         else
@@ -237,6 +253,9 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         @info "Scalar D=$dimension simulation finished in $(round(elapsed_time, digits=2)) seconds."
 
         sim_data_result = createSimData(xs, us, ts, run_params)
+        if !save_relax
+            calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+        end         
         
         sim_data_result.stats["time"] = elapsed_time
         return sim_data_result

@@ -14,7 +14,7 @@ end
 
 function (upwind::Upwind)(eq::LinearAdvection{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
     map!(particle -> particle.rho, upwind.rhoOld, particleGrid.grid)
-    vel = velocity(eq, particleGrid.grid[1].rho)  # Velocity is constant so just evaluate it at the first particle
+    vel = velocity(eq, particleGrid.grid[1].rho)[1]  # Velocity is constant so just evaluate it at the first particle
     λ = vel*dt/particleGrid.dx
     if vel > 0
         particleGrid.grid[1].rho -= λ*(upwind.rhoOld[1] - upwind.rhoOld[end])
@@ -202,7 +202,7 @@ Calculates the maximum absolute wavespeed for the state between uL and uR.
 Used as the dissipation coefficient for the Lax-Friedrichs flux.
 """
 function _max_abs_speed_classical(eq::LinearAdvection, uL::Real, uR::Real)
-    return abs(eq.vel)
+    return abs(eq.vel[1])
 end
 
 function _max_abs_speed_classical(eq::BurgersEquation, uL::Real, uR::Real)

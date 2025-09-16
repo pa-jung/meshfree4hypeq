@@ -188,7 +188,7 @@ end
 
 # --- For Linear Advection (General Solution) ---
 function (ic::InitialCondition)(x::Real, t::Real, eq::LinearAdvection{1}, pg::ParticleGrid1D)
-    x0 = x - eq.vel * t
+    x0 = x - eq.vel[1] * t
     if pg.bc == :periodic
         domain_length = pg.xmax - pg.xmin
         x0_mapped = pg.xmin + mod(x0 - pg.xmin, domain_length)
@@ -211,7 +211,7 @@ function (ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{2
         return ic(x0, y0)
     end
 end
-(ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{1}, pg::ParticleGrid) = ic(x-eq.vel*t, y) # Dispatch to 2D functor
+(ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{1}, pg::ParticleGrid) = ic(x-eq.vel[1]*t, y) # Dispatch to 2D functor
 
 
 # --- For Burger's Equation (Specific to each IC Type) ---
@@ -320,14 +320,14 @@ function (ic::Riemann)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D
     if t <= 1e-12; return ic(x); end
     if ic.uL > ic.uR # Shock
         s = (ic.uL + ic.uR) / 2.0
-        shock_pos = ic.x0 + s * t
+        shock_pos = ic.p0 + s * t
         return x < shock_pos ? ic.uL : ic.uR
     else # Rarefaction
-        x_fan_tail = ic.x0 + ic.uL * t
-        x_fan_head = ic.x0 + ic.uR * t
+        x_fan_tail = ic.p0 + ic.uL * t
+        x_fan_head = ic.p0 + ic.uR * t
         if x < x_fan_tail; return ic.uL;
         elseif x > x_fan_head; return ic.uR;
-        else return (x - ic.x0) / t; end
+        else return (x - ic.p0) / t; end
     end
 end
 
@@ -615,10 +615,10 @@ function get_discontinuity_points(ic::ShockInitialCondition, eq::LinearAdvection
     xmin, xmax = pg.xmin, pg.xmax
     domain_length = xmax - xmin
     
-    initial_points = if ic isa Box; [ic.x_start, ic.x_end]; else [ic.x0]; end
+    initial_points = if ic isa Box; [ic.x_start, ic.x_end]; else [ic.p0]; end
     
     for pt in initial_points
-        advected_pos = pt + eq.vel * t
+        advected_pos = pt + eq.vel[1] * t
         if pg.bc == :periodic
             advected_pos = xmin + mod(advected_pos - xmin, domain_length)
         end
@@ -631,9 +631,9 @@ end
 function get_discontinuity_points(ic::Riemann, eq::BurgersEquation, t::Real, pg::ParticleGrid1D)
     if ic.uL > ic.uR # Shock
         s = (ic.uL + ic.uR) / 2.0
-        return [ic.x0 + s * t]
+        return [ic.p0 + s * t]
     else # Rarefaction
-        return [ic.x0 + ic.uL * t, ic.x0 + ic.uR * t]
+        return [ic.p0 + ic.uL * t, ic.p0 + ic.uR * t]
     end
 end
 

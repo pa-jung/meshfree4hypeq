@@ -6,7 +6,7 @@ Scene,,"component",1
 Shared,,CFL,0.2
 Shared,,N,300
 Shared,,PDE,linear
-Shared,,PDE_params,"(1.0,)"
+Shared,,PDE_params,"1.0"
 Shared,,SEED,10
 Shared,,bc,:periodic
 Shared,,init_func,gauss
@@ -19,7 +19,8 @@ Shared,,snapshots,50
 Shared,,tmax,10
 Shared,,xmax,5.0
 Shared,,xmin,-5.0
-Shared,,sim_function,runScalarSim
+Shared,,sim_function,runScalarSimulation
+Shared,,weight_function,"exponential"
 Method,ARS233MUSCL2MOOD,MOOD,U2
 Method,ARS233MUSCL2MOOD,delta_relax,0.0
 Method,ARS233MUSCL2MOOD,fallback_flux,Rusanov
@@ -28,7 +29,7 @@ Method,ARS233MUSCL2MOOD,main_flux,Rusanov
 Method,ARS233MUSCL2MOOD,main_gradient,MUSCL
 Method,ARS233MUSCL2MOOD,order,2
 Method,ARS233MUSCL2MOOD,relax_epsilon,1.0e-8
-Method,ARS233MUSCL2MOOD,relax_method,true
+Method,ARS233MUSCL2MOOD,save_relax,false
 Method,ARS233MUSCL2MOOD,relax_velocities,"(1.0, -1.0)"
 Method,ARS233MUSCL2MOOD,timestepper,ARS233
 Method,Analytic Solution,N,"(:const, 1000)"
