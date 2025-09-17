@@ -606,8 +606,8 @@ end
 Calculates the current positions of any discontinuities for QuadGK.
 Uses multiple dispatch on the initial condition type and equation type.
 """
-# Default for smooth ICs with linear advection -> no discontinuities
-get_discontinuity_points(ic::SmoothInitialCondition, eq::LinearAdvection{D}, t::Real, pg::ParticleGrid) where {D} = Float64[]
+# Default case, no interval splitting
+get_discontinuity_points(ic::InitialCondition, eq::HyperbolicPDE{D,N}, t::Real, pg::ParticleGrid{D}) where {D,N} = Float64[]
 
 # For shock ICs with linear advection -> track the initial jumps
 function get_discontinuity_points(ic::ShockInitialCondition, eq::LinearAdvection{1}, t::Real, pg::ParticleGrid1D)
@@ -670,9 +670,6 @@ function get_discontinuity_points(ic::Gauss, eq::BurgersEquation, t::Real, pg::P
     u_at_break = ic(x_break)
     return [x_break + u_at_break * t]
 end
-
-# 2D Placeholders
-get_discontinuity_points(ic::InitialCondition, eq::ScalarHyperbolicPDE, t::Real, pg::ParticleGrid2D) = error("2D discontinuity tracking not implemented.")
 
 
 end # module InitialConditions

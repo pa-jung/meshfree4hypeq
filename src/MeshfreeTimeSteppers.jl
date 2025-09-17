@@ -35,25 +35,39 @@ end
 - `newRho::Real`: newly proposed solution at next time step or RK stage.
 - `firstStage::Bool`: True in case this is the first or only stage of the time integration routine. 
 """
-function (mood::MOODu1)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+# --- REFACTORED Functor for MOODu1 ---
+# This method now works for any grid type thanks to the SoA design.
+function (mood::MOODu1)(
+    particleGrid::ParticleGrid, 
+    particleIndex::Integer, 
+    rhoVec::AbstractVector{<:Real}, 
+    newRho::Real; 
+    firstStage::Bool=false
+)::Bool
     
-    # Prep
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
-    d = maximum((particle.volume for particle in particleGrid.grid))
+    
+    # More efficient way to get max volume
+    d = maximum(particleGrid.volumes) 
     δ = mood.deltaRelax * d
 
-    # MOOD
-    moodEvent = (newRho < minU) || (newRho > maxU)
-    moodEvent = moodEvent && (abs(maxU - minU) < δ^3) ? false : moodEvent  # If DMP Fail but flat section detection, don't do mood, else trust the standard DMP criterium.
+    moodEvent = (newRho < minU - δ) || (newRho > maxU + δ)
+    
+    # Check for flat sections (where DMP might fail spuriously)
+    if abs(maxU - minU) < δ^3
+        moodEvent = false
+    end
 
+    # Log the event to the grid's SoA boolean array
     if firstStage
-        particleGrid.grid[particleIndex].moodEvent = moodEvent
-        if moodEvent && particleGrid.grid[particleIndex].moodEvent  # Check if there was at least one mood event in the previous stage 
+        particleGrid.mood_events[particleIndex] = moodEvent
+        if moodEvent
             mood.count += 1
         end
     else
-        particleGrid.grid[particleIndex].moodEvent = particleGrid.grid[particleIndex].moodEvent || moodEvent
+        particleGrid.mood_events[particleIndex] = particleGrid.mood_events[particleIndex] || moodEvent
     end
+    
     return moodEvent
 end
 
@@ -137,61 +151,104 @@ mutable struct MOODu2 <: MOODCriterion
     end
 end
 
-function (mood::MOODu2)(particleGrid::ParticleGridType, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool where {ParticleGridType <: ParticleGrid}
-    # Prep
+# --- REFACTORED Functor for MOODu2 ---
+# We use dispatch to create separate, clear methods for 1D and 2D.
+function (mood::MOODu2)(
+    particleGrid::ParticleGrid1D, 
+    particleIndex::Integer, 
+    rhoVec::AbstractVector{<:Real}, 
+    newRho::Real; 
+    firstStage::Bool=false
+)::Bool
+    
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
 
     if !mood.init
-        d = maximum((particle.volume for particle in particleGrid.grid))
-        mood.delta = mood.deltaRelax * d #mood.deltaRelax ? d : 0.0
+        d = maximum(particleGrid.volumes)
+        mood.delta = mood.deltaRelax * d
         mood.init = true
     end
 
-    # DMP criterion
-    DMPFail = (newRho < minU) || (newRho > maxU)
-    DMPFail = DMPFail && (abs(maxU - minU) < mood.delta^3) ? false : DMPFail
-    
-    # u2 check
-    if ParticleGridType == ParticleGrid1D
-        mini, maxi, minxx, maxxx = findLocalExtremaAbs!(particleGrid, particleIndex, particleGrid.temp)  # particleGrid.temp contains the curvatures
-        u2 = (mini*maxi > -mood.delta) && ((minxx/maxxx >= 1.0 - (minxx/maxxx)^(1/1)) || (maxxx < mood.delta)) # True if criterion is satisfied, so no MOOD event
-    elseif ParticleGridType == ParticleGrid2D
-        mini1, maxi1, minxx1, maxxx1, mini2, maxi2, minxx2, maxxx2 = findLocalExtremaAbs!(particleGrid, particleIndex, particleGrid.temp)  # particleGrid.temp contains the curvatures
-        u2x = (mini1*maxi1 > -mood.delta) && ((minxx1/maxxx1 >= 1/2) || (maxxx1 < mood.delta))
-        u2y = (mini2*maxi2 > -mood.delta) && ((minxx2/maxxx2 >= 1/2) || (maxxx2 < mood.delta))
-        u2 = u2x && u2y
+    DMPFail = (newRho < minU - mood.delta) || (newRho > maxU + mood.delta)
+    if abs(maxU - minU) < mood.delta^3
+        DMPFail = false
     end
     
-    # If DMP criterion failed, check u2 criterion
-    moodEvent = DMPFail ? !u2 : false
+    # u2 check for 1D
+    # particleGrid.temp now holds curvatures from `copyCurvatures!`
+    mini, maxi, minxx, maxxx = findLocalExtremaAbs!(particleGrid, particleIndex, particleGrid.temp)
+    u2_satisfied = (mini * maxi > -mood.delta) && ((minxx / maxxx >= 0.5) || (maxxx < mood.delta))
+    
+    moodEvent = DMPFail ? !u2_satisfied : false
 
-    # Logging of MOOD events
     if firstStage
-        if particleGrid.grid[particleIndex].moodEvent  # Check if there was at least one mood event in the previous stage 
+        particleGrid.mood_events[particleIndex] = moodEvent
+        if moodEvent
             mood.count += 1
         end
-        particleGrid.grid[particleIndex].moodEvent = moodEvent
     else
-        particleGrid.grid[particleIndex].moodEvent = particleGrid.grid[particleIndex].moodEvent || moodEvent
+        particleGrid.mood_events[particleIndex] = particleGrid.mood_events[particleIndex] || moodEvent
     end
+    
     return moodEvent
 end
 
-""" 
-    copyCurvatures!(particleGrid::ParticleGridType) where {ParticleGridType <: particleGrid}
+function (mood::MOODu2)(
+    particleGrid::ParticleGrid2D, 
+    particleIndex::Integer, 
+    rhoVec::AbstractVector{<:Real}, 
+    newRho::Real; 
+    firstStage::Bool=false
+)::Bool
+    
+    minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
 
-Copies the curvatures of all particles in the grid to particleGrid.temp. This is then used by the u2 MOOD criterion.
-
-"""
-function copyCurvatures!(particleGrid::ParticleGridType) where {ParticleGridType <: ParticleGrid}
-    if ParticleGridType == ParticleGrid1D
-        map!(particle -> particle.curvature, particleGrid.temp, particleGrid.grid)
-    elseif ParticleGridType == ParticleGrid2D
-        for (i, particle) in enumerate(particleGrid.grid)
-            particleGrid.temp[i, 1] = particle.curvature[1]
-            particleGrid.temp[i, 2] = particle.curvature[2]
-        end
+    if !mood.init
+        d = maximum(particleGrid.volumes)
+        mood.delta = mood.deltaRelax * d
+        mood.init = true
     end
+
+    DMPFail = (newRho < minU - mood.delta) || (newRho > maxU + mood.delta)
+    if abs(maxU - minU) < mood.delta^3
+        DMPFail = false
+    end
+    
+    # u2 check for 2D
+    # particleGrid.temp is now an N x 2 matrix of curvatures
+    # We need a new findLocalExtremaAbs! that works on this SoA data
+    extrema_vals = findLocalExtremaAbs!(particleGrid, particleIndex, particleGrid.temp)
+    mini1, maxi1, minxx1, maxxx1 = extrema_vals[1:4]
+    mini2, maxi2, minxx2, maxxx2 = extrema_vals[5:8]
+    
+    u2x = (mini1 * maxi1 > -mood.delta) && ((minxx1 / maxxx1 >= 0.5) || (maxxx1 < mood.delta))
+    u2y = (mini2 * maxi2 > -mood.delta) && ((minxx2 / maxxx2 >= 0.5) || (maxxx2 < mood.delta))
+    u2_satisfied = u2x && u2y
+    
+    moodEvent = DMPFail ? !u2_satisfied : false
+
+    if firstStage
+        particleGrid.mood_events[particleIndex] = moodEvent
+        if moodEvent
+            mood.count += 1
+        end
+    else
+        particleGrid.mood_events[particleIndex] = particleGrid.mood_events[particleIndex] || moodEvent
+    end
+    
+    return moodEvent
+end
+
+# --- REFACTORED copyCurvatures! ---
+# We use dispatch for clean 1D/2D implementations.
+function copyCurvatures!(particleGrid::ParticleGrid1D)
+    # Direct array copy is much faster than `map!`
+    particleGrid.temp .= particleGrid.curvatures
+end
+
+function copyCurvatures!(particleGrid::ParticleGrid2D)
+    # Direct array copy for the 2D matrix of curvatures
+    particleGrid.temp .= particleGrid.curvatures
 end
 
 """
@@ -206,10 +263,6 @@ struct NoMOOD <: MOODCriterion
     end
 end
 
-function (mood::NoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    particleGrid.grid[particleIndex].moodEvent = false
-    return false
-end
 """
 OnlyMOOD
 
@@ -221,8 +274,16 @@ struct OnlyMOOD <: MOODCriterion
         new(0)
     end
 end
+
+# --- REFACTORED NoMOOD/OnlyMOOD Functors ---
+# These are updated to write to the new `mood_events` SoA array.
+function (mood::NoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+    particleGrid.mood_events[particleIndex] = false
+    return false
+end
+
 function (mood::OnlyMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    particleGrid.grid[particleIndex].moodEvent = true
+    particleGrid.mood_events[particleIndex] = true
     return true
 end
 

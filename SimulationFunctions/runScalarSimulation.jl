@@ -127,7 +127,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             interp_range = interp_range_factor * max(particleGrid.dx, particleGrid.dy)
             upwind_alg_2d = run_params["upwind_alg_2d"]
         end
-        
+        N_total_particles = particleGrid.N
         determineVolumes!(particleGrid)
         setInitialConditions!(particleGrid, (pos...) -> IC(pos...))
 
@@ -173,7 +173,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                       elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
-        MainGrad = if main_grad_name == "MUSCL"; isnothing(lim) ? MUSCL(order-1; weightFunction = weight_func, numericalFlux = MainFlux) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
+        MainGrad = if main_grad_name == "MUSCL"; isnothing(lim) ? MUSCL(order-1, N_total_particles; weightFunction = weight_func, numericalFlux = MainFlux) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                      elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                      elseif main_grad_name == "Central"; CentralGradient(order; weightFunction=weight_func)
                      elseif main_grad_name == "WENO"; WENO(order; weightFunction = weight_func)
@@ -184,8 +184,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                          elseif fallback_grad_name == "Upwind"; UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                          elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end
-
-        N_total_particles = particleGrid.N
+        
         local xs, us, ts, elapsed_time, save_relax
         if isnothing(relax_vel)
             method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun)
@@ -254,7 +253,11 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
         sim_data_result = createSimData(xs, us, ts, run_params)
         if !save_relax
-            calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+            if dimension == 1
+                calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+            elseif dimension == 2
+                calculateAllStats!(sim_data_result, (x,t) -> IC(x[1],x[2],t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+            end
         end         
         
         sim_data_result.stats["time"] = elapsed_time

@@ -201,7 +201,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
 
     # --- Grid Properties ---
     xmin::Float64; xmax::Float64; ymin::Float64; ymax::Float64
-    Nx_total::Int; Ny_total::Int; N_ghost::Int
+    Nx_total::Int; Ny_total::Int; N_ghost::Int; N::Int
     dx::Float64; dy::Float64
     regular::Bool; bc::Symbol
     interior_indices::Vector{Int}
@@ -273,7 +273,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
         regular = (randomness == (0.0, 0.0))
 
         new(positions, rhos, curvatures, is_boundary, volumes, voxels, mood_events,
-            neighbour_indices, xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_ghost,
+            neighbour_indices, xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_ghost, N_total,
             dx, dy, regular, bc, interior_indices, voxel_map)
     end
 end
@@ -623,5 +623,80 @@ function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection{2}, inter
     end
     return dtMax
 end
+
+"""
+Finds the local min/max and absolute min/max in the neighbourhood of a particle
+for a 1D vector of data `fVec`. Optimized for SoA grids.
+"""
+function findLocalExtremaAbs!(
+    particleGrid::ParticleGrid1D, 
+    particleIndex::Integer, 
+    fVec::AbstractVector{Float64}
+)::Tuple{Float64, Float64, Float64, Float64}
+    
+    val_i = fVec[particleIndex]
+    mini = maxi = val_i
+    minAbs = maxAbs = abs(val_i)
+    
+    # Access the neighbor list directly from the grid's SoA field
+    for i in particleGrid.neighbour_indices[particleIndex]
+        val_j = fVec[i]
+        abs_val_j = abs(val_j)
+
+        mini = min(mini, val_j)
+        maxi = max(maxi, val_j)
+        minAbs = min(minAbs, abs_val_j)
+        maxAbs = max(maxAbs, abs_val_j)
+    end
+    
+    return (mini, maxi, minAbs, maxAbs)
+end
+
+"""
+Finds the local min/max and absolute min/max in the neighbourhood of a particle
+for a 2D matrix of data `fMatrix` (e.g., curvatures). Optimized for SoA grids.
+"""
+function findLocalExtremaAbs!(
+    particleGrid::ParticleGrid2D, 
+    particleIndex::Integer, 
+    fMatrix::AbstractMatrix{Float64}
+)::NTuple{8, Float64}
+    
+    @assert size(fMatrix, 2) == 2 "Input matrix must have 2 columns for 2D extrema."
+
+    # Initialize with values at the central particle
+    val1_i = fMatrix[particleIndex, 1]
+    val2_i = fMatrix[particleIndex, 2]
+    
+    mini1 = maxi1 = val1_i
+    mini2 = maxi2 = val2_i
+    
+    minAbs1 = maxAbs1 = abs(val1_i)
+    minAbs2 = maxAbs2 = abs(val2_i)
+    
+    # Access the neighbor list directly from the grid's SoA field
+    for i in particleGrid.neighbour_indices[particleIndex]
+        val1_j = fMatrix[i, 1]
+        val2_j = fMatrix[i, 2]
+        abs_val1_j = abs(val1_j)
+        abs_val2_j = abs(val2_j)
+
+        # Update extrema for the first component
+        mini1 = min(mini1, val1_j)
+        maxi1 = max(maxi1, val1_j)
+        minAbs1 = min(minAbs1, abs_val1_j)
+        maxAbs1 = max(maxAbs1, abs_val1_j)
+        
+        # Update extrema for the second component
+        mini2 = min(mini2, val2_j)
+        maxi2 = max(maxi2, val2_j)
+        minAbs2 = min(minAbs2, abs_val2_j)
+        maxAbs2 = max(maxAbs2, abs_val2_j)
+    end
+    
+    return (mini1, maxi1, minAbs1, maxAbs1, mini2, maxi2, minAbs2, maxAbs2)
+end
+
+
 
 end  # module ParticleGrids
