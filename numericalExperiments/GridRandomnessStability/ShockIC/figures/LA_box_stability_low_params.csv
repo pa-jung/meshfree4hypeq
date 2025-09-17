@@ -14,7 +14,7 @@ Scene,,y_key,l1error
 Shared,,CFL,0.2
 Shared,,N,200
 Shared,,PDE,linear
-Shared,,PDE_params,"(1.0,)"
+Shared,,PDE_params,"1.0"
 Shared,,SEED,10
 Shared,,bc,:periodic
 Shared,,init_func,box
@@ -23,11 +23,12 @@ Shared,,interp_alpha,1.0
 Shared,,interp_range,3.5
 Shared,,order,1
 Shared,,randomness_factor,0.2
-Shared,,sim_function,runScalarSim
+Shared,,sim_function,runScalarSimulation
 Shared,,snapshots,5
 Shared,,tmax,10
 Shared,,xmax,5.0
 Shared,,xmin,-5.0
+Shared,,weight_function,"exponential"
 UI,,animation_duration_s,10.0
 UI,,animation_fps,30
 UI,,colors,"[:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy]"
@@ -80,7 +81,7 @@ Method,ARS233MUSCL2MOOD,main_flux,Rusanov
 Method,ARS233MUSCL2MOOD,main_gradient,MUSCL
 Method,ARS233MUSCL2MOOD,order,2
 Method,ARS233MUSCL2MOOD,relax_epsilon,1.0e-8
-Method,ARS233MUSCL2MOOD,relax_method,true
+Method,ARS233MUSCL2MOOD,save_relax,false
 Method,ARS233MUSCL2MOOD,relax_velocities,"(1.0, -1.0)"
 Method,ARS233MUSCL2MOOD,timestepper,ARS233
 Method,RK2MUSCL2,MOOD,none

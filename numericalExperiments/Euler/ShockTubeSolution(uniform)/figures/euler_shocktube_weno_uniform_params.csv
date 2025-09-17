@@ -15,12 +15,14 @@ Shared,,interp_alpha,1.0
 Shared,,interp_range,1.5
 Shared,,randomness_factor,0.0
 Shared,,relax_velocities,"[(2.0, -2.0), (3.0, -3.0), (4.0, -4.0)]"
-Shared,,sim_function,runSystem1DSimulation
+Shared,,sim_function,runSystemSimulation
 Shared,,snapshots,11
-Shared,,system,euler
+Shared,,PDE,euler1d
 Shared,,tmax,0.2
 Shared,,xmax,0.5
 Shared,,xmin,-0.5
+Shared,,weight_function,"exponential"
+Shared,,save_relax,false
 UI,,animation_duration_s,10.0
 UI,,animation_fps,30
 UI,,colors,"[:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy]"
@@ -30,7 +32,7 @@ UI,,dashed_lines,false
 UI,,figsize,"(700, 550)"
 UI,,font_size,14
 UI,,label_size,14
-UI,,legend,
+UI,,legend,<empty>
 UI,,legend_pos,righttop
 UI,,lineStyles,"Any[:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal), (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]"
 UI,,linewidth,2.5
@@ -45,7 +47,7 @@ UI,,show_lines,true
 UI,,show_scatter,true
 UI,,sort_legend,true
 UI,,ticklabel_size,12
-UI,,title,
+UI,,title,<empty>
 UI,,title_size,14
 UI,,track_max,false
 UI,,track_min,false
@@ -89,5 +91,5 @@ Method,ARS222WENO2,main_gradient,WENO
 Method,ARS222WENO2,order,2
 Method,ARS222WENO2,relax_epsilon,1.0e-6
 Method,ARS222WENO2,timestepper,ARS222
-Method,Analytical Solution,ignore,"[""interp_range"", ""interp_alpha"", ""randomness_factor"", ""SEED"", ""order"", ""relax_velocities""]"
-Method,Analytical Solution,randomness_factor,"(:const, 0.0)"
+Method,Analytical Solution,ignore,"[""interp_range"", ""save_relax"", ""interp_alpha"", ""randomness_factor"", ""SEED"", ""order"", ""relax_velocities""]"
+Method,Analytical Solution,timestepper,Analytic

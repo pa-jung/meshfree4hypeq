@@ -196,7 +196,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(N_total_particles; mood = mood_fun)
             elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(N_total_particles, MainFlux)
             elseif timestepper_name == "Upwind"; method = Upwind(N_total_particles)
-            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = switch_tol)
+            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = run_params["switch_tol"])
             else error("Unknown Timestepper!") end
 
             save_relax = false
