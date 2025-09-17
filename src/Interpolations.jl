@@ -246,18 +246,50 @@ abstract type PraveenAlgorithm <: UpwindAlgorithm end  # Praveen C. postive upwi
 abstract type NonLinearPraveenAlgorithm <: UpwindAlgorithm end  # Praveen C. postive upwind scheme.
 abstract type ClassicAlgorithm <: UpwindAlgorithm end  # Take all points 'behind' center point. 
 abstract type RusanovAlgorithm <: UpwindAlgorithm end # This is no upwinding of course but easy implementation in this framework (numerical Flux given does not have to be upwind)
-struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: UpwindAlgorithm}
-    order::Int64
+
+# Define a workspace to hold temporary arrays for Upwind calculations
+struct UpwindWorkspace
+    dxVec::Vector{Float64}
+    dyVec::Vector{Float64}
+    dfVec::Vector{Float64}
+    wVec::Vector{Float64}
+    # For Tiwari algorithm
+    xWindow::BitVector
+    yWindow::BitVector
+
+    function UpwindWorkspace(max_neighbors::Int=20) # Preallocate with a reasonable capacity
+        new(
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            falses(max_neighbors),
+            falses(max_neighbors)
+        )
+    end
+end
+
+# Helper to ensure workspace vectors are large enough
+function ensure_capacity!(ws::UpwindWorkspace, n::Int)
+    if length(ws.dxVec) < n
+        resize!.((ws.dxVec, ws.dyVec, ws.dfVec, ws.wVec, ws.xWindow, ws.yWindow), n)
+    end
+end
+
+
+struct UpwindGradient{Algorithm <: UpwindAlgorithm} <: GradientInterpolator
+    order::Int
     res::Vector{Float64}
     weightFunction::MLSWeightFunction
     numericalFlux::NumericalFluxFunction
+    workspace::UpwindWorkspace
 
     """
         UpwindGradient(order::Int64 = 1; algType::String = "")
 
     Constructor for Upwind Object. algType only has impact in 2D upwinding.
     """
-    function UpwindGradient(order::Int64 = 1; numericalFlux::NumericalFluxFunction = UpwindFlux(), algType::String = "Classic", weightFunction::MLSWeightFunction = exponentialWeightFunction())
+    function UpwindGradient(order::Int=1; numericalFlux::NumericalFluxFunction=UpwindFlux(), algType::String="Classic", weightFunction::MLSWeightFunction=exponentialWeightFunction())
         @assert order >= 1 "Order must be larger or equal to one."
         @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen"]
         if order == 1
@@ -265,107 +297,160 @@ struct UpwindGradient{Algorithm} <: GradientInterpolator where {Algorithm <: Upw
         elseif order == 2
             size = 5  # In 2D res had length 5, in 1D res has length 2
         end
+        local alg_type
         if algType == "Classic"
-            new{ClassicAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
+            alg_type = ClassicAlgorithm
         elseif algType == "Praveen"
             @assert order == 1
-            new{PraveenAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
+            alg_type = PraveenAlgorithm
         elseif algType == "NonLinearPraveen"
             @assert order == 1
-            new{NonLinearPraveenAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
+            alg_type = NonLinearPraveenAlgorithm
         elseif algType == "Tiwari"
-            new{TiwariAlgorithm}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux)
+            alg_type = TiwariAlgorithm
         end
+        new{alg_type}(order, Vector{Float64}(undef, size), weightFunction, numericalFlux, UpwindWorkspace())
     end
 end
 
-function (upwind::UpwindGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::ScalarHyperbolicPDE{D}, settings::SimSetting; setCurvature::Bool=true)::Real where {D}
-    nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
-    dxVec = Vector{Float64}(undef, nbNeighbours)
-    dfVec = Vector{Float64}(undef, nbNeighbours)
-    for (index, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
+# ... (keep all other content in Interpolations.jl) ...
+
+#==============================================================================
+  UPWIND GRADIENT (Optimized for SoA Grids)
+==============================================================================#
+
+# --- REFACTORED 1D Upwind Functor ---
+function (upwind::UpwindGradient)(
+    particleGrid::ParticleGrid1D,
+    particleIndex::Integer,
+    fVec::AbstractVector{<:Real},
+    eq::ScalarHyperbolicPDE,
+    settings::SimSetting;
+    setCurvature::Bool=true
+)::Real
+    
+    neighbors = particleGrid.neighbour_indices[particleIndex]
+    num_neighbors = length(neighbors)
+    ws = upwind.workspace
+    ensure_capacity!(ws, num_neighbors)
+
+    # Use zero-cost views into the workspace buffers
+    dxVec = @view ws.dxVec[1:num_neighbors]
+    dfVec = @view ws.dfVec[1:num_neighbors]
+    wVec = @view ws.wVec[1:num_neighbors]
+
+    for (i, nbIndex) in enumerate(neighbors)
         deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
         fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
-        dxVec[index] = deltaPos/settings.interpRange
-        dfVec[index] = upwind.numericalFlux(fm, fp, eq) - flux(eq, fVec[particleIndex])
+        
+        dxVec[i] = deltaPos / settings.interpRange
+        dfVec[i] = upwind.numericalFlux(fm, fp, eq) - flux(eq, fVec[particleIndex])
     end
-    wVec = upwind.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
-    @assert !any(isnan, wVec) && !any(isinf, wVec) "Infs or Nan's in wVec: $(wVec)"
-
+    
+    wVec .= upwind.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
     gradInterpolation!(dxVec, wVec, dfVec, upwind.res; order=upwind.order)
 
     if setCurvature
-        particleGrid.grid[particleIndex].curvature = 0.0
+        particleGrid.curvatures[particleIndex] = 0.0
     end
-    return 2*upwind.res[1]/settings.interpRange
+    
+    return 2 * upwind.res[1] / settings.interpRange
 end
 
-function (upwind::UpwindGradient{TiwariAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real    
-    vel = eq.vel
-    nbNeighbours = length(particleGrid.grid[particleIndex].neighbourIndices)
-    dxVec = Vector{Float64}(undef, nbNeighbours)
-    dyVec = Vector{Float64}(undef, nbNeighbours)
-    dfVec = Vector{Float64}(undef, nbNeighbours)    
-    xWindow = Vector{Bool}(undef, nbNeighbours)  # True if point should be used for d/dx
-    yWindow = Vector{Bool}(undef, nbNeighbours)  # True if point should be used for d/dx
 
-    for (i, nbIndex) in enumerate(particleGrid.grid[particleIndex].neighbourIndices)
+# --- REFACTORED 2D Upwind Functor (Classic Algorithm) ---
+function (upwind::UpwindGradient{ClassicAlgorithm})(
+    particleGrid::ParticleGrid2D,
+    particleIndex::Integer,
+    fVec::AbstractVector{<:Real},
+    eq::LinearAdvection{2},
+    settings::SimSetting;
+    setCurvature::Bool=true
+)::Real
+    
+    vel = velocity(eq, 0.0)
+    
+    # Filter to get upwind neighbors first
+    upwind_indices = [nb for nb in particleGrid.neighbour_indices[particleIndex] if dot(getDistance(particleGrid, particleIndex, nb), vel) < 0]
+    num_upwind = length(upwind_indices)
+
+    ws = upwind.workspace
+    ensure_capacity!(ws, num_upwind)
+
+    # Use views into the workspace
+    dxVec = @view ws.dxVec[1:num_upwind]
+    dyVec = @view ws.dyVec[1:num_upwind]
+    dfVec = @view ws.dfVec[1:num_upwind]
+    wVec = @view ws.wVec[1:num_upwind]
+
+    for (i, nbIndex) in enumerate(upwind_indices)
         deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        dxVec[i] = deltaX/settings.interpRange
-        dyVec[i] = deltaY/settings.interpRange
+        dxVec[i] = deltaX / settings.interpRange
+        dyVec[i] = deltaY / settings.interpRange
+        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
+    end
+
+    wVec .= upwind.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+    gradInterpolation!(dxVec, dyVec, wVec, dfVec, upwind.res; order=upwind.order)
+
+    if setCurvature && upwind.order == 2
+        particleGrid.curvatures[particleIndex, 1] = upwind.res[3] / (settings.interpRange^2)
+        particleGrid.curvatures[particleIndex, 2] = upwind.res[4] / (settings.interpRange^2)
+    end
+    
+    return dot(vel, @view(upwind.res[1:2])) / settings.interpRange
+end
+
+
+# --- 2D Upwind Functor (Tiwari Algorithm) ---
+function (upwind::UpwindGradient{TiwariAlgorithm})(
+    particleGrid::ParticleGrid2D, 
+    particleIndex::Integer, 
+    fVec::AbstractVector{<:Real}, 
+    eq::LinearAdvection{2}, 
+    settings::SimSetting; 
+    setCurvature::Bool=true
+)::Real
+    
+    vel = velocity(eq, 0.0) # Velocity is constant for LinearAdvection
+    neighbour_indices = particleGrid.neighbour_indices[particleIndex]
+    num_neighbours = length(neighbour_indices)
+
+    # Temporary buffers
+    dxVec = Vector{Float64}(undef, num_neighbours)
+    dyVec = Vector{Float64}(undef, num_neighbours)
+    dfVec = Vector{Float64}(undef, num_neighbours)    
+    xWindow = falses(num_neighbours)
+    yWindow = falses(num_neighbours)
+
+    for (i, nbIndex) in enumerate(neighbour_indices)
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
+        dxVec[i] = deltaX / settings.interpRange
+        dyVec[i] = deltaY / settings.interpRange
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
         xWindow[i] = ((vel[1] >= 0.0) && (deltaX <= 0.0)) || ((vel[1] <= 0.0) && (deltaX >= 0.0))
         yWindow[i] = ((vel[2] >= 0.0) && (deltaY <= 0.0)) || ((vel[2] <= 0.0) && (deltaY >= 0.0))
     end
-    wVec = upwind.weightFunction(dxVec[xWindow], dyVec[xWindow]; param=settings.interpAlpha, normalisation=1.0)
-    gradInterpolation!(dxVec[xWindow], dyVec[xWindow], wVec, dfVec[xWindow], upwind.res; order=upwind.order)
-    ddx = upwind.res[1]/settings.interpRange
 
-    if upwind.order == 1  # Set the curvature
-        particleGrid.grid[particleIndex].curvature[1] = 0.0
-    elseif upwind.order == 2
-        particleGrid.grid[particleIndex].curvature[1] = upwind.res[3]/(settings.interpRange^2)
+    # X-derivative
+    wVec_x = upwind.weightFunction(dxVec[xWindow], dyVec[xWindow]; param=settings.interpAlpha, normalisation=1.0)
+    gradInterpolation!(dxVec[xWindow], dyVec[xWindow], wVec_x, dfVec[xWindow], upwind.res; order=upwind.order)
+    ddx = upwind.res[1] / settings.interpRange
+    if setCurvature && upwind.order == 2
+        particleGrid.curvatures[particleIndex, 1] = upwind.res[3] / (settings.interpRange^2)
     end
         
-    wVec = upwind.weightFunction(dxVec[yWindow], dyVec[yWindow]; param=settings.interpAlpha, normalisation=1.0)
-    gradInterpolation!(dxVec[yWindow], dyVec[yWindow], wVec, dfVec[yWindow], upwind.res; order=upwind.order)
-    ddy = upwind.res[2]/settings.interpRange
-
-    if setCurvature && (upwind.order == 1)
-        particleGrid.grid[particleIndex].curvature[2] = 0.0
-    elseif setCurvature && (upwind.order == 2)
-        particleGrid.grid[particleIndex].curvature[2] = upwind.res[4]/(settings.interpRange^2)
+    # Y-derivative
+    wVec_y = upwind.weightFunction(dxVec[yWindow], dyVec[yWindow]; param=settings.interpAlpha, normalisation=1.0)
+    gradInterpolation!(dxVec[yWindow], dyVec[yWindow], wVec_y, dfVec[yWindow], upwind.res; order=upwind.order)
+    ddy = upwind.res[2] / settings.interpRange
+    if setCurvature && upwind.order == 2
+        particleGrid.curvatures[particleIndex, 2] = upwind.res[4] / (settings.interpRange^2)
     end
 
-    return ddx*vel[1] + ddy*vel[2]
+    return ddx * vel[1] + ddy * vel[2]
 end
 
-function (upwind::UpwindGradient{ClassicAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real    
-    vel = eq.vel
-    dxVec = Vector{Float64}(undef, 0)
-    dyVec = Vector{Float64}(undef, 0)
-    dfVec = Vector{Float64}(undef, 0)    
-    for nbIndex in particleGrid.grid[particleIndex].neighbourIndices
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        if deltaX*vel[1] + deltaY*vel[2] < 0
-            push!(dxVec, deltaX/settings.interpRange)
-            push!(dyVec, deltaY/settings.interpRange)
-            push!(dfVec, fVec[nbIndex] - fVec[particleIndex])
-        end
-    end
-    wVec = upwind.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
-    gradInterpolation!(dxVec, dyVec, wVec, dfVec, upwind.res; order=upwind.order)
-
-    if setCurvature && (upwind.order == 1) 
-        particleGrid.grid[particleIndex].curvature[1] = 0.0
-        particleGrid.grid[particleIndex].curvature[2] = 0.0
-    elseif setCurvature && (upwind.order == 2)
-        particleGrid.grid[particleIndex].curvature[1] = upwind.res[3]/(settings.interpRange^2)
-        particleGrid.grid[particleIndex].curvature[2] = upwind.res[4]/(settings.interpRange^2)
-    end
-    
-    return vel[1]*upwind.res[1]/settings.interpRange + vel[2]*upwind.res[2]/settings.interpRange
-end
 
 function (upwind::UpwindGradient{PraveenAlgorithm})(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real    
     particle = particleGrid.grid[particleIndex]

@@ -69,13 +69,13 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             if dimension == 1
                 Nx = run_params["N"]
                 grid_analytic = ParticleGrid1D(xmin, xmax, Nx, bc != :periodic , bc)
-                xs = [map(p -> p.pos, grid_analytic.grid) for _ in ts]
+                xs = grid_analytic.positions
                 us = [[IC(x, t, eq, grid_analytic) for x in x_coords] for (x_coords, t) in zip(xs, ts)]
             else # dimension == 2
                 Nx, Ny = run_params["Nx"], run_params["Ny"]
                 ymin, ymax = run_params["ymin"], run_params["ymax"]
                 grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc != :periodic , bc)
-                xs = [map(p -> p.pos, grid_analytic.grid) for _ in ts]
+                xs = grid_analytic.positions
                 us = [[IC(p[1], p[2], t, eq, grid_analytic) for p in pos_coords] for (pos_coords, t) in zip(xs, ts)]
             end
             
@@ -185,11 +185,11 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                          elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end
 
-        N_total_particles = length(particleGrid.grid)
+        N_total_particles = particleGrid.N
         local xs, us, ts, elapsed_time, save_relax
         if isnothing(relax_vel)
-            method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
-            elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(N_total_particles; gradientInterpolator = MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
+            method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun)
+            elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
             elseif timestepper_name == "RK3"; method = RK3(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
             elseif timestepper_name == "RK4"; method = RK4(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
             elseif timestepper_name == "LF"; method = LaxFriedrich(N_total_particles)
@@ -201,7 +201,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             save_relax = false
             # --- 8. Run Simulation ---
-            elapsed_time, xs, us, ts = mainTimeIntegratorNew!(method, eq, particleGrid, settings)
+            elapsed_time, xs, us, ts = mainTimeIntegrator!(method, eq, particleGrid, settings)
         else
             relax_eps = run_params["relax_epsilon"]
             save_relax = run_params["save_relax"]
@@ -226,11 +226,11 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             # BUG FIX 2: Correctly initialize the kinetic particle grids to be in equilibrium.
             pgs_vec = [deepcopy(particleGrid) for _ in 1:N_kinetic]
             for k in 1:N_kinetic
-                for p_idx in 1:length(pgs_vec[k].grid)
+                for p_idx in 1:pgs_vec[k].N
                     # Get the macroscopic IC at this point
-                    macro_ic_at_p = particleGrid.grid[p_idx].rho
+                    macro_ic_at_p = particleGrid.rhos[p_idx]
                     # Set the kinetic IC to be the Maxwellian evaluated at the macro IC
-                    pgs_vec[k].grid[p_idx].rho = M_funcs_vec[k]((macro_ic_at_p,))
+                    pgs_vec[k].rhos[p_idx] = M_funcs_vec[k]((macro_ic_at_p,))
                 end
             end
             pgs = Tuple(pgs_vec)
@@ -244,7 +244,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                             elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, N_total_particles; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term, N_total_particles)
                             else error("Unknown TimeStepper name for system: '$timestepper_name'") 
                             end
-            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegratorNew!(system_method, kinetic_eqs, pgs, settings)
+            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings)
             @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
             us = save_relax ? sys_us : [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
