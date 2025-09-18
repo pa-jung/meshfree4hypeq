@@ -38,7 +38,7 @@ using IPlotPDESols # or just `const ParamDict = Dict{String, Any}` if not using 
 params = ParamDict(
     # --- Shared Parameters ---
     "tmax" => 2.0,
-    "N" => 5000,
+    "N" => 200,
     "xmin" => -5.0,
     "xmax" => 5.0,
     "CFL" => 0.4,
@@ -48,7 +48,7 @@ params = ParamDict(
     "init_func" => "box", # Using the unified struct
     #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
     "init_params" => (0.,1.,-2.,2.),
-    "randomness_factor" => 0., # (x_rand_factor, y_rand_factor)
+    "randomness_factor" => 0.2, # (x_rand_factor, y_rand_factor)
     "SEED_value" => 42,
     "PDE" => "linear",
     "weight_function" => "exponential",
@@ -61,7 +61,7 @@ params = ParamDict(
     "main_gradient" => "MUSCL",
     "fallback_gradient" => "Upwind",
     "fallback_flux" => "Rusanov",
-    "order" => 2,
+    "order" => 5,
     "main_flux" => "Rusanov",
     "MOOD" => "U2", "delta_relax" => 0. # No MOOD for this run
 )
