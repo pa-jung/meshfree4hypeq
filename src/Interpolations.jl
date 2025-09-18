@@ -946,7 +946,23 @@ mutable struct MUSCLWorkspace2D <: MUSCLWorkspace
         )
     end
 end
+"""
+Sets all temporary buffers and coefficient storage in the MUSCL workspace to zero.
+"""
+function zero_workspace!(ws::MUSCLWorkspace1D)
+    # Zero out temporary buffers
+    fill!(ws.dx_buffer, 0.0)
+    fill!(ws.w_buffer, 0.0)
+    fill!(ws.A_buffer, 0.0)
 
+    # Clear out all previously calculated coefficients
+    for p_idx in 1:length(ws.alfaijs)
+        empty!(ws.alfaijs[p_idx])
+        empty!(ws.alfaij_bars[p_idx])
+        empty!(ws.betaijs[p_idx])
+        empty!(ws.gammaijs[p_idx])
+    end
+end
 function ensure_capacity!(ws::MUSCLWorkspace1D, n::Int)
     if n > ws.max_neighbors
         ws.max_neighbors = n
@@ -998,6 +1014,7 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid1D, interpAlpha::R
     ws = muscl.workspace
     for p_idx in 1:particleGrid.N
         neighbors = particleGrid.neighbour_indices[p_idx]
+        
         num_neighbors = length(neighbors)
         if num_neighbors == 0; continue; end
 
@@ -1010,7 +1027,6 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid1D, interpAlpha::R
         
         for (i, nb_idx) in enumerate(neighbors); dxVec[i] = getDistance(particleGrid, p_idx, nb_idx); end
         wVec .= muscl.weightFunction(dxVec; param=interpAlpha, normalisation=particleGrid.dx)
-
         _compute_muscl_coeffs!(
             muscl.order, dxVec, wVec, A,
             ws.alfaijs[p_idx], ws.alfaij_bars[p_idx], ws.betaijs[p_idx], ws.gammaijs[p_idx]
@@ -1061,7 +1077,7 @@ function _compute_muscl_coeffs!(::MUSCLORDER3, dxVec, wVec, A, alfaij, alfaijBar
     @. A_view[:, 2] = (dxVec^2) * wVec / 2
     @. A_view[:, 3] = (dxVec^3) * wVec / 6
 
-    coeff = pinv(A_view; rtol=sqrt(eps(eltype(A))))
+    coeff = pinv(A_view; rtol=sqrt(eps(real(float(oneunit(eltype(A)))))))
     @. alfaijBar = coeff[1, :] * wVec
     @. betaij = coeff[2, :] * wVec
     @. alfaij = coeff[3, :] * wVec # Overwrites the order-1 alfaij
@@ -1074,7 +1090,7 @@ function _compute_muscl_coeffs!(::MUSCLORDER4, dxVec, wVec, A, alfaij, alfaijBar
     @. A_view[:, 3] = (dxVec^3) * wVec / 6
     @. A_view[:, 4] = (dxVec^4) * wVec / 24
 
-    coeff = pinv(A_view; rtol=sqrt(eps(eltype(A))))
+    coeff = pinv(A_view; rtol=sqrt(eps(real(float(oneunit(eltype(A)))))))
     @. alfaijBar = coeff[1, :] * wVec
     @. betaij = coeff[2, :] * wVec
     @. alfaij = coeff[3, :] * wVec

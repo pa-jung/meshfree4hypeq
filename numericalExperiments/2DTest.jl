@@ -37,14 +37,15 @@ using IPlotPDESols # or just `const ParamDict = Dict{String, Any}` if not using 
 
 params = ParamDict(
     # --- Shared Parameters ---
-    "tmax" => 2.0,
-    "N" => 200,
+    "tmax" => 5.,
+    "N" => 100,
     "xmin" => -5.0,
     "xmax" => 5.0,
-    "CFL" => 0.4,
+    "CFL" => .02,
+    #"dt" => .25,
     "snapshots" => 20,
     "interp_alpha" => 1.0,
-    "interp_range" => 4.5,
+    "interp_range" => 3.5,
     "init_func" => "box", # Using the unified struct
     #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
     "init_params" => (0.,1.,-2.,2.),
@@ -57,13 +58,13 @@ params = ParamDict(
     "sim_function" => "runScalarSimulation",
 
     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
-    "timestepper" => "RalstonRK2",
+    "timestepper" => "EulerUpwind",
     "main_gradient" => "MUSCL",
     "fallback_gradient" => "Upwind",
     "fallback_flux" => "Rusanov",
-    "order" => 5,
+    "order" => 2,
     "main_flux" => "Rusanov",
-    "MOOD" => "U2", "delta_relax" => 0. # No MOOD for this run
+    #"MOOD" => "U2", "delta_relax" => 0. # No MOOD for this run
 )
 # --- How to use this for testing ---
 #
@@ -85,3 +86,4 @@ test_config = SimulationConfig(
 
 );
 show1DSolutionFig(test_config)
+

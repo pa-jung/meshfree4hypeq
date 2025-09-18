@@ -126,14 +126,17 @@ struct ParticleGrid1D <: ParticleGrid{1}
         xmin::Real, xmax::Real, N_interior::Integer, N_ghost::Integer, bc::Symbol; 
         randomness::Real = 0.0, rng = Meshfree4ScalarEq.rng
     )
+        local dx
         if bc == :periodic
             @assert N_ghost == 0 "Periodic grids do not use ghost cells."
             N_total = N_interior
             interior_indices = 1:N_total
+            dx = (xmax - xmin) / (N_interior > 1 ? (N_interior) : 1.0)
         else
             @assert N_ghost > 0 "N_ghost must be positive for non-periodic BCs."
             N_total = N_interior + 2 * N_ghost
             interior_indices = (N_ghost + 1):(N_ghost + N_interior)
+            dx = (xmax - xmin) / (N_interior > 1 ? (N_interior - 1) : 1.0)
         end
 
         # --- Initialize SoA Fields ---
@@ -141,7 +144,7 @@ struct ParticleGrid1D <: ParticleGrid{1}
         is_boundary = falses(N_total)
         
         # --- Populate Particle Positions ---
-        dx = (xmax - xmin) / (N_interior > 1 ? (N_interior - 1) : 1.0)
+        
         
         if bc == :periodic
             # Create periodic interior points
@@ -174,7 +177,7 @@ struct ParticleGrid1D <: ParticleGrid{1}
         neighbour_indices = [Int[] for _ in 1:N_total] # Initialize empty ragged array
         temp = zeros(Float64, N_total)
         regular = (randomness == 0.0)
-
+        println(positions)
         new(positions, rhos, curvatures, is_boundary, volumes, mood_events,
             neighbour_indices, xmin, xmax, N_total, dx, regular, bc, 
             interior_indices, temp)
@@ -563,6 +566,7 @@ function getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection{1}, inter
             dtMax = min(-denum / (vel * num), dtMax)
         end
     end
+    println(dtMax)
     return dtMax
 end
 
