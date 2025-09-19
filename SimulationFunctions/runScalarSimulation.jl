@@ -147,8 +147,8 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                   elseif lim == "superbee"; SuperbeeLimiter()
                   elseif lim == "VK"; VenkatakrishnanLimiter()
                   elseif lim == "BJ"; BarthJespersenLimiter()
-                  elseif lim == "none"; NoLimiter()
-                  elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
+                  elseif lim == "none" || isnothing(lim); NoLimiter()
+                  else error("Limiter '$lim' not recognized") end
 
         # --- Build Method Components ---
         mood_fun =   if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
@@ -173,7 +173,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                       elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
-        MainGrad = if main_grad_name == "MUSCL"; isnothing(lim) ? MUSCL(order-1, N_total_particles, dimension; weightFunction = weight_func, numericalFlux = MainFlux) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
+        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, N_total_particles, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                      elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                      elseif main_grad_name == "Central"; CentralGradient(order; weightFunction=weight_func)
                      elseif main_grad_name == "WENO"; WENO(order; weightFunction = weight_func)

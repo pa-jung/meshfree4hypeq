@@ -177,7 +177,6 @@ struct ParticleGrid1D <: ParticleGrid{1}
         neighbour_indices = [Int[] for _ in 1:N_total] # Initialize empty ragged array
         temp = zeros(Float64, N_total)
         regular = (randomness == 0.0)
-        println(positions)
         new(positions, rhos, curvatures, is_boundary, volumes, mood_events,
             neighbour_indices, xmin, xmax, N_total, dx, regular, bc, 
             interior_indices, temp)
@@ -566,7 +565,6 @@ function getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection{1}, inter
             dtMax = min(-denum / (vel * num), dtMax)
         end
     end
-    println(dtMax)
     return dtMax
 end
 
