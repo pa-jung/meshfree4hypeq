@@ -254,7 +254,11 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
         sim_data_result = createSimData(xs, us, ts, run_params)
         if !save_relax
-            calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+            if dimension == 1
+                calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+            else
+                calculateAllStats!(sim_data_result, (x,t) -> IC(x[1],x[2],t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+            end
         end         
         
         sim_data_result.stats["time"] = elapsed_time

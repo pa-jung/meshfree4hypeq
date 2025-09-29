@@ -671,8 +671,5 @@ function get_discontinuity_points(ic::Gauss, eq::BurgersEquation, t::Real, pg::P
     return [x_break + u_at_break * t]
 end
 
-# 2D Placeholders
-get_discontinuity_points(ic::InitialCondition, eq::ScalarHyperbolicPDE, t::Real, pg::ParticleGrid2D) = error("2D discontinuity tracking not implemented.")
-
 
 end # module InitialConditions
