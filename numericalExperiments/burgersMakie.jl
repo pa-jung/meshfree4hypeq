@@ -10,7 +10,7 @@ sim_config_burgers = SimulationConfig(
         "init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
-        "bc" => :periodic,
+        "bc" => :periodic, "weight_function" => "exponential",
         "order" => 1, "PDE" => "linear", "PDE_params" => 1.
     ),
 
@@ -174,8 +174,6 @@ sim_config_burgers = SimulationConfig(
             "interp_range" => 2.5,
             "main_flux" => "Rusanov",
             "order" => 2,
-            "relax_velocities" => (1.,-1.),
-            "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
         ),
         "IMEXRK2MUSCL2" => ParamDict(
@@ -311,6 +309,12 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "none",
             "ignore" => ["interp_alpha", "randomness_factor", "SEED"]
         ),
+        "LF(uniform grid)" => ParamDict(
+            "timestepper" => "LF",
+            "order" => 1,
+            "MOOD" => "none",
+            "ignore" => ["interp_alpha", "randomness_factor", "SEED"]
+        ),
         "ARS233MUSCL2MOOD" => ParamDict(
             "timestepper" => "ARS233",
             "main_gradient" => "MUSCL",
@@ -346,7 +350,7 @@ sim_config_burgers = SimulationConfig(
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
-    "ARS233MUSCL2"
+    "RK2WENO"
     #"RK2Upwind"
 );
 scene_options = Dict{String, Any}()

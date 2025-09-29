@@ -320,26 +320,50 @@ getEuclideanDistance(pg::ParticleGrid1D, i, j) = abs(getDistance(pg, i, j))
 getEuclideanDistance(pg::ParticleGrid2D, i, j) = norm(getDistance(pg, i, j))
 
 
-# --- OPTIMIZED updateNeighbours! for 2D grids ---
-function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
-    # Voxel setup
-    all_pos = particleGrid.positions
-    domain_xmin, domain_xmax = isempty(all_pos) ? (0.0,0.0) : extrema(p[1] for p in all_pos)
-    domain_ymin, domain_ymax = isempty(all_pos) ? (0.0,0.0) : extrema(p[2] for p in all_pos)
-    
-    nbBoxesX = floor(Int, (domain_xmax - domain_xmin) / maxDist) + 1
-    nbBoxesY = floor(Int, (domain_ymax - domain_ymin) / maxDist) + 1
+# --- Voxel and Neighbor Search Helpers (Internal) ---
+_grid_to_linear_index(hBox, vBox, nbBoxesX) = hBox + nbBoxesX * vBox
+_linear_index_to_grid(linearIndex, nbBoxesX) = (mod(linearIndex, nbBoxesX), div(linearIndex, nbBoxesX))
 
-    # --- 1. Update Voxel Information ---
+function _find_neighbouring_voxels(particleGrid::ParticleGrid2D, linearIndex::Integer, nbBoxesX::Integer, nbBoxesY::Integer)
+    xBox, yBox = _linear_index_to_grid(linearIndex, nbBoxesX)
+    
+    if particleGrid.bc == :periodic
+        return [_grid_to_linear_index(mod(xBox+i, nbBoxesX), mod(yBox+j, nbBoxesY), nbBoxesX) for i in -1:1 for j in -1:1]
+    else
+        return [_grid_to_linear_index(xBox + i, yBox + j, nbBoxesX) for i in -1:1 for j in -1:1 
+                if 0 <= (xBox + i) < nbBoxesX && 0 <= (yBox + j) < nbBoxesY]
+    end
+end
+
+function _update_voxel_information!(particleGrid::ParticleGrid2D, maxDist::Real)
+    domain_xmin, domain_xmax, domain_ymin, domain_ymax = if particleGrid.bc == :periodic
+        particleGrid.xmin, particleGrid.xmax, particleGrid.ymin, particleGrid.ymax
+    else
+        # Expand domain to include ghosts
+        (particleGrid.xmin - particleGrid.N_ghost * particleGrid.dx,
+         particleGrid.xmax + particleGrid.N_ghost * particleGrid.dx,
+         particleGrid.ymin - particleGrid.N_ghost * particleGrid.dy,
+         particleGrid.ymax + particleGrid.N_ghost * particleGrid.dy)
+    end
+        
+    nbBoxesX = floor(Int, (domain_xmax - domain_xmin)/maxDist) + 1
+    nbBoxesY = floor(Int, (domain_ymax - domain_ymin)/maxDist) + 1
     xBoxSize = (domain_xmax - domain_xmin) / nbBoxesX
     yBoxSize = (domain_ymax - domain_ymin) / nbBoxesY
+        
     for i in 1:particleGrid.N
         hBox = min(floor(Int, (particleGrid.positions[i][1] - domain_xmin) / xBoxSize), nbBoxesX - 1)
         vBox = min(floor(Int, (particleGrid.positions[i][2] - domain_ymin) / yBoxSize), nbBoxesY - 1)
-        particleGrid.voxels[i] = (vBox * nbBoxesX) + hBox
+        particleGrid.voxels[i] = _grid_to_linear_index(hBox, vBox, nbBoxesX)
     end
+    return nbBoxesX, nbBoxesY
+end
 
-    # --- 2. Reuse and Refill Voxel Map ---
+# --- Main Public Functions ---
+
+function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
+    nbBoxesX, nbBoxesY = _update_voxel_information!(particleGrid, maxDist)
+    
     voxel_map = particleGrid.voxel_map
     for key in keys(voxel_map); empty!(voxel_map[key]); end
     
@@ -349,43 +373,22 @@ function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
         push!(voxel_map[voxel_idx], i)
     end
 
-    # --- 3. Find Neighbors ---
     for p_idx in 1:particleGrid.N
-        # Reuse memory for the neighbor list
-        empty!(particleGrid.neighbour_indices[p_idx])
+        nb_list = particleGrid.neighbour_indices[p_idx]
+        empty!(nb_list)
         
-        # ... (findNeighbouringVoxels logic is complex and assumed correct) ...
-        # Simplified placeholder for the neighbor search logic:
-        # You would call your `findNeighbouringVoxels` helper here.
-        # For simplicity, this example just checks all particles.
-        # REPLACE THIS with your more efficient voxel-based search.
-        for nb_idx in 1:particleGrid.N
-            if p_idx != nb_idx && getEuclideanDistance(particleGrid, p_idx, nb_idx) <= maxDist
-                push!(particleGrid.neighbour_indices[p_idx], nb_idx)
+        neighboring_voxels = _find_neighbouring_voxels(particleGrid, particleGrid.voxels[p_idx], nbBoxesX, nbBoxesY)
+        
+        for nbVoxel in neighboring_voxels
+            if haskey(voxel_map, nbVoxel)
+                for nb_idx in voxel_map[nbVoxel]
+                    if p_idx != nb_idx && getEuclideanDistance(particleGrid, p_idx, nb_idx) <= maxDist
+                        push!(nb_list, nb_idx)
+                    end
+                end
             end
         end
     end
-end
-
-"""
-    gridToLinearIndex(hBox::Integer, vBox::Integer, nbBoxesX::Integer)::Integer
-
-Convert 2D grid index to a linear index.
-"""
-function gridToLinearIndex(hBox::Integer, vBox::Integer, nbBoxesX::Integer)::Integer
-    return hBox + nbBoxesX*vBox
-end
-
-
-"""
-    linearIndexToGrid(linearIndex::Integer, nbBoxesX::Integer)::Tuple{Integer, Integer}
-    
-Convert linear index to row and column index (hBox, vBox).
-"""
-function linearIndexToGrid(linearIndex::Integer, nbBoxesX::Integer)::Tuple{Integer, Integer}
-    hBox = mod(linearIndex, nbBoxesX)
-    vBox = div(linearIndex - hBox, nbBoxesX)
-    return (hBox, vBox)
 end
 
 """

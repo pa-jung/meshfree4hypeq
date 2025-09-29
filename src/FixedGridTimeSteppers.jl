@@ -1,144 +1,100 @@
 export Upwind, LaxFriedrich, ClassicalTimeStepper, ClassicalRK2LWTimeStepper, ClassicalRichtmyerLWMOOD
 using ..Meshfree4ScalarEq.FluxFunctions
 
-struct Upwind <: FixedGridTimeStepper 
-    rhoOld::Vector{Float64}
-    function Upwind(Nx::Integer)
-        new(Vector{Float64}(undef, Nx))
-    end
-end
+# --- In your TimeIntegration.jl file ---
 
-function (upwind::Upwind)(eq::HyperbolicPDE, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
-    error("Upwind method for nonlinear hyperbolic equations (Roe's scheme) not yet implemented.")
+#==============================================================================
+  Fixed-Grid Time Steppers (Optimized for SoA Grids)
+==============================================================================#
+
+# --- Upwind Method ---
+mutable struct Upwind <: FixedGridTimeStepper 
+    rho_n::Vector{Float64} # Reusable buffer for the state at time n
+    Upwind() = new(Float64[])
 end
 
 function (upwind::Upwind)(eq::LinearAdvection{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
-    map!(particle -> particle.rho, upwind.rhoOld, particleGrid.grid)
-    vel = velocity(eq, particleGrid.grid[1].rho)[1]  # Velocity is constant so just evaluate it at the first particle
-    λ = vel*dt/particleGrid.dx
+    @assert particleGrid.regular "Upwind fixed-grid method requires a regular grid."
+    N = particleGrid.N
+    if length(upwind.rho_n) != N; resize!(upwind.rho_n, N); end
+    
+    upwind.rho_n .= particleGrid.rhos # Store u^n
+    vel = velocity(eq, 0.0) # Velocity is constant for this equation
+    λ = vel * dt / particleGrid.dx
+
+    # This method is only defined for periodic BCs
     if vel > 0
-        particleGrid.grid[1].rho -= λ*(upwind.rhoOld[1] - upwind.rhoOld[end])
-        for i in 2:particleGrid.N
-            particleGrid.grid[i].rho -= λ*(upwind.rhoOld[i] - upwind.rhoOld[i-1])
+        for i in 2:N
+            particleGrid.rhos[i] = upwind.rho_n[i] - λ * (upwind.rho_n[i] - upwind.rho_n[i-1])
         end
+        particleGrid.rhos[1] = upwind.rho_n[1] - λ * (upwind.rho_n[1] - upwind.rho_n[N]) # Periodic wrap
     else
-        for i in 1:particleGrid.N-1
-            particleGrid.grid[i].rho -= λ*(upwind.rhoOld[i+1] - upwind.rhoOld[i])
+        for i in 1:(N-1)
+            particleGrid.rhos[i] = upwind.rho_n[i] - λ * (upwind.rho_n[i+1] - upwind.rho_n[i])
         end
-        particleGrid.grid[end].rho -= λ*(upwind.rhoOld[1] - upwind.rhoOld[end])
+        particleGrid.rhos[N] = upwind.rho_n[N] - λ * (upwind.rho_n[1] - upwind.rho_n[N]) # Periodic wrap
     end
 end
 
-struct LaxFriedrich <: FixedGridTimeStepper 
-    rhoOld::Vector{Float64}
-    function LaxFriedrich(Nx::Integer)
-        new(Vector{Float64}(undef, Nx))
-    end
+# --- Lax-Friedrichs Method ---
+mutable struct LaxFriedrich <: FixedGridTimeStepper 
+    rho_n::Vector{Float64}
+    LaxFriedrich() = new(Float64[])
 end
 
 function (lf::LaxFriedrich)(eq::ScalarHyperbolicPDE{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
-    map!(particle -> particle.rho, lf.rhoOld, particleGrid.grid)
-    λ = dt/(2*particleGrid.dx)
-    for i in 2:particleGrid.N-1
-        particleGrid.grid[i].rho = 0.5*(lf.rhoOld[i+1] + lf.rhoOld[i-1]) -λ*(flux(eq, lf.rhoOld[i+1]) - flux(eq, lf.rhoOld[i-1]))
-    end
-    particleGrid.grid[end].rho = 0.5*(lf.rhoOld[1] + lf.rhoOld[end-1]) -λ*(flux(eq, lf.rhoOld[1]) - flux(eq, lf.rhoOld[end-1]))
-    particleGrid.grid[1].rho = 0.5*(lf.rhoOld[2] + lf.rhoOld[end]) -λ*(flux(eq, lf.rhoOld[2]) - flux(eq, lf.rhoOld[end]))
-end
-
-# --- NEW: ClassicalTimeStepper (1st Order Finite Volume) ---
-# This version directly uses a NumericalFluxFunction from your FluxFunctions.txt
-
-struct ClassicalTimeStepper <: FixedGridTimeStepper
-    numericalFlux::NumericalFluxFunction # Instance of RusanovFlux(), UpwindFlux(), etc.
-    rhoOld::Vector{Float64}
-    # Buffers for interface fluxes can be local if preferred, or fields if used elsewhere
-    # For simplicity here, let's make them local to the functor call.
-
-    function ClassicalTimeStepper(Nx::Integer, numFlux::NumericalFluxFunction)
-        new(numFlux, Vector{Float64}(undef, Nx))
-    end
-end
-
-# In your TimeIntegration.jl or FixedGridTimeSteppers.txt file
-
-# (Keep the ClassicalTimeStepper struct definition as is)
-# struct ClassicalTimeStepper <: FixedGridTimeStepper ... end
-
-"""
-    (cts::ClassicalTimeStepper)(eq, particleGrid, settings, time, dt)
-
-Functor for the Classical Finite Volume (Fixed Grid) Time Stepper.
-Handles both periodic and fixed boundary conditions.
-"""
-function (cts::ClassicalTimeStepper)(
-    eq::ScalarHyperbolicPDE{1}, 
-    particleGrid::ParticleGrid1D, 
-    settings::SimSetting, 
-    time::Real, 
-    dt::Real
-)
-    # This timestepper is designed for regular grids.
-    if !particleGrid.regular
-        @warn "ClassicalTimeStepper is designed for regular grids but was called with a non-regular one. Results may be inaccurate."
-    end
-
-    # Copy the initial state for all particles (including ghosts) into the buffer
-    map!(particle -> particle.rho, cts.rhoOld, particleGrid.grid)
+    @assert particleGrid.regular "Lax-Friedrich fixed-grid method requires a regular grid."
+    N = particleGrid.N
+    if length(lf.rho_n) != N; resize!(lf.rho_n, N); end
     
-    dx = particleGrid.dx
-    dtdx = dt / dx
+    lf.rho_n .= particleGrid.rhos
+    λ = dt / (2 * particleGrid.dx)
 
-    if particleGrid.bc == :periodic
-        # --- Periodic Boundary Condition Logic (Original Code) ---
-        N = particleGrid.N # Number of physical particles
-        
-        # flux_at_interfaces[k] will store F*_{k+1/2}
-        flux_at_interfaces = Vector{Float64}(undef, N)
+    # This method is only defined for periodic BCs
+    for i in 2:(N-1)
+        particleGrid.rhos[i] = 0.5 * (lf.rho_n[i+1] + lf.rho_n[i-1]) - λ * (flux(eq, lf.rho_n[i+1]) - flux(eq, lf.rho_n[i-1]))
+    end
+    # Periodic boundary updates
+    particleGrid.rhos[1] = 0.5 * (lf.rho_n[2] + lf.rho_n[N]) - λ * (flux(eq, lf.rho_n[2]) - flux(eq, lf.rho_n[N]))
+    particleGrid.rhos[N] = 0.5 * (lf.rho_n[1] + lf.rho_n[N-1]) - λ * (flux(eq, lf.rho_n[1]) - flux(eq, lf.rho_n[N-1]))
+end
 
-        for k in 1:N
-            u_L = cts.rhoOld[k]
-            u_R = cts.rhoOld[mod1(k + 1, N)] # Periodic neighbor
-            flux_at_interfaces[k] = cts.numericalFlux(u_L, u_R, eq)
-        end
+# --- Classical Finite Volume Method ---
+mutable struct ClassicalTimeStepper <: FixedGridTimeStepper
+    numericalFlux::NumericalFluxFunction
+    rho_n::Vector{Float64}
+    flux_interfaces::Vector{Float64}
 
-        for i in 1:N
-            F_star_i_plus_half = flux_at_interfaces[i]
-            F_star_i_minus_half = flux_at_interfaces[mod1(i - 1, N)] # Periodic neighbor
-            particleGrid.grid[i].rho = cts.rhoOld[i] - dtdx * (F_star_i_plus_half - F_star_i_minus_half)
-        end
-
-    else # --- Fixed Boundary Condition Logic (e.g., :fixed_dirichlet, :outflow) ---
-        N_total = length(particleGrid.grid)
-        interior_indices = particleGrid.interior_indices
-        
-        # We need to calculate fluxes at N_interior + 1 interfaces.
-        # These are the interfaces bounding the interior cells.
-        # Let's calculate all N_total - 1 interface fluxes for simplicity.
-        flux_at_interfaces = Vector{Float64}(undef, N_total - 1)
-
-        # Calculate all interface fluxes F*_{i+1/2} for i = 1 to N_total-1
-        for i in 1:(N_total - 1)
-            u_L = cts.rhoOld[i]
-            u_R = cts.rhoOld[i + 1]
-            flux_at_interfaces[i] = cts.numericalFlux(u_L, u_R, eq)
-        end
-
-        # Update rule: U_i^{n+1} = U_i^n - (dt/dx) * ( F*_{i+1/2} - F*_{i-1/2} )
-        # Loop ONLY over the interior physical particles
-        for i in interior_indices
-            # F*_{i+1/2} is the flux at the right interface of cell i.
-            # In our 0-based thinking, this is interface `i`.
-            F_star_i_plus_half = flux_at_interfaces[i]
-            
-            # F*_{i-1/2} is the flux at the left interface of cell i.
-            # This is interface `i-1`.
-            F_star_i_minus_half = flux_at_interfaces[i - 1]
-            
-            particleGrid.grid[i].rho = cts.rhoOld[i] - dtdx * (F_star_i_plus_half - F_star_i_minus_half)
-        end
+    function ClassicalTimeStepper(numFlux::NumericalFluxFunction)
+        new(numFlux, Float64[], Float64[])
     end
 end
+
+function (cts::ClassicalTimeStepper)(eq::ScalarHyperbolicPDE{1}, particleGrid::ParticleGrid1D, settings::SimSetting, time::Real, dt::Real)
+    @assert particleGrid.regular "ClassicalTimeStepper requires a regular grid."
+    N = particleGrid.N
+    if length(cts.rho_n) != N; resize!(cts.rho_n, N); resize!(cts.flux_interfaces, N); end
+    
+    cts.rho_n .= particleGrid.rhos
+    dtdx = dt / particleGrid.dx
+
+    # This method is only defined for periodic BCs
+    # flux_interfaces[k] stores the flux at the right-hand interface of particle k (i.e., F*_{k+1/2})
+    for k in 1:N
+        u_L = cts.rho_n[k]
+        u_R = cts.rho_n[mod1(k + 1, N)] # Periodic neighbor
+        cts.flux_interfaces[k] = cts.numericalFlux(u_L, u_R, eq)
+    end
+
+    # Update rule: U_i^{n+1} = U_i^n - (dt/dx) * ( F*_{i+1/2} - F*_{i-1/2} )
+    for i in 1:N
+        F_star_i_plus_half = cts.flux_interfaces[i]
+        F_star_i_minus_half = cts.flux_interfaces[mod1(i - 1, N)] # Periodic neighbor
+        particleGrid.rhos[i] = cts.rho_n[i] - dtdx * (F_star_i_plus_half - F_star_i_minus_half)
+    end
+end
+
+
 
 # --- NEW: ClassicalRK2LWTimeStepper (Richtmyer two-step Lax-Wendroff) ---
 # This one remains the same as it uses the physical flux F(U) on predicted states,
@@ -214,27 +170,35 @@ end
 
 # --- NEW: Classical Richtmyer Lax-Wendroff with MOOD ---
 
-struct ClassicalRichtmyerLWMOOD{M <: MOODCriterion} <: FixedGridTimeStepper
-    mood::M
-    rhoOld::Vector{Float64}
-    rhoCandidate::Vector{Float64}         # Buffer for the high-order candidate solution
-    rhoPredict_interface::Vector{Float64} # Buffer for U_{i+1/2}^{n+1/2}
+# Helper function to estimate the max wave speed for the Rusanov/LF flux
+function _max_abs_speed_classical(eq::ScalarHyperbolicPDE, u_L, u_R)
+    # This is a simple implementation; more advanced versions might use Roe averages
+    vel_L = velocity(eq, u_L)
+    vel_R = velocity(eq, u_R)
+    return max(abs(vel_L), abs(vel_R))
+end
 
-    function ClassicalRichtmyerLWMOOD(Nx_total::Integer; mood::M = NoMOOD()) where {M <: MOODCriterion}
-        # Buffers need to be sized for the total grid size, including ghosts
-        new{M}(mood, Vector{Float64}(undef, Nx_total), Vector{Float64}(undef, Nx_total), Vector{Float64}(undef, Nx_total))
+
+mutable struct ClassicalRichtmyerLWMOOD{M <: MOODCriterion} <: FixedGridTimeStepper
+    mood::M
+    # --- Reusable Buffers (Workspace) ---
+    rho_n::Vector{Float64}
+    rho_candidate::Vector{Float64}
+    rho_predict_interface::Vector{Float64}
+    flux_predict::Vector{Float64}
+
+    function ClassicalRichtmyerLWMOOD(; mood::M = NoMOOD()) where {M <: MOODCriterion}
+        new{M}(mood, Float64[], Float64[], Float64[], Float64[])
     end
 end
 
 function initTimeStepper(cts_mood::ClassicalRichtmyerLWMOOD, particleGrid::ParticleGrid, settings::SimSetting)
-    # Resize buffers if grid size changes between runs
-    N_total = length(particleGrid.grid)
-    if length(cts_mood.rhoOld) != N_total
-        resize!(cts_mood.rhoOld, N_total)
-        resize!(cts_mood.rhoCandidate, N_total)
-        resize!(cts_mood.rhoPredict_interface, N_total)
+    # This function is now primarily for ensuring buffers are sized.
+    # The main functor also checks this, so this function is optional but good practice.
+    N = particleGrid.N
+    if length(cts_mood.rho_n) != N
+        resize!.((cts_mood.rho_n, cts_mood.rho_candidate, cts_mood.rho_predict_interface, cts_mood.flux_predict), N)
     end
-    return
 end
 
 function (cts_mood::ClassicalRichtmyerLWMOOD)(
@@ -244,74 +208,61 @@ function (cts_mood::ClassicalRichtmyerLWMOOD)(
     time::Real, 
     dt::Real
 )
-    if !particleGrid.regular
-        @warn "Classical timesteppers are designed for regular grids. Results may be inaccurate."
+    @assert particleGrid.regular "ClassicalRichtmyerLWMOOD requires a regular grid."
+    
+    N = particleGrid.N
+    # --- Ensure buffers are correctly sized for the current grid ---
+    if length(cts_mood.rho_n) != N
+        resize!.((cts_mood.rho_n, cts_mood.rho_candidate, cts_mood.rho_predict_interface, cts_mood.flux_predict), N)
     end
 
-    # Copy the initial state for all particles (including ghosts) into the buffer
-    map!(particle -> particle.rho, cts_mood.rhoOld, particleGrid.grid)
-    
+    cts_mood.rho_n .= particleGrid.rhos
     dx = particleGrid.dx
     dtdx = dt / dx
     
-    interior_indices = particleGrid.interior_indices
-    N_total = length(particleGrid.grid)
+    # This method is only defined for periodic BCs
+    interior = particleGrid.interior_indices # Should be 1:N for periodic
 
-    # --- 1. Predictor Step (Lax-Wendroff): Calculate U_{i+1/2}^{n+1/2} ---
-    # This is done for all interfaces, including those involving ghost cells.
-    if particleGrid.bc == :periodic
-        for i in 1:N_total
-            idx_plus_1 = mod1(i + 1, N_total)
-            Ui_n = cts_mood.rhoOld[i]; Uip1_n = cts_mood.rhoOld[idx_plus_1]
-            F_Ui_n = flux(eq, Ui_n); F_Uip1_n = flux(eq, Uip1_n)
-            cts_mood.rhoPredict_interface[i] = 0.5 * (Ui_n + Uip1_n) - (dt / (2.0 * dx)) * (F_Uip1_n - F_Ui_n)
-        end
-    else # Fixed BC
-        for i in 1:(N_total - 1)
-            Ui_n = cts_mood.rhoOld[i]; Uip1_n = cts_mood.rhoOld[i+1]
-            F_Ui_n = flux(eq, Ui_n); F_Uip1_n = flux(eq, Uip1_n)
-            cts_mood.rhoPredict_interface[i] = 0.5 * (Ui_n + Uip1_n) - (dt / (2.0 * dx)) * (F_Uip1_n - F_Ui_n)
-        end
+    # --- 1. Predictor Step: Calculate U_{i+1/2}^{n+1/2} at all interfaces ---
+    for i in 1:N
+        idx_plus_1 = mod1(i + 1, N)
+        Ui_n = cts_mood.rho_n[i]
+        Uip1_n = cts_mood.rho_n[idx_plus_1]
+        
+        F_Ui_n = flux(eq, Ui_n)
+        F_Uip1_n = flux(eq, Uip1_n)
+        
+        cts_mood.rho_predict_interface[i] = 0.5 * (Ui_n + Uip1_n) - (dt / (2.0 * dx)) * (F_Uip1_n - F_Ui_n)
     end
 
-    # --- 2. Corrector Step (Candidate Solution) ---
-    # Calculate a high-order candidate solution for all INTERIOR cells.
-    flux_of_predicted_states = [flux(eq, val) for val in cts_mood.rhoPredict_interface]
+    # --- 2. Corrector Step: Calculate high-order candidate solution ---
+    map!(rho -> flux(eq, rho), cts_mood.flux_predict, cts_mood.rho_predict_interface)
 
-    for i in interior_indices
-        F_star_ip_half = particleGrid.bc == :periodic ? flux_of_predicted_states[i] : flux_of_predicted_states[i]
-        F_star_im_half = particleGrid.bc == :periodic ? flux_of_predicted_states[mod1(i - 1, N_total)] : flux_of_predicted_states[i - 1]
+    for i in interior
+        F_star_ip_half = cts_mood.flux_predict[i]
+        F_star_im_half = cts_mood.flux_predict[mod1(i - 1, N)]
         
-        cts_mood.rhoCandidate[i] = cts_mood.rhoOld[i] - dtdx * (F_star_ip_half - F_star_im_half)
+        cts_mood.rho_candidate[i] = cts_mood.rho_n[i] - dtdx * (F_star_ip_half - F_star_im_half)
     end
 
     # --- 3. MOOD Detection and Final Update ---
-    # Loop through interior cells, check the candidate, and apply final update.
-    for i in interior_indices
-        # The mood function needs the full old state vector to find local extrema.
-        if cts_mood.mood(particleGrid, i, cts_mood.rhoOld, cts_mood.rhoCandidate[i])
-            # MOOD triggered! Recalculate update for this cell using Lax-Friedrichs fallback.
-            
-            # Get states for left and right interfaces of cell i
-            u_L_left_interface = cts_mood.rhoOld[particleGrid.bc == :periodic ? mod1(i-1, N_total) : i-1]
-            u_R_left_interface = cts_mood.rhoOld[i]
-            
-            u_L_right_interface = cts_mood.rhoOld[i]
-            u_R_right_interface = cts_mood.rhoOld[particleGrid.bc == :periodic ? mod1(i+1, N_total) : i+1]
-            
-            # Lax-Friedrichs flux at i-1/2
-            alpha_minus = _max_abs_speed_classical(eq, u_L_left_interface, u_R_left_interface)
-            F_star_im_half_LF = 0.5 * (flux(eq, u_L_left_interface) + flux(eq, u_R_left_interface)) - 0.5 * alpha_minus * (u_R_left_interface - u_L_left_interface)
+    for i in interior
+        if cts_mood.mood(particleGrid, i, cts_mood.rho_n, cts_mood.rho_candidate[i])
+            # MOOD triggered: Fallback to Lax-Friedrichs/Rusanov update for this cell
+            u_L_right = cts_mood.rho_n[i]
+            u_R_right = cts_mood.rho_n[mod1(i + 1, N)]
+            alpha_right = _max_abs_speed_classical(eq, u_L_right, u_R_right)
+            F_star_ip_half_LF = 0.5 * (flux(eq, u_L_right) + flux(eq, u_R_right)) - 0.5 * alpha_right * (u_R_right - u_L_right)
 
-            # Lax-Friedrichs flux at i+1/2
-            alpha_plus = _max_abs_speed_classical(eq, u_L_right_interface, u_R_right_interface)
-            F_star_ip_half_LF = 0.5 * (flux(eq, u_L_right_interface) + flux(eq, u_R_right_interface)) - 0.5 * alpha_plus * (u_R_right_interface - u_L_right_interface)
+            u_L_left = cts_mood.rho_n[mod1(i - 1, N)]
+            u_R_left = cts_mood.rho_n[i]
+            alpha_left = _max_abs_speed_classical(eq, u_L_left, u_R_left)
+            F_star_im_half_LF = 0.5 * (flux(eq, u_L_left) + flux(eq, u_R_left)) - 0.5 * alpha_left * (u_R_left - u_L_left)
             
-            # Apply the low-order, stable update
-            particleGrid.grid[i].rho = cts_mood.rhoOld[i] - dtdx * (F_star_ip_half_LF - F_star_im_half_LF)
+            particleGrid.rhos[i] = cts_mood.rho_n[i] - dtdx * (F_star_ip_half_LF - F_star_im_half_LF)
         else
             # Candidate is good, accept it.
-            particleGrid.grid[i].rho = cts_mood.rhoCandidate[i]
+            particleGrid.rhos[i] = cts_mood.rho_candidate[i]
         end
     end
 end

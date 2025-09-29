@@ -92,6 +92,8 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         seed_val = run_params["SEED"]
         weight_func_name = run_params["weight_function"]
         save_relax = run_params["save_relax"]
+
+        @assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
         
         # --- 4. Construct Kinetic System (Dimension-Aware) ---
         num_kinetic_per_macro = [length(v) for v in relax_velocities_config]
@@ -177,9 +179,9 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         if mood_name == "U1"; mood_fun = MOODu1(deltaRelax = delta_relax)
         elseif mood_name == "U2"; mood_fun = MOODu2(deltaRelax = delta_relax)
         elseif mood_name == "LoubertU2"; mood_fun = MOODLoubertU2(deltaRelax = delta_relax)
-        elseif mood_name == "none"; mood_fun = NoMOOD()
+        elseif mood_name == "none" || isnothing(mood_name); mood_fun = NoMOOD()
         elseif mood_name == "only"; mood_fun = OnlyMOOD()
-        elseif !isnothing(mood_name); error("MOOD '$mood_name' not recognized") end
+        else error("MOOD '$mood_name' not recognized") end
 
         local weight_func
         weight_func = if weight_func_name == "exponential"; exponentialWeightFunction()
@@ -195,8 +197,8 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                   elseif lim == "superbee"; SuperbeeLimiter()
                   elseif lim == "VK"; VenkatakrishnanLimiter()
                   elseif lim == "BJ"; BarthJespersenLimiter()
-                  elseif lim == "none"; NoLimiter()
-                  elseif !isnothing(lim); error("Limiter '$lim' not recognized") end
+                  elseif lim == "none" || !isnothing(lim); NoLimiter()
+                  else error("Limiter '$lim' not recognized") end
                   
 
         MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() 
@@ -206,13 +208,16 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux() 
                        elseif fallback_flux_name == "Upwind"; FallbackFlux = UpwindFlux()
                        elseif !isnothing(fallback_flux_name); error("Flux $fallback_flux_name NYI"); end
-        upwind_alg_2d = dimension == 2 ? run_params["upwind_alg_2d"] : "Classic"
+        local upwind_alg_2d
+        if main_grad_name == "Upwind" || !isa(mood_fun, NoMOOD)
+            upwind_alg_2d = dimension == 2 ? run_params["upwind_alg_2d"] : "Classic"
+        else
+            upwind_alg_2d = nothing
+        end
         MainGrad = if main_grad_name == "MUSCL"
-                    isnothing(lim) ? MUSCL(order-1; weightFunction = weight_func, numericalFlux = MainFlux) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
+                    isnothing(lim) ? MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                     elseif main_grad_name == "WENO"
-                        WENO(order; weightFunction = weight_func)
-                    elseif main_grad_name == "MUSCLlimit"
-                        MUSCLlimited(1; numericalFlux=MainFlux, weightFunction=weight_func)
+                        WENO(order, dimension; weightFunction = weight_func)
                 elseif main_grad_name == "Upwind"
                     UpwindGradient(1; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                 else error("Unknown MainGrad: $main_grad_name"); end
@@ -221,18 +226,18 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         implicit_solver = LinearizedRelaxationImplicitSolver()
         N_total_particles = length(particleGrid_template.grid)
         
-        system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_total_kinetic)
-                        elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_total_kinetic)
-                        elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_total_kinetic)
-                        elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_total_kinetic)
-                        elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, N_total_particles; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term, N_total_particles)
+        system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                        elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                        elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                        elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                        elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, N_total_particles; fallbackInterpolator=FallbackGrad, mood=mood_fun))
                         else error("Unknown TimeStepper name for system: '$timestepper_name'") end
         
         # Convert to tuples for performance before passing to the integrator
         kinetic_eqs = Tuple(kinetic_eqs_vec)
         particleGrids = Tuple(particleGrids_vec)
 
-        elapsed_time, sys_xs_data, sys_us_kinetic, ts = mainTimeIntegratorNew!(system_method, kinetic_eqs, particleGrids, settings)
+        elapsed_time, sys_xs_data, sys_us_kinetic, ts = mainTimeIntegrator!(system_method, kinetic_eqs, particleGrids, settings)
         @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
         # --- 8. Post-process & Return ---

@@ -103,7 +103,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         weight_func_name = get(run_params, "weight_function", nothing)
         lim = get(run_params, "limiter", nothing)
 
-        @assert (isnothing(lim) || order == 2) "Only 2nd order supported with limiter!"
+        @assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
 
         # --- 5. Grid Creation (Dimension-Aware) ---
         N_ghost::Int = bc == :periodic ? 0 : get(run_params, "N_ghost", ceil(Int, interp_range_factor) + 1)
@@ -125,7 +125,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             randomness = (randomness_factor[1] * dx_nominal, randomness_factor[2] * dy_nominal)
             particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc; rng=rng, randomness=randomness)
             interp_range = interp_range_factor * max(particleGrid.dx, particleGrid.dy)
-            upwind_alg_2d = run_params["upwind_alg_2d"]
+            upwind_alg_2d = main_grad_name == "Upwind" || fallback_grad_name == "Upwind" ? run_params["upwind_alg_2d"] : nothing
         end
         N_total_particles = particleGrid.N
         determineVolumes!(particleGrid)
@@ -176,7 +176,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, N_total_particles, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                      elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                      elseif main_grad_name == "Central"; CentralGradient(order; weightFunction=weight_func)
-                     elseif main_grad_name == "WENO"; WENO(order; weightFunction = weight_func)
+                     elseif main_grad_name == "WENO"; WENO(order, dimension; weightFunction = weight_func)
                      elseif !is_classic; error("Main Gradient '$main_grad_name' not implemented for 2D.")
                      end
 
@@ -189,13 +189,13 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         if isnothing(relax_vel)
             method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
-            elseif timestepper_name == "RK3"; method = RK3(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
-            elseif timestepper_name == "RK4"; method = RK4(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun)
-            elseif timestepper_name == "LF"; method = LaxFriedrich(N_total_particles)
-            elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(N_total_particles; mood = mood_fun)
-            elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(N_total_particles, MainFlux)
+            elseif timestepper_name == "RK3"; method = RK3(MainGrad; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+            elseif timestepper_name == "RK4"; method = RK4(MainGrad; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+            elseif timestepper_name == "LF"; method = LaxFriedrich()
+            elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(; mood = mood_fun)
+            elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(MainFlux)
             elseif timestepper_name == "Upwind"; method = Upwind(N_total_particles)
-            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch2(MainGrad, N_total_particles; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = run_params["switch_tol"])
+            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch(MainGrad; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = run_params["switch_tol"])
             else error("Unknown Timestepper!") end
 
             save_relax = false
@@ -236,11 +236,11 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             source_term = RelaxationSourceTerm(M_funcs_vec, relax_eps, [collect(1:N_kinetic)])
             implicit_solver = LinearizedRelaxationImplicitSolver()
-            system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_kinetic)
-                            elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_kinetic)
-                            elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_kinetic)
-                            elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, N_total_particles, N_kinetic)
-                            elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, N_total_particles; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term, N_total_particles)
+            system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                            elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                            elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                            elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+                            elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term)
                             else error("Unknown TimeStepper name for system: '$timestepper_name'") 
                             end
             elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings)
