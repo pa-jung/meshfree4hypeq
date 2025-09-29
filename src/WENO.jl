@@ -124,7 +124,6 @@ function (weno::WENO{2})(
     neighbors = particleGrid.neighbour_indices[particleIndex]
     num_neighbors = length(neighbors)
     
-    # A robust WENO scheme requires a minimum number of points
     if num_neighbors < weno.order
         if setCurvature; particleGrid.curvatures[particleIndex, :] .= 0.0; end
         return 0.0
@@ -134,7 +133,7 @@ function (weno::WENO{2})(
     dxVec = @view ws.dx_buffer[1:num_neighbors]
     dyVec = @view ws.dy_buffer[1:num_neighbors]
     dfVec = @view ws.df_buffer[1:num_neighbors]
-    wVec = @view ws.w_buffer[1:num_neighbors]
+    wVec_pristine = @view ws.w_buffer[1:num_neighbors] # This will hold the original, correct weights
     leftWindow = @view ws.left_window_buffer[1:num_neighbors]
     topWindow = @view ws.top_window_buffer[1:num_neighbors]
 
@@ -146,51 +145,41 @@ function (weno::WENO{2})(
         leftWindow[i] = dx < 0.0
         topWindow[i] = dy > 0.0
     end
-    wVec .= weno.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+    wVec_pristine .= weno.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
     vel = velocity(eq, 0.0)
 
-    # --- Stencil Calculations (Left/Right, Up/Down, Central) ---
+    # --- Create a temporary buffer for mutated weights ---
+    # This avoids allocating a new vector in every call.
+    wVec_temp_buffer = similar(wVec_pristine)
+
+    # --- Stencil Calculations (Corrected) ---
     
-    # Horizontal Stencil (Left/Right)
+    # Horizontal Stencil
     stencil_h = vel[1] > 0.0 ? leftWindow : .!leftWindow
-    if count(stencil_h) < weno.order; return 0.0; end # Fallback if stencil is too small
-    gradInterpolation!((@view dxVec[stencil_h]), (@view dyVec[stencil_h]), (@view wVec[stencil_h]), (@view dfVec[stencil_h]), weno.res; order=weno.order)
-    resHx = weno.res[1]/settings.interpRange
-    resHy = weno.res[2]/settings.interpRange
-    resHxx = weno.res[3]/(settings.interpRange^2)
-    resHyy = weno.res[4]/(settings.interpRange^2)
-    resHxy = weno.res[5]/(settings.interpRange^2)
+    if count(stencil_h) < weno.order; return 0.0; end
+    wVec_temp_buffer[stencil_h] .= @view wVec_pristine[stencil_h] # Copy weights
+    gradInterpolation!((@view dxVec[stencil_h]), (@view dyVec[stencil_h]), (@view wVec_temp_buffer[stencil_h]), (@view dfVec[stencil_h]), weno.res; order=weno.order)
+    resHx, resHy, resHxx, resHyy, resHxy = weno.res[1]/settings.interpRange, weno.res[2]/settings.interpRange, weno.res[3]/(settings.interpRange^2), weno.res[4]/(settings.interpRange^2), weno.res[5]/(settings.interpRange^2)
     
-    # Vertical Stencil (Up/Down)
-    # Note: The weight vector `wVec` is the same for all stencils, no need to recalculate
+    # Vertical Stencil
     stencil_v = vel[2] < 0.0 ? topWindow : .!topWindow
-    if count(stencil_v) < weno.order; return 0.0; end # Fallback if stencil is too small
-    gradInterpolation!((@view dxVec[stencil_v]), (@view dyVec[stencil_v]), (@view wVec[stencil_v]), (@view dfVec[stencil_v]), weno.res; order=weno.order)
-    resVx = weno.res[1]/settings.interpRange
-    resVy = weno.res[2]/settings.interpRange
-    resVxx = weno.res[3]/(settings.interpRange^2)
-    resVyy = weno.res[4]/(settings.interpRange^2)
-    resVxy = weno.res[5]/(settings.interpRange^2)
+    if count(stencil_v) < weno.order; return 0.0; end
+    wVec_temp_buffer[stencil_v] .= @view wVec_pristine[stencil_v] # Copy weights
+    gradInterpolation!((@view dxVec[stencil_v]), (@view dyVec[stencil_v]), (@view wVec_temp_buffer[stencil_v]), (@view dfVec[stencil_v]), weno.res; order=weno.order)
+    resVx, resVy, resVxx, resVyy, resVxy = weno.res[1]/settings.interpRange, weno.res[2]/settings.interpRange, weno.res[3]/(settings.interpRange^2), weno.res[4]/(settings.interpRange^2), weno.res[5]/(settings.interpRange^2)
 
     # Central Stencil
-    gradInterpolation!(dxVec, dyVec, wVec, dfVec, weno.res; order=weno.order)
-    resCx = weno.res[1]/settings.interpRange
-    resCy = weno.res[2]/settings.interpRange
-    resCxx = weno.res[3]/(settings.interpRange^2)
-    resCyy = weno.res[4]/(settings.interpRange^2)
-    resCxy = weno.res[5]/(settings.interpRange^2)
+    wVec_temp_buffer .= wVec_pristine # Copy weights
+    gradInterpolation!(dxVec, dyVec, wVec_temp_buffer, dfVec, weno.res; order=weno.order)
+    resCx, resCy, resCxx, resCyy, resCxy = weno.res[1]/settings.interpRange, weno.res[2]/settings.interpRange, weno.res[3]/(settings.interpRange^2), weno.res[4]/(settings.interpRange^2), weno.res[5]/(settings.interpRange^2)
 
-    # --- Non-linear Weights ---
+    # --- Non-linear Weights (Logic is unchanged) ---
     e = 1e-12
-    # Use dx for a stable length scale, not interpRange which is arbitrary
     dx2 = particleGrid.dx^2; dx4 = dx2^2 
-    
-    # Combine all smoothness indicators for robustness
     betaH = 0.5 / ((resHx^2 + resHy^2)*dx2 + (resHxx^2 + resHyy^2 + resHxy^2)*dx4 + e)^2
     betaV = 0.5 / ((resVx^2 + resVy^2)*dx2 + (resVxx^2 + resVyy^2 + resVxy^2)*dx4 + e)^2
     betaC = 0.5 / ((resCx^2 + resCy^2)*dx2 + (resCxx^2 + resCyy^2 + resCxy^2)*dx4 + e)^2
     
-    # Avoid division by zero
     sum_beta_h = betaH + betaC; sum_beta_v = betaV + betaC;
     if sum_beta_h < 1e-14 || sum_beta_v < 1e-14; return 0.0; end
 
@@ -202,6 +191,5 @@ function (weno::WENO{2})(
         particleGrid.curvatures[particleIndex, 2] = wV*resVyy + wCy*resCyy
     end
 
-    # Return the final weighted divergence
     return (wH*resHx + wCx*resCx)*vel[1] + (wV*resVy + wCy*resCy)*vel[2]
 end

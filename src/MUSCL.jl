@@ -591,20 +591,17 @@ end
 
 
 # --- Reconstruction Helpers for fij and fji (2D) ---
-
 function reconstruct_interface_states(::MUSCLORDER1, particleGrid::ParticleGrid2D, fVec, ws, p_idx, nb_idx, deltaX, deltaY)
     f_i = fVec[p_idx]
     f_j = fVec[nb_idx]
-    neighbors_i = particleGrid.neighbour_indices[p_idx]
-    neighbors_j = particleGrid.neighbour_indices[nb_idx]
-
-    # Calculate derivatives at particle i
-    slope_ix = sum(ws.alfaijs[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors_i))
-    slope_iy = sum(ws.betaijs[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors_i))
     
-    # Calculate derivatives at neighbor j
-    slope_jx = sum(ws.alfaijs[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(neighbors_j))
-    slope_jy = sum(ws.betaijs[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(neighbors_j))
+    # Calculate derivatives at particle i (once)
+    slope_ix = sum(ws.alfaijs[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[p_idx]))
+    slope_iy = sum(ws.betaijs[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[p_idx]))
+    
+    # Calculate derivatives at neighbor j (once)
+    slope_jx = sum(ws.alfaijs[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[nb_idx]))
+    slope_jy = sum(ws.betaijs[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[nb_idx]))
 
     # Apply Taylor expansion for interface values
     fij = f_i + 0.5 * (deltaX * slope_ix + deltaY * slope_iy)
@@ -615,46 +612,42 @@ end
 function reconstruct_interface_states(::MUSCLORDER2, particleGrid::ParticleGrid2D, fVec, ws, p_idx, nb_idx, deltaX, deltaY)
     f_i = fVec[p_idx]
     f_j = fVec[nb_idx]
-    neighbors_i = particleGrid.neighbour_indices[p_idx]
-    neighbors_j = particleGrid.neighbour_indices[nb_idx]
+    
+    # Calculate derivatives at particle i (once)
+    slope_ix = sum(ws.alfaijs[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[p_idx]))
+    slope_iy = sum(ws.betaijs[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[p_idx]))
+    curve_xx = sum(ws.alfaij_bars[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[p_idx]))
+    curve_yy = sum(ws.betaij_bars[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[p_idx]))
+    curve_xy = sum(ws.gammaijs[p_idx][k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[p_idx]))
 
-    # Reconstruction for particle i
-    recon_i = 0.0
-    for (k, nb_k) in enumerate(neighbors_i)
-        df = fVec[nb_k] - f_i
-        # First-order terms
-        recon_i += (deltaX * ws.alfaijs[p_idx][k] + deltaY * ws.betaijs[p_idx][k]) * df / 2
-        # Second-order terms
-        recon_i += ((deltaX^2)*ws.alfaij_bars[p_idx][k]/2 + (deltaY^2)*ws.betaij_bars[p_idx][k]/2 + deltaX*deltaY*ws.gammaijs[p_idx][k]) * df / 4
-    end
-    fij = f_i + recon_i
+    # Calculate derivatives at neighbor j (once)
+    slope_jx = sum(ws.alfaijs[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[nb_idx]))
+    slope_jy = sum(ws.betaijs[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[nb_idx]))
+    curve_xx_j = sum(ws.alfaij_bars[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[nb_idx]))
+    curve_yy_j = sum(ws.betaij_bars[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[nb_idx]))
+    curve_xy_j = sum(ws.gammaijs[nb_idx][k] * (fVec[nb_k] - f_j) for (k, nb_k) in enumerate(particleGrid.neighbour_indices[nb_idx]))
 
-    # Reconstruction for particle j
-    recon_j = 0.0
-    for (k, nb_k) in enumerate(neighbors_j)
-        df = fVec[nb_k] - f_j
-        # First-order terms
-        recon_j -= (deltaX * ws.alfaijs[nb_idx][k] + deltaY * ws.betaijs[nb_idx][k]) * df / 2
-        # Second-order terms
-        recon_j += ((deltaX^2)*ws.alfaij_bars[nb_idx][k]/2 + (deltaY^2)*ws.betaij_bars[nb_idx][k]/2 + deltaX*deltaY*ws.gammaijs[nb_idx][k]) * df / 4
-    end
-    fji = f_j + recon_j
-
+    h = 0.5 * deltaX
+    k = 0.5 * deltaY
+    fij = f_i + h*slope_ix + k*slope_iy + 0.5*(h^2*curve_xx + 2*h*k*curve_xy + k^2*curve_yy)
+    fji = f_j - h*slope_jx - k*slope_jy + 0.5*(h^2*curve_xx_j + 2*h*k*curve_xy_j + k^2*curve_yy_j)
+    
     return fij, fji
 end
 
-# --- Main Functor for 2D ---
-function (muscl::MUSCL{D,ORDER,L})(
+
+# --- 2. Refactored MUSCL Functor for 2D (Corrected Logic) ---
+function (muscl::MUSCL{2, ORDER})(
     particleGrid::ParticleGrid2D, 
     particleIndex::Integer, 
-    fVec::AbstractVector{<:Real}, 
+    fVec::AbstractVector, 
     eq::ScalarHyperbolicPDE, 
     settings::SimSetting; 
     setCurvature::Bool=true
-)::Real where {D,ORDER<:MUSCLORDER,L<:AbstractSlopeLimiter}
+)::Real where {ORDER<:MUSCLORDER}
     
     div = 0.0
-    ws = muscl.workspace
+    ws = muscl.workspace::MUSCLWorkspace2D
     
     alfaij_i = ws.alfaijs[particleIndex]
     betaij_i = ws.betaijs[particleIndex]
@@ -662,11 +655,13 @@ function (muscl::MUSCL{D,ORDER,L})(
     for (index_in_list, nbIndex) in enumerate(particleGrid.neighbour_indices[particleIndex])
         deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
         
+        # Call the correct, non-looping reconstruction helper
         fij, fji = reconstruct_interface_states(muscl.order, particleGrid, fVec, ws, particleIndex, nbIndex, deltaX, deltaY)
 
         fmx, fpx, fmy, fpy = sortFlux(fij, fji, deltaX, deltaY)
         fx, fy = flux(eq, fVec[particleIndex])
         
+        # The divergence sum is now correct
         div += alfaij_i[index_in_list] * (muscl.numericalFlux(fmx, fpx, eq, 1) - fx) + 
                betaij_i[index_in_list] * (muscl.numericalFlux(fmy, fpy, eq, 2) - fy)
     end
@@ -677,6 +672,7 @@ function (muscl::MUSCL{D,ORDER,L})(
     
     return 2 * div
 end
+
 
 # --- Curvature Helper for 2D ---
 function _set_curvature!(::MUSCLORDER1, grid, fVec, ws, p_idx)

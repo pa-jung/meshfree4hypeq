@@ -5,7 +5,7 @@ using IPlotPDESols # or just `const ParamDict = Dict{String, Any}` if not using 
 
 params = ParamDict(
     # --- Shared Parameters ---
-    "tmax" => 4.0,
+    "tmax" => 3.0,
     "Nx" => 40,
     "Ny" => 40,
     "xmin" => -5.0,
@@ -18,7 +18,7 @@ params = ParamDict(
     "interp_range" => 3.5,
     "init_func" => "gauss", # Using the unified struct
     "init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
-    "randomness_factor" => (0.0, 0.0), # (x_rand_factor, y_rand_factor)
+    "randomness_factor" => (0., 0.), # (x_rand_factor, y_rand_factor)
     "SEED_value" => 42,
     "PDE" => "linear",
     "PDE_params" => (1.0, 0.), # 2D velocity vector (vx, vy)
@@ -28,11 +28,12 @@ params = ParamDict(
 
     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
     "timestepper" => "RalstonRK2",
-    "main_gradient" => "WENO",
+    "main_gradient" => "MUSCL",
     "order" => 2,
     "upwind_alg_2d" => "Classic",
     "main_flux" => "Rusanov",
-    "mood" => "none", # No MOOD for this run
+    #"mood" => "U2", "delta_relax" => 0. 
+    #"mood" => "none", # No MOOD for this run
 )
 
 # params = ParamDict(

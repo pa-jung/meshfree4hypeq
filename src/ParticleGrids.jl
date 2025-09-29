@@ -189,26 +189,14 @@ end
 ==============================================================================#
 
 struct ParticleGrid2D <: ParticleGrid{2}
-    # --- Persistent State (SoA) ---
-    positions::Vector{NTuple{2, Float64}}
-    rhos::Vector{Float64}
-    curvatures::Matrix{Float64} # Stored as N x 2 matrix
-    is_boundary::BitVector
-    volumes::Vector{Float64}
-    voxels::Vector{Int}
-    mood_events::BitVector
-
-    # --- Pre-computed Coefficients ---
+    positions::Vector{NTuple{2, Float64}}; rhos::Vector{Float64}
+    curvatures::Matrix{Float64}; is_boundary::BitVector; volumes::Vector{Float64}
+    voxels::Vector{Int}; mood_events::BitVector
     neighbour_indices::Vector{Vector{Int}}
-
-    # --- Grid Properties ---
     xmin::Float64; xmax::Float64; ymin::Float64; ymax::Float64
-    Nx_total::Int; Ny_total::Int; N_ghost::Int; N::Int
-    dx::Float64; dy::Float64
-    regular::Bool; bc::Symbol
+    Nx_total::Int; Ny_total::Int; N::Int; N_ghost::Int
+    dx::Float64; dy::Float64; regular::Bool; bc::Symbol
     interior_indices::Vector{Int}
-    
-    # --- Reusable Workspace for Neighbor Search ---
     voxel_map::Dict{Int, Vector{Int}}
 
     function ParticleGrid2D(
@@ -216,67 +204,54 @@ struct ParticleGrid2D <: ParticleGrid{2}
         Nx_interior::Integer, Ny_interior::Integer, N_ghost::Integer, bc::Symbol; 
         randomness::NTuple{2, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng
     )
+        local Nx_total, Ny_total, interior_indices, dx_nominal, dy_nominal
         if bc == :periodic
             @assert N_ghost == 0 "Periodic grids do not use ghost cells."
             Nx_total, Ny_total = Nx_interior, Ny_interior
+            interior_indices = collect(1:(Nx_interior * Ny_interior))
+            dx_nominal = (xmax - xmin) / Nx_interior
+            dy_nominal = (ymax - ymin) / Ny_interior
         else
             @assert N_ghost > 0 "N_ghost must be positive for non-periodic BCs."
-            Nx_total = Nx_interior + 2 * N_ghost
-            Ny_total = Ny_interior + 2 * N_ghost
+            Nx_total = Nx_interior + 2*N_ghost
+            Ny_total = Ny_interior + 2*N_ghost
+            interior_indices = Int[]
+            dx_nominal = (xmax - xmin) / (Nx_interior > 1 ? Nx_interior - 1 : 1.0)
+            dy_nominal = (ymax - ymin) / (Ny_interior > 1 ? Ny_interior - 1 : 1.0)
         end
         N_total = Nx_total * Ny_total
 
-        # --- Initialize SoA Fields ---
         positions = Vector{NTuple{2, Float64}}(undef, N_total)
         is_boundary = falses(N_total)
-        interior_indices = Int[]
         
         # --- Populate Particle Positions ---
-        dx = (xmax - xmin) / (Nx_interior > 1 ? Nx_interior - 1 : 1.0)
-        dy = (ymax - ymin) / (Ny_interior > 1 ? Ny_interior - 1 : 1.0)
-        
-        for i in 1:Nx_total, j in 1:Ny_total
-            index = (i - 1) * Ny_total + j
-            is_interior = (N_ghost < i <= Nx_interior + N_ghost) && (N_ghost < j <= Ny_interior + N_ghost)
-
-            # Determine particle position
-            local posX, posY
-            # X-position
-            if i <= N_ghost # Left ghosts
-                posX = xmin - (N_ghost - i + 1) * dx
-            elseif i > Nx_interior + N_ghost # Right ghosts
-                posX = xmax + (i - (Nx_interior + N_ghost)) * dx
-            else # Interior x-range
-                base_posX = xmin + (i - N_ghost - 1) * dx
-                posX = base_posX + randomness[1] * (rand(rng, Float64) * 2 - 1)
+        if bc == :periodic
+            # CORRECTED: Use cell-centered positions for periodic case
+            for i in 1:Nx_total, j in 1:Ny_total
+                index = (i - 1) * Ny_total + j
+                posX = xmin + dx_nominal*(i-0.5) + randomness[1]*(rand(rng, Float64)*2 - 1)
+                posY = ymin + dy_nominal*(j-0.5) + randomness[2]*(rand(rng, Float64)*2 - 1)
+                positions[index] = (posX, posY)
             end
-            # Y-position
-            if j <= N_ghost # Bottom ghosts
-                posY = ymin - (N_ghost - j + 1) * dy
-            elseif j > Ny_interior + N_ghost # Top ghosts
-                posY = ymax + (j - (Ny_interior + N_ghost)) * dy
-            else # Interior y-range
-                base_posY = ymin + (j - N_ghost - 1) * dy
-                posY = base_posY + randomness[2] * (rand(rng, Float64) * 2 - 1)
+        else # Non-periodic logic
+            for i in 1:Nx_total, j in 1:Ny_total
+                index = (i - 1) * Ny_total + j
+                is_interior = (N_ghost < i <= Nx_interior + N_ghost) && (N_ghost < j <= Ny_interior + N_ghost)
+                
+                posX = if i <= N_ghost; xmin - (N_ghost-i+1)*dx_nominal; elseif i > Nx_interior+N_ghost; xmax+(i-(Nx_interior+N_ghost))*dx_nominal; else xmin+(i-N_ghost-1)*dx_nominal + randomness[1]*(rand(rng,Float64)*2-1); end
+                posY = if j <= N_ghost; ymin - (N_ghost-j+1)*dy_nominal; elseif j > Ny_interior+N_ghost; ymax+(j-(Ny_interior+N_ghost))*dy_nominal; else ymin+(j-N_ghost-1)*dy_nominal + randomness[2]*(rand(rng,Float64)*2-1); end
+                
+                positions[index] = (posX, posY)
+                is_boundary[index] = !is_interior
+                if is_interior; push!(interior_indices, index); end
             end
-            positions[index] = (posX, posY)
-            is_boundary[index] = !is_interior
-            if is_interior; push!(interior_indices, index); end
         end
-
-        # --- Initialize Other Fields ---
-        rhos = zeros(Float64, N_total)
-        curvatures = zeros(Float64, N_total, 2)
-        volumes = zeros(Float64, N_total)
-        voxels = zeros(Int, N_total)
-        mood_events = falses(N_total)
-        neighbour_indices = [Int[] for _ in 1:N_total]
-        voxel_map = Dict{Int, Vector{Int}}()
-        regular = (randomness == (0.0, 0.0))
-
-        new(positions, rhos, curvatures, is_boundary, volumes, voxels, mood_events,
-            neighbour_indices, xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_ghost, N_total,
-            dx, dy, regular, bc, interior_indices, voxel_map)
+        
+        new(positions, zeros(N_total), zeros(N_total, 2), is_boundary, zeros(N_total),
+            zeros(Int, N_total), falses(N_total), [Int[] for _ in 1:N_total],
+            xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_total, N_ghost,
+            dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices,
+            Dict{Int, Vector{Int}}())
     end
 end
 
@@ -328,7 +303,7 @@ function _find_neighbouring_voxels(particleGrid::ParticleGrid2D, linearIndex::In
     xBox, yBox = _linear_index_to_grid(linearIndex, nbBoxesX)
     
     if particleGrid.bc == :periodic
-        return [_grid_to_linear_index(mod(xBox+i, nbBoxesX), mod(yBox+j, nbBoxesY), nbBoxesX) for i in -1:1 for j in -1:1]
+        return [_grid_to_linear_index(mod(xBox + i, 0:(nbBoxesX-1)), mod(yBox + j, 0:(nbBoxesY-1)), nbBoxesX) for i in -1:1 for j in -1:1]
     else
         return [_grid_to_linear_index(xBox + i, yBox + j, nbBoxesX) for i in -1:1 for j in -1:1 
                 if 0 <= (xBox + i) < nbBoxesX && 0 <= (yBox + j) < nbBoxesY]
@@ -362,21 +337,45 @@ end
 # --- Main Public Functions ---
 
 function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
-    nbBoxesX, nbBoxesY = _update_voxel_information!(particleGrid, maxDist)
+    # --- 1. Voxel Grid Setup ---
+    domain_xmin, domain_xmax, domain_ymin, domain_ymax = if particleGrid.bc == :periodic
+        particleGrid.xmin, particleGrid.xmax, particleGrid.ymin, particleGrid.ymax
+    else
+        extrema(p[1] for p in particleGrid.positions)..., extrema(p[2] for p in particleGrid.positions)...
+    end
+    nbBoxesX = max(1, floor(Int, (domain_xmax - domain_xmin) / maxDist))
+    nbBoxesY = max(1, floor(Int, (domain_ymax - domain_ymin) / maxDist))
+    xBoxSize = (domain_xmax - domain_xmin) / nbBoxesX
+    yBoxSize = (domain_ymax - domain_ymin) / nbBoxesY
     
+    # --- 2. Update Voxel Information for each particle (Corrected) ---
+    for i in 1:particleGrid.N
+        pos_x, pos_y = particleGrid.positions[i]
+        
+        # CORRECTED LOGIC: Wrap the position into the domain for periodic BCs before calculating the voxel
+        if particleGrid.bc == :periodic
+            pos_x = mod(pos_x - domain_xmin, domain_xmax - domain_xmin) + domain_xmin
+            pos_y = mod(pos_y - domain_ymin, domain_ymax - domain_ymin) + domain_ymin
+        end
+
+        hBox = min(floor(Int, (pos_x - domain_xmin) / xBoxSize), nbBoxesX - 1)
+        vBox = min(floor(Int, (pos_y - domain_ymin) / yBoxSize), nbBoxesY - 1)
+        particleGrid.voxels[i] = _grid_to_linear_index(hBox, vBox, nbBoxesX)
+    end
+    
+    # --- 3. Reuse and Refill Voxel Map ---
     voxel_map = particleGrid.voxel_map
     for key in keys(voxel_map); empty!(voxel_map[key]); end
-    
     for i in 1:particleGrid.N
         voxel_idx = particleGrid.voxels[i]
         if !haskey(voxel_map, voxel_idx); voxel_map[voxel_idx] = Int[]; end
         push!(voxel_map[voxel_idx], i)
     end
 
+    # --- 4. Find Neighbors using Voxel Map ---
     for p_idx in 1:particleGrid.N
         nb_list = particleGrid.neighbour_indices[p_idx]
         empty!(nb_list)
-        
         neighboring_voxels = _find_neighbouring_voxels(particleGrid, particleGrid.voxels[p_idx], nbBoxesX, nbBoxesY)
         
         for nbVoxel in neighboring_voxels
@@ -499,28 +498,54 @@ function determineVolumes!(particleGrid::ParticleGrid2D)
 end
 
 """
-Updates the values in the ghost cells based on the grid's `bc` type.
+Updates the values in the ghost cells based on the grid's `bc` type for a 1D grid.
 """
-function apply_boundary_conditions!(particleGrid::ParticleGrid)
-    if particleGrid.bc == :periodic || particleGrid.bc == :fixed_dirichlet
-        return # No action needed
-    elseif particleGrid.bc == :outflow
-        interior = particleGrid.interior_indices
-        if isempty(interior); return; end
-        
-        first_interior_idx = first(interior)
-        last_interior_idx = last(interior)
+function apply_boundary_conditions!(particleGrid::ParticleGrid1D)
+    if particleGrid.bc != :outflow; return; end
+    
+    interior = particleGrid.interior_indices
+    if isempty(interior); return; end
+    
+    first_interior_idx = first(interior)
+    last_interior_idx  = last(interior)
 
-        val_at_left_boundary = particleGrid.rhos[first_interior_idx]
-        val_at_right_boundary = particleGrid.rhos[last_interior_idx]
+    val_at_left_boundary  = particleGrid.rhos[first_interior_idx]
+    val_at_right_boundary = particleGrid.rhos[last_interior_idx]
 
-        # Set left ghost particles (indices 1 to first_interior_idx - 1)
-        particleGrid.rhos[1:(first_interior_idx-1)] .= val_at_left_boundary
+    # For 1D, slicing is correct and efficient.
+    particleGrid.rhos[1:(first_interior_idx-1)] .= val_at_left_boundary
+    particleGrid.rhos[(last_interior_idx+1):end] .= val_at_right_boundary
+end
+
+
+"""
+Updates the values in the ghost cells based on the grid's `bc` type for a 2D grid.
+"""
+function apply_boundary_conditions!(particleGrid::ParticleGrid2D)
+    if particleGrid.bc != :outflow; return; end
+
+    Nx = particleGrid.Nx_total
+    Ny = particleGrid.Ny_total
+    Ng = particleGrid.N_ghost
+    
+    # Iterate through all particles in the grid
+    for i in 1:Nx, j in 1:Ny
+        linear_idx = (i - 1) * Ny + j
         
-        # Set right ghost particles (indices last_interior_idx + 1 to end)
-        particleGrid.rhos[(last_interior_idx+1):end] .= val_at_right_boundary
-    else
-        error("Unsupported boundary condition type: $(particleGrid.bc)")
+        # Check if the particle is a ghost cell
+        is_ghost = (i <= Ng || i > Nx - Ng || j <= Ng || j > Ny - Ng)
+
+        if is_ghost
+            # Find the closest interior column/row
+            closest_i = clamp(i, Ng + 1, Nx - Ng)
+            closest_j = clamp(j, Ng + 1, Ny - Ng)
+            
+            # Get the linear index of the nearest interior particle
+            interior_idx = (closest_i - 1) * Ny + closest_j
+            
+            # Copy the value from that interior particle
+            particleGrid.rhos[linear_idx] = particleGrid.rhos[interior_idx]
+        end
     end
 end
 
