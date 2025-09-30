@@ -465,7 +465,7 @@ function (rk4::RK4)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
 
     interior = particleGrid.interior_indices
     rk4.rho_n .= particleGrid.rhos # Store u^n
-
+    apply_boundary_conditions!(particleGrid)
     # --- Stage 1: Calculate k1 = -div(u^n) ---
     initTimeStep(rk4.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
     if !isnothing(rk4.fallbackInterpolator); initTimeStep(rk4.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange); end
@@ -563,7 +563,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     end
 
     interior = particleGrid.interior_indices
-    
+    apply_boundary_conditions!(particleGrid)
     # First stage
     initTimeStep(ralston.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
     if !isnothing(ralston.fallbackInterpolator)
@@ -585,7 +585,8 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     end
     # Update physical grid with intermediate stage (only for interior)
     particleGrid.rhos[interior] .= @view ralston.rhos[interior]
-
+    apply_boundary_conditions!(particleGrid)
+    ralston.rhos .= particleGrid.rhos
     # Final stage
     initTimeStep(ralston.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
     
@@ -651,7 +652,7 @@ function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicPDE, particleGrid
 
     interior = particleGrid.interior_indices
     ralston.rho_n .= particleGrid.rhos # Store u^n
-    
+    apply_boundary_conditions!(particleGrid)
     # --- 1. Calculate Full Fallback Solution and Target Mass ---
     initTimeStep(ralston.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
     target_mass = 0.0

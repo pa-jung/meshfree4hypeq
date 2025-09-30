@@ -1,6 +1,6 @@
 module ParticleGrids
 
-export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, getPeriodicDistance, saveGrid, plotDensity, 
+export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGrid, plotDensity, 
        animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
        findNeighbouringVoxels, updateNeighbours!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, 
        determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem
@@ -260,13 +260,7 @@ end
   Grid Functions (Optimized for SoA)
 ==============================================================================#
 
-# --- Set Initial Conditions ---
-function setInitialConditions!(particleGrid::ParticleGrid{D}, initFunc::Function) where D
-    for i in 1:particleGrid.N
-        # Pass position (Float64 for 1D, NTuple for 2D) to initFunc
-        particleGrid.rhos[i] = initFunc(particleGrid.positions[i]...)
-    end
-end
+
 
 # --- Distance Functions ---
 function getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)
@@ -523,7 +517,6 @@ Updates the values in the ghost cells based on the grid's `bc` type for a 2D gri
 """
 function apply_boundary_conditions!(particleGrid::ParticleGrid2D)
     if particleGrid.bc != :outflow; return; end
-
     Nx = particleGrid.Nx_total
     Ny = particleGrid.Ny_total
     Ng = particleGrid.N_ghost

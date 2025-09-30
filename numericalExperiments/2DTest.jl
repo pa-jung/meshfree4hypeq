@@ -6,25 +6,27 @@ using IPlotPDESols # or just `const ParamDict = Dict{String, Any}` if not using 
 params = ParamDict(
     # --- Shared Parameters ---
     "tmax" => 3.0,
-    "Nx" => 40,
-    "Ny" => 40,
+    "Nx" => 50,
+    "Ny" => 50,
     "xmin" => -5.0,
     "xmax" => 5.0,
     "ymin" => -5.0,
     "ymax" => 5.0,
-    "CFL" => 0.4,
+    "CFL" => 0.1,
     "snapshots" => 20,
     "interp_alpha" => 1.0,
     "interp_range" => 3.5,
-    "init_func" => "gauss", # Using the unified struct
-    "init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
+    "init_func" => "box", # Using the unified struct
+    #"init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
+    "init_params" => (0.,1.,-2.,2.,-2.,2.),
     "randomness_factor" => (0., 0.), # (x_rand_factor, y_rand_factor)
     "SEED_value" => 42,
     "PDE" => "linear",
     "PDE_params" => (1.0, 0.), # 2D velocity vector (vx, vy)
-    "bc" => :periodic,
+    "bc" => :outflow,
     "sim_function" => "runScalarSimulation",
     "weight_function" => "exponential",
+    "limiter" => "VK",
 
     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
     "timestepper" => "RalstonRK2",
@@ -91,7 +93,7 @@ test_config = SimulationConfig(
         "TestMUSCLRelax" => ParamDict("timestepper" => "PRSSP3", "relax_velocities" => [-1.,1.], "save_relax" => false, "relax_epsilon" => 1e-6),
     ),
     #"all"
-    "Test"
+    "TestMUSCL(VK)"
 
 );
 #show1DSolutionFig(test_config)

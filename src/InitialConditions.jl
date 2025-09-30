@@ -5,7 +5,7 @@ using ..HyperbolicPDEs
 using ..ParticleGrids
 using LinearAlgebra
 
-export InitialCondition, SmoothInitialCondition, ShockInitialCondition,
+export InitialCondition, SmoothInitialCondition, ShockInitialCondition, setInitialConditions!,
        Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,
        getInitialCondition, get_discontinuity_points, euler1D_physical_fluxes, GAS_GAMMA_EULER
 
@@ -32,6 +32,14 @@ abstract type SmoothInitialCondition <: InitialCondition end
 abstract type ShockInitialCondition <: InitialCondition end
 # --- 2. Concrete Structs and Functors for t=0 ---
 # --- GENERALIZED, PARAMETRIC STRUCTS ---
+
+# --- Set Initial Conditions ---
+function setInitialConditions!(particleGrid::ParticleGrid{1}, IC::InitialCondition)
+    particleGrid.rhos .= IC.(particleGrid.positions)
+end
+function setInitialConditions!(particleGrid::ParticleGrid{2}, IC::InitialCondition)
+    map!(x -> IC(x[1],x[2]), particleGrid.rhos, particleGrid.positions)
+end
 
 "Gaussian distribution for scalar or system states."
 struct Gauss{T, S} <: SmoothInitialCondition

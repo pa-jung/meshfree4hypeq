@@ -129,7 +129,8 @@ sim_config_euler1d_system = SimulationConfig(
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
         )
     ),
-    ["Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(superbee)", "ARS222MUSCL2MOOD", "SSMUSCL2(superbee)", "ARS222WENO2"]
+    "ARS222MUSCL2MOOD"
+    #["Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(superbee)", "ARS222MUSCL2MOOD", "SSMUSCL2(superbee)", "ARS222WENO2"]
     #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 # To run:
@@ -145,7 +146,7 @@ show1DSolutionFig(sim_config_euler1d_system; ui_options = :default)
 ### Test
 
 params = ParamDict(
-        "tmax" => 0.2, "N" => 200, "bc" => :outflow,
+        "tmax" => 0.2, "N" => 20, "bc" => :outflow,
         "xmin" => -0.5, "xmax" => .5, 
         "CFL" => 0.2, "snapshots" => 11, 
         "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx

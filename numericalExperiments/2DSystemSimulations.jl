@@ -110,7 +110,7 @@ sim_config_2d = SimulationConfig(
 # --- How to run this with your IPlotPDESols package ---
 # You would now pass `sim_config_2d` to your plotting functions.
 # For example:
-show2DSolutionFig(sim_config_2d;)
+#show2DSolutionFig(sim_config_2d;)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,1.)))
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
 
@@ -129,7 +129,7 @@ params = ParamDict(
         "init_params" => implosionInit(),
         "bc" => :fixed_dirichlet,
         "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
-        "SEED_value" => 42,
+        "SEED" => 42,
         "sim_function" => "runSystemSimulation", # Point to the 2D run function
         "PDE" => "euler2d",
         "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
@@ -142,7 +142,7 @@ params = ParamDict(
     )
 
 #@profview runSystem2DSim(params);
-#runSystemSimulation(params);
+runSystemSimulation(params);
 #using Test # You might need to run `using Pkg; Pkg.add("Test")` if not in a test environment.
 
 # Assume your modules are loaded, e.g.:

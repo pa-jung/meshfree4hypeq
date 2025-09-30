@@ -77,6 +77,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                 grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc != :periodic , bc)
                 xs = grid_analytic.positions
                 us = [[IC(p[1], p[2], t, eq, grid_analytic) for p in pos_coords] for (pos_coords, t) in zip(xs, ts)]
+
             end
             
             sim_data = createSimData(xs, us, ts, run_params)
@@ -129,7 +130,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         end
         N_total_particles = particleGrid.N
         determineVolumes!(particleGrid)
-        setInitialConditions!(particleGrid, (pos...) -> IC(pos...))
+        setInitialConditions!(particleGrid, IC)
 
         # --- 6. Time Step and Settings ---
         if !isnothing(cfl)
@@ -173,7 +174,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                       elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
-        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, N_total_particles, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
+        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                      elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                      elseif main_grad_name == "Central"; CentralGradient(order; weightFunction=weight_func)
                      elseif main_grad_name == "WENO"; WENO(order, dimension; weightFunction = weight_func)
@@ -256,7 +257,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             if dimension == 1
                 calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             elseif dimension == 2
-                calculateAllStats!(sim_data_result, (x,t) -> IC(x[1],x[2],t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+                #calculateAllStats!(sim_data_result, (x,t) -> IC(x[1],x[2],t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             end
         end         
         

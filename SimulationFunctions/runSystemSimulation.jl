@@ -64,7 +64,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             dt_analytic = tmax / snapshots
             ts = collect(0:dt_analytic:tmax)
             if ts[end] != tmax; push!(ts,tmax) end
-            xs = [map(p -> p.pos, grid_analytic.grid) for _ in ts]
+            xs = [grid_analytic.positions for _ in ts]
             us = Vector{Matrix{Float64}}(undef, length(ts))
 
             for (i, t) in enumerate(ts)
@@ -141,7 +141,6 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             randomness = randomness_factor * dx_nominal
             particleGrid_template = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc; rng=rng, randomness=randomness)
             interp_range = interp_range_factor * particleGrid_template.dx
-            macro_ic_at_points = [IC(p.pos) for p in particleGrid_template.grid]
         else # dimension == 2
             Nx, Ny = run_params["Nx"], run_params["Ny"]
             ymin, ymax = run_params["ymin"], run_params["ymax"]
@@ -150,13 +149,22 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             randomness = (randomness_factor[1] * dx_nominal, randomness_factor[2] * dy_nominal)
             particleGrid_template = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc; rng=rng, randomness=randomness)
             interp_range = interp_range_factor * max(particleGrid_template.dx, particleGrid_template.dy)
-            macro_ic_at_points = [IC(p.pos...) for p in particleGrid_template.grid]
         end
         
-        # Initialize kinetic components to be in equilibrium with macroscopic IC
+        # --- REFACTORED: Initial Condition Setup for System ---
+
+        # 1. Calculate the macroscopic initial condition at all particle positions (including ghosts).
+        #    This creates a vector of tuples, e.g., [(rho,m,E)_1, (rho,m,E)_2, ...].
+        macro_ic_at_points = [IC(pos...) for pos in particleGrid_template.positions]
+
+        # 2. Create the tuple of particle grids for each kinetic component.
         particleGrids_vec = [deepcopy(particleGrid_template) for _ in 1:N_total_kinetic]
-        for k in 1:N_total_kinetic, p_idx in 1:length(particleGrids_vec[k].grid)
-            particleGrids_vec[k].grid[p_idx].rho = M_funcs_vec[k](macro_ic_at_points[p_idx])
+
+        # 3. Initialize each kinetic grid to be in local thermodynamic equilibrium.
+        for k in 1:N_total_kinetic
+            pg_k = particleGrids_vec[k]
+            M_k = M_funcs_vec[k]
+            map!(p_idx -> M_k(macro_ic_at_points[p_idx]), pg_k.rhos, 1:pg_k.N)
         end
         
         # --- 6. Time Step Calculation (Dimension-Aware) ---
@@ -197,7 +205,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                   elseif lim == "superbee"; SuperbeeLimiter()
                   elseif lim == "VK"; VenkatakrishnanLimiter()
                   elseif lim == "BJ"; BarthJespersenLimiter()
-                  elseif lim == "none" || !isnothing(lim); NoLimiter()
+                  elseif lim == "none" || isnothing(lim); NoLimiter()
                   else error("Limiter '$lim' not recognized") end
                   
 
@@ -209,10 +217,10 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                        elseif fallback_flux_name == "Upwind"; FallbackFlux = UpwindFlux()
                        elseif !isnothing(fallback_flux_name); error("Flux $fallback_flux_name NYI"); end
         local upwind_alg_2d
-        if main_grad_name == "Upwind" || !isa(mood_fun, NoMOOD)
+        if main_grad_name == "Upwind" || !isa(mood_fun, NoMOOD) || fallback_grad_name == "Upwind"
             upwind_alg_2d = dimension == 2 ? run_params["upwind_alg_2d"] : "Classic"
         else
-            upwind_alg_2d = nothing
+            upwind_alg_2d = "nothing"
         end
         MainGrad = if main_grad_name == "MUSCL"
                     isnothing(lim) ? MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
@@ -224,7 +232,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         FallbackGrad = if fallback_grad_name == "Upwind" UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                        elseif !isnothing(fallback_grad_name) error("Only Upwind implemented as Fallback!") end
         implicit_solver = LinearizedRelaxationImplicitSolver()
-        N_total_particles = length(particleGrid_template.grid)
+        N_total_particles = particleGrid_template.N
         
         system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
                         elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)

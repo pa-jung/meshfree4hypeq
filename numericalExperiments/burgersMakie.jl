@@ -10,7 +10,7 @@ sim_config_burgers = SimulationConfig(
         "init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
-        "bc" => :periodic, "weight_function" => "exponential",
+        "bc" => :outflow, "weight_function" => "exponential",
         "order" => 1, "PDE" => "linear", "PDE_params" => 1.
     ),
 
@@ -350,7 +350,7 @@ sim_config_burgers = SimulationConfig(
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
-    "RK2WENO"
+    "RK2MUSCL2(minmod)"
     #"RK2Upwind"
 );
 scene_options = Dict{String, Any}()
