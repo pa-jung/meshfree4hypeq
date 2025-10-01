@@ -372,7 +372,7 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid1D, interpAlpha::R
         A     = @view ws.A_buffer[1:num_neighbors, :]
         
         for (i, nb_idx) in enumerate(neighbors); dxVec[i] = getDistance(particleGrid, p_idx, nb_idx); end
-        wVec .= muscl.weightFunction(dxVec; param=interpAlpha, normalisation=particleGrid.dx)
+        muscl.weightFunction(wVec, dxVec; param=interpAlpha, normalisation=particleGrid.dx)
         _compute_muscl_coeffs!(
             muscl.order, dxVec, wVec, A,
             ws.alfaijs[p_idx], ws.alfaij_bars[p_idx], ws.betaijs[p_idx], ws.gammaijs[p_idx]
@@ -402,7 +402,6 @@ function calculate_slopes!(::MUSCLORDER1, limiter::AbstractSlopeLimiter, ws::MUS
         ws.slopes_y[i] = sum(ws.betaijs[i][k] * (fVec[nb_idx] - fVec[i]) for (k, nb_idx) in enumerate(grid.neighbour_indices[i]))
     end
     if any(isnan(s) for s = ws.slopes_x)
-        println(ws.slopes_x,ws.slopes_y)
         error("Found NaN before limiting!")
     end
     limit_slopes!(limiter, ws, grid, fVec)
@@ -628,7 +627,7 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D, interpAlpha::R
             dx, dy = getDistance(particleGrid, p_idx, nb_idx)
             dxVec[i], dyVec[i] = dx, dy
         end
-        wVec .= muscl.weightFunction(dxVec, dyVec; param=interpAlpha, normalisation=interpRange)
+        muscl.weightFunction(wVec, dxVec, dyVec; param=interpAlpha, normalisation=interpRange)
 
         _compute_muscl_coeffs!(
             muscl.order, dxVec, dyVec, wVec, A,
@@ -642,15 +641,31 @@ end
 
 # --- Coefficient Calculation & Sizing Helpers for 2D ---
 function _compute_muscl_coeffs!(::MUSCLORDER1, dxVec, dyVec, wVec, A, alfaij, betaij, _, _, _)
-    A11 = dot(wVec, dxVec.^2)
-    A22 = dot(wVec, dyVec.^2)
-    A12 = dot(wVec, dxVec .* dyVec)
-    D = A11 * A22 - A12^2
-    
-    if abs(D) < 1e-14; fill!(alfaij, 0.0); fill!(betaij, 0.0); return; end
+    # --- 1. Calculate coefficients without allocations and store in the buffer `A` ---
+    # The sum-generator pattern is still the key to avoiding temporary arrays here.
+    A[1, 1] = sum(wVec[i] * dxVec[i]^2 for i in eachindex(wVec, dxVec))      # A11
+    A[2, 2] = sum(wVec[i] * dyVec[i]^2 for i in eachindex(wVec, dyVec))      # A22
+    A[1, 2] = sum(wVec[i] * dxVec[i] * dyVec[i] for i in eachindex(wVec, dxVec, dyVec)) # A12
+    # The matrix is symmetric, so A[2, 1] can be a copy
+    A[2, 1] = A[1, 2]
 
-    @. alfaij = (wVec * (A22 * dxVec - A12 * dyVec)) / D
-    @. betaij = (wVec * (A11 * dyVec - A12 * dxVec)) / D
+    # --- 2. Calculate the determinant from the buffer ---
+    D = A[1, 1] * A[2, 2] - A[1, 2]^2
+    
+    if abs(D) < 1e-14
+        fill!(alfaij, 0.0)
+        fill!(betaij, 0.0)
+        return
+    end
+
+    # --- 3. Compute final vectors using the buffered values ---
+    # This fully broadcasted syntax still ensures a single, fused, zero-allocation loop.
+    A11 = A[1, 1]
+    A22 = A[2, 2]
+    A12 = A[1, 2]
+    
+    alfaij .= (wVec .* (A22 .* dxVec .- A12 .* dyVec)) ./ D
+    betaij .= (wVec .* (A11 .* dyVec .- A12 .* dxVec)) ./ D
 end
 
 function _compute_muscl_coeffs!(::MUSCLORDER2, dxVec, dyVec, wVec, A, alfaij, betaij, alfaijBar, betaijBar, gammaij)

@@ -45,20 +45,43 @@ abstract type MLSWeightFunction end
 struct exponentialWeightFunction <: MLSWeightFunction end
 struct inverseWeightFunction <: MLSWeightFunction end
 
-@inline function (w::exponentialWeightFunction)(dxVec; param::Real, normalisation::Real)
-    return @. exp(-param*((dxVec/normalisation)^2))
+# --- In-place Exponential Weight Functions ---
+
+"""
+1D in-place exponential weight function.
+"""
+@inline function (w::exponentialWeightFunction)(wVec::AbstractVector, dxVec; param::Real, normalisation::Real)
+    # The ".=" operator performs the fused broadcast and stores the result in wVec
+    wVec .= exp.(-param .* ((dxVec ./ normalisation).^2))
+    return nothing
 end
 
-@inline function (w::exponentialWeightFunction)(dxVec, dyVec; param::Real, normalisation::Real)
-    return @. exp(-param*((dxVec^2 + dyVec^2)/(normalisation^2)))
+"""
+2D in-place exponential weight function.
+"""
+@inline function (w::exponentialWeightFunction)(wVec::AbstractVector, dxVec, dyVec; param::Real, normalisation::Real)
+    wVec .= exp.(-param .* ((dxVec.^2 .+ dyVec.^2) ./ (normalisation^2)))
+    return nothing
 end
 
-@inline function (w::inverseWeightFunction)(dxVec; param::Real, normalisation::Real)
-    return @. 1/(dxVec^2)
+
+# --- In-place Inverse Weight Functions ---
+
+"""
+1D in-place inverse weight function.
+"""
+@inline function (w::inverseWeightFunction)(wVec::AbstractVector, dxVec; param::Real, normalisation::Real)
+    # Full dot syntax ensures this is a single, non-allocating operation
+    wVec .= 1 ./ (dxVec.^2)
+    return nothing
 end
 
-@inline function (w::inverseWeightFunction)(dxVec, dyVec; param::Real, normalisation::Real)
-    return @. 1/(dxVec^2 + dyVec^2)
+"""
+2D in-place inverse weight function.
+"""
+@inline function (w::inverseWeightFunction)(wVec::AbstractVector, dxVec, dyVec; param::Real, normalisation::Real)
+    wVec .= 1 ./ (dxVec.^2 .+ dyVec.^2)
+    return nothing
 end
 
 """

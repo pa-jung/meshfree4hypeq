@@ -139,33 +139,55 @@ struct RelaxationSourceTerm{MF <: Tuple, KI <: Tuple} <: AbstractSourceTerm
     epsilon::Float64
     num_total_kinetic_components::Int64
     num_macro_variables::Int64
+    # The buffer now has a concrete type!
+    buffer::Vector{Float64} 
 end
-# This is the user-friendly constructor that accepts Vectors
+
 function RelaxationSourceTerm(
     maxwellian_functions_input::AbstractVector{<:MaxwellianFunctor},
     epsilon::Float64,
     kinetic_indices_input::AbstractVector{<:AbstractVector{Int}}
 )   
-    # Convert the input vectors to tuples
     maxwellian_tuple = Tuple(maxwellian_functions_input)
-
-    # A cleaner way to convert the nested vector to a tuple of tuples
     kinetic_indices_tuple = Tuple(Tuple(indices) for indices in kinetic_indices_input)
-
-    # Calculate the remaining properties
     num_total_kin = length(maxwellian_tuple)
     num_macro_vars = length(kinetic_indices_tuple)
     
-    # Call the default constructor with the performant tuple types.
-    # Julia will automatically create a concrete instance, e.g.:
-    # RelaxationSourceTerm{Tuple{MaxwellianFunctor{...}}, NTuple{...}}(...)
     return RelaxationSourceTerm(
         maxwellian_tuple, 
         kinetic_indices_tuple,
         epsilon,
         num_total_kin,
-        num_macro_vars
+        num_macro_vars,
+        # Initialize the buffer with a concrete type
+        Vector{Float64}(undef, num_total_kin) 
     )
+end
+
+# This helper function will be "unrolled" by the compiler for ultimate performance.
+# This helper function is guaranteed to be unrolled for ultimate performance.
+@generated function _evaluate_maxwellians!(buffer, maxwellians_tuple::T, U_macro_tuple) where {T <: Tuple}
+    # This code runs at COMPILE TIME.
+    # T is the type of the tuple, e.g., Tuple{Maxwellian1, Maxwellian2}
+
+    # 1. Get the number of elements in the tuple from its type.
+    N = fieldcount(T)
+    
+    # 2. Build a list of expressions, one for each element in the tuple.
+    #    e.g., [:(buffer[1] = maxwellians_tuple[1](U_macro_tuple)),
+    #           :(buffer[2] = maxwellians_tuple[2](U_macro_tuple)),
+    #           ...]
+    assignments = [:(buffer[$i] = maxwellians_tuple[$i](U_macro_tuple)) for i in 1:N]
+    
+    # 3. Return these expressions wrapped in a code block (`quote`).
+    #    This block becomes the body of the function that runs at RUNTIME.
+    #    We add @inbounds for a small extra speed boost.
+    return quote
+        @inbounds begin
+            $(assignments...)
+        end
+        return nothing
+    end
 end
 
 function (rs::RelaxationSourceTerm{MF,KI})(
@@ -178,14 +200,14 @@ function (rs::RelaxationSourceTerm{MF,KI})(
         error("Dimension mismatch in RelaxationSourceTerm functor.")
     end
 
-    U_macro_tuple = ntuple(rs.num_macro_variables) do i_macro
-        # The `sum` needs a generator `(x for x in ...)` to be fast inside `ntuple`
-        sum(U_kinetic_particle[k] for k in rs.kinetic_indices[i_macro])
-    end
-    
+    U_macro_tuple = ntuple(i -> sum(U_kinetic_particle[k] for k in rs.kinetic_indices[i]), rs.num_macro_variables)
+
+    # --- THE FIX ---
+    # Populate the buffer using our type-stable, unrolled helper
+    _evaluate_maxwellians!(rs.buffer, rs.maxwellians, U_macro_tuple)
+    # This loop is now fast because rs.buffer is a concrete Vector{Float64}
     for k_global_comp in 1:rs.num_total_kinetic_components
-        # Pass the TUPLE to the Maxwellian
-        mk_of_U_macro = rs.maxwellians[k_global_comp](U_macro_tuple) 
+        mk_of_U_macro = rs.buffer[k_global_comp]
         S_out_particle[k_global_comp] = (mk_of_U_macro - U_kinetic_particle[k_global_comp]) / rs.epsilon
     end
 end

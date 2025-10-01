@@ -15,15 +15,31 @@ struct UpwindWorkspace
     # For Tiwari algorithm
     xWindow::BitVector
     yWindow::BitVector
+    # For PraveenAlgorithm
+    coeff_x_Vec::Vector{Float64}
+    coeff_y_Vec::Vector{Float64}
+    aij_x_Vec::Vector{Float64}
+    aij_y_Vec::Vector{Float64}
+    nxVec::Vector{Float64}
+    nyVec::Vector{Float64}
+    # Add a buffer for neighbor values
+    ujVec::Vector{Float64}
 
-    function UpwindWorkspace(max_neighbors::Int=20) # Preallocate with a reasonable capacity
+    function UpwindWorkspace(max_neighbors::Int=30) # Preallocate with a reasonable capacity
         new(
             Vector{Float64}(undef, max_neighbors),
             Vector{Float64}(undef, max_neighbors),
             Vector{Float64}(undef, max_neighbors),
             Vector{Float64}(undef, max_neighbors),
             falses(max_neighbors),
-            falses(max_neighbors)
+            falses(max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
         )
     end
 end
@@ -31,7 +47,7 @@ end
 # Helper to ensure workspace vectors are large enough
 function ensure_capacity!(ws::UpwindWorkspace, n::Int)
     if length(ws.dxVec) < n
-        resize!.((ws.dxVec, ws.dyVec, ws.dfVec, ws.wVec, ws.xWindow, ws.yWindow), n)
+        resize!.((ws.dxVec, ws.dyVec, ws.dfVec, ws.wVec, ws.xWindow, ws.yWindow, ws.coeff_x_Vec, ws.coeff_y_Vec, ws.aij_x_Vec, ws.aij_y_Vec, ws.nxVec, ws.nyVec, ws.ujVec), n)
     end
 end
 
@@ -106,7 +122,7 @@ function (upwind::UpwindGradient)(
         dfVec[i] = upwind.numericalFlux(fm, fp, eq) - flux(eq, fVec[particleIndex])
     end
     
-    wVec .= upwind.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
+    upwind.weightFunction(wVec, dxVec; param=settings.interpAlpha, normalisation=1.0)
     gradInterpolation!(dxVec, wVec, dfVec, upwind.res; order=upwind.order)
 
     if setCurvature
@@ -149,7 +165,7 @@ function (upwind::UpwindGradient{ClassicAlgorithm})(
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
     end
 
-    wVec .= upwind.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+    weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
     gradInterpolation!(dxVec, dyVec, wVec, dfVec, upwind.res; order=upwind.order)
 
     if setCurvature && upwind.order == 2
@@ -192,7 +208,7 @@ function (upwind::UpwindGradient{TiwariAlgorithm})(
     end
 
     # X-derivative
-    wVec_x = upwind.weightFunction(dxVec[xWindow], dyVec[xWindow]; param=settings.interpAlpha, normalisation=1.0)
+    upwind.weightFunction(wVec_x, dxVec[xWindow], dyVec[xWindow]; param=settings.interpAlpha, normalisation=1.0)
     gradInterpolation!(dxVec[xWindow], dyVec[xWindow], wVec_x, dfVec[xWindow], upwind.res; order=upwind.order)
     ddx = upwind.res[1] / settings.interpRange
     if setCurvature && upwind.order == 2
@@ -200,7 +216,7 @@ function (upwind::UpwindGradient{TiwariAlgorithm})(
     end
         
     # Y-derivative
-    wVec_y = upwind.weightFunction(dxVec[yWindow], dyVec[yWindow]; param=settings.interpAlpha, normalisation=1.0)
+    weightFunction(wVec_y, dxVec[yWindow], dyVec[yWindow]; param=settings.interpAlpha, normalisation=1.0)
     gradInterpolation!(dxVec[yWindow], dyVec[yWindow], wVec_y, dfVec[yWindow], upwind.res; order=upwind.order)
     ddy = upwind.res[2] / settings.interpRange
     if setCurvature && upwind.order == 2
@@ -228,51 +244,84 @@ function (upwind::UpwindGradient{PraveenAlgorithm})(
     
     vel = velocity(eq, 0.0)
     neighbour_indices = particleGrid.neighbour_indices[particleIndex]
+    num_neighbors = length(neighbour_indices)
+    
+    if num_neighbors == 0; return 0.0; end
 
     if setCurvature
-        # Access curvature array directly. Assumes 2D curvature is stored as [dxx, dyy].
         particleGrid.curvatures[particleIndex, :] .= 0.0
     end
     
-    # --- Least-Squares System Setup ---
-    A11 = A12 = A22 = 0.0
-    for nbIndex in neighbour_indices
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
-        A11 += w * (deltaX^2) 
-        A12 += w * deltaX * deltaY
-        A22 += w * (deltaY^2)
+    # --- 1. Data Collection (Single Pass) ---
+    ws = upwind.workspace
+    ensure_capacity!(ws, num_neighbors)
+    ui = fVec[particleIndex]
+    for (i, nbIndex) in enumerate(neighbour_indices)
+        ws.dxVec[i], ws.dyVec[i] = getDistance(particleGrid, particleIndex, nbIndex)
+        ws.dfVec[i] = fVec[nbIndex] - ui
     end
-    D = A11 * A22 - (A12^2)
-    
-    if abs(D) < 1e-14
-        return 0.0 # Avoid division by zero if stencil is degenerate
-    end
-    
-    # --- Divergence Calculation ---
-    div = 0.0
-    for nbIndex in neighbour_indices
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
-        
-        # Solve for coefficients
-        coeff_x = (A22 * w * deltaX - A12 * w * deltaY) / D
-        coeff_y = (A11 * w * deltaY - A12 * w * deltaX) / D
 
-        # Compute adapted coefficients for positivity
-        angle = atan(deltaY, deltaX)
-        n = (cos(angle), sin(angle))
-        s = (-sin(angle), cos(angle))
-        
-        alfaBar = dot(n, (coeff_x, coeff_y))
-        betaBar = dot(s, (coeff_x, coeff_y))
-        
-        bracketMinus = dot(vel, n) > 0.0 ? 0.0 : dot(vel, n)
-        bracketMinus2 = betaBar * dot(vel, s) > 0.0 ? 0.0 : betaBar * dot(vel, s)
-        
-        cij = alfaBar * bracketMinus + bracketMinus2
-        div += 2 * cij * (fVec[nbIndex] - fVec[particleIndex])
-    end
+    # Create views for the exact number of neighbors
+    dxVec = @view ws.dxVec[1:num_neighbors]
+    dyVec = @view ws.dyVec[1:num_neighbors]
+    dfVec = @view ws.dfVec[1:num_neighbors]
+    wVec  = @view ws.wVec[1:num_neighbors]
+    
+    # --- 2. Least-Squares System Setup (Vectorized) ---
+    upwind.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=settings.interpRange)
+
+    A11 = sum(wVec[i] * dxVec[i]^2 for i in 1:num_neighbors)
+    A22 = sum(wVec[i] * dyVec[i]^2 for i in 1:num_neighbors)
+    A12 = sum(wVec[i] * dxVec[i] * dyVec[i] for i in 1:num_neighbors)
+    D = A11 * A22 - A12^2
+    
+    if abs(D) < 1e-14; return 0.0; end
+    
+    # --- 3. Divergence Calculation (Vectorized) ---
+    # Get views for all necessary buffers
+    coeff_x_Vec = @view ws.coeff_x_Vec[1:num_neighbors]
+    coeff_y_Vec = @view ws.coeff_y_Vec[1:num_neighbors]
+    nxVec       = @view ws.nxVec[1:num_neighbors]
+    nyVec       = @view ws.nyVec[1:num_neighbors]
+    
+    # Solve for coefficients (vectorized)
+    coeff_x_Vec .= (wVec .* (A22 .* dxVec .- A12 .* dyVec)) ./ D
+    coeff_y_Vec .= (wVec .* (A11 .* dyVec .- A12 .* dxVec)) ./ D
+
+    # Rotational vectors (vectorized)
+    angles = atan.(dyVec, dxVec)
+    nxVec .= cos.(angles)
+    nyVec .= sin.(angles)
+    # sxVec is -nyVec, syVec is nxVec
+
+    # Compute adapted coefficients and positivity terms (vectorized)
+    # Reuse aij buffers for alfaBar and betaBar
+    alfaBarVec = @view ws.aij_x_Vec[1:num_neighbors]
+    betaBarVec = @view ws.aij_y_Vec[1:num_neighbors]
+    
+    alfaBarVec .= nxVec .* coeff_x_Vec .+ nyVec .* coeff_y_Vec
+    betaBarVec .= (-nyVec) .* coeff_x_Vec .+ nxVec .* coeff_y_Vec
+    
+    # Reuse coeff buffers for temporary dot products with velocity
+    dot_vel_n = coeff_x_Vec # Rename for clarity
+    dot_vel_s = coeff_y_Vec
+    
+    dot_vel_n .= vel[1] .* nxVec .+ vel[2] .* nyVec
+    dot_vel_s .= vel[1] .* (-nyVec) .+ vel[2] .* nxVec
+
+    # Calculate bracket terms using min/max for conditional logic
+    bracketMinusVec  = min.(dot_vel_n, 0.0)
+    bracketMinus2Vec = min.(betaBarVec .* dot_vel_s, 0.0)
+    
+    # Calculate final coefficient vector `cij`
+    # Reuse alfaBarVec buffer to store the final `cij` values
+    cijVec = alfaBarVec
+    cijVec .*= bracketMinusVec
+    cijVec .+= bracketMinus2Vec
+    
+    # Final divergence is a single dot product
+    div = 2 * dot(cijVec, dfVec)
+    
     return div
 end
 
@@ -280,74 +329,98 @@ end
 function (upwind::UpwindGradient{NonLinearPraveenAlgorithm})(
     particleGrid::ParticleGrid2D, 
     particleIndex::Integer, 
-    fVec::Vector{<:Real}, 
-    eq::ScalarHyperbolicPDE{2}, 
+    fVec::AbstractVector{<:Real}, 
+    eq::LinearAdvection{2}, 
     settings::SimSetting; 
     setCurvature::Bool=true
 )::Real
     
+    vel = velocity(eq, 0.0)
     neighbour_indices = particleGrid.neighbour_indices[particleIndex]
+    num_neighbors = length(neighbour_indices)
+    
+    if num_neighbors == 0; return 0.0; end
 
     if setCurvature
         particleGrid.curvatures[particleIndex, :] .= 0.0
     end
     
-    # --- Least-Squares System Setup ---
-    A11 = A12 = A22 = 0.0
-    for nbIndex in neighbour_indices
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
-        A11 += w * (deltaX^2) 
-        A12 += w * deltaX * deltaY
-        A22 += w * (deltaY^2)
-    end
-    D = A11 * A22 - (A12^2)
-
-    if abs(D) < 1e-14
-        return 0.0
-    end
-
-    # --- Divergence Calculation ---
+    # --- 1. Data Collection ---
+    ws = upwind.workspace
+    ensure_capacity!(ws, num_neighbors)
     ui = fVec[particleIndex]
-    fiVec = flux(eq, ui)
-    
-    div = 0.0
-    for nbIndex in neighbour_indices
-        uj = fVec[nbIndex]
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        w = upwind.weightFunction(deltaX, deltaY; param=settings.interpAlpha, normalisation=settings.interpRange)
-
-        # Solve for coefficients
-        coeff_x = (A22 * w * deltaX - A12 * w * deltaY) / D
-        coeff_y = (A11 * w * deltaY - A12 * w * deltaX) / D
-        
-        # Compute adapted coefficients
-        angle = atan(deltaY, deltaX)
-        n = (cos(angle), sin(angle))
-        s = (-sin(angle), cos(angle))
-
-        Fni = dot(fiVec, n)
-        Gsi = dot(fiVec, s)
-
-        fjVec = flux(eq, uj)
-        # Roe average speed, avoiding division by zero
-        aij = (uj - ui) ≈ 0.0 ? velocity(eq, ui) : (fjVec .- fiVec) ./ (uj - ui)
-
-        favg = (fiVec .+ fjVec) ./ 2.0
-        
-        # Rusanov flux for normal and tangential components
-        Fnij = dot(favg, n) - 0.5 * abs(dot(aij, n)) * (uj - ui)
-        Gsij = dot(favg, s) - 0.5 * sign(dot(s, (coeff_x, coeff_y))) * abs(dot(aij, s)) * (uj - ui)
-
-        Fndiff = Fnij - Fni
-        Gsdiff = Gsij - Gsi
-
-        # Rotate flux differences back to Cartesian coordinates
-        Fdiff = n[1] * Fndiff + s[1] * Gsdiff
-        Gdiff = n[2] * Fndiff + s[2] * Gsdiff
-
-        div += coeff_x * Fdiff + coeff_y * Gdiff
+    for (i, nbIndex) in enumerate(neighbour_indices)
+        ws.dxVec[i], ws.dyVec[i] = getDistance(particleGrid, particleIndex, nbIndex)
+        ws.ujVec[i] = fVec[nbIndex] # Store uj directly
     end
-    return 2 * div
+
+    # Create views
+    dxVec = @view ws.dxVec[1:num_neighbors]
+    dyVec = @view ws.dyVec[1:num_neighbors]
+    ujVec = @view ws.ujVec[1:num_neighbors]
+    wVec  = @view ws.wVec[1:num_neighbors]
+    
+    # --- 2. Least-Squares System ---
+    upwind.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=settings.interpRange)
+
+    A11 = sum(wVec[i] * dxVec[i]^2 for i in 1:num_neighbors)
+    A22 = sum(wVec[i] * dyVec[i]^2 for i in 1:num_neighbors)
+    A12 = sum(wVec[i] * dxVec[i] * dyVec[i] for i in 1:num_neighbors)
+    D = A11 * A22 - A12^2
+    
+    if abs(D) < 1e-14; return 0.0; end
+    
+    # --- 3. Divergence Calculation ---
+    # Get views for buffers
+    coeff_x_Vec = @view ws.coeff_x_Vec[1:num_neighbors]
+    coeff_y_Vec = @view ws.coeff_y_Vec[1:num_neighbors]
+    nxVec       = @view ws.nxVec[1:num_neighbors]
+    nyVec       = @view ws.nyVec[1:num_neighbors]
+
+    # --- THE FIX: Calculate flux components separately ---
+    # For LinearAdvection, flux(u) = velocity * u. We can vectorize this directly.
+    # Reuse aij buffers for the neighbor fluxes.
+    fj_x_Vec = @view ws.aij_x_Vec[1:num_neighbors]
+    fj_y_Vec = @view ws.aij_y_Vec[1:num_neighbors]
+
+    fj_x_Vec .= vel[1] .* ujVec
+    fj_y_Vec .= vel[2] .* ujVec
+    
+    # --- The rest of the vectorized logic follows ---
+
+    # We need (uj - ui), which is (ujVec .- ui). Store it in dfVec.
+    dfVec = @view ws.dfVec[1:num_neighbors]
+    dfVec .= ujVec .- ui
+
+    # The rest of the function remains the same, as it was already correct.
+    coeff_x_Vec .= (wVec .* (A22 .* dxVec .- A12 .* dyVec)) ./ D
+    coeff_y_Vec .= (wVec .* (A11 .* dyVec .- A12 .* dxVec)) ./ D
+    
+    angles = atan.(dyVec, dxVec)
+    nxVec .= cos.(angles)
+    nyVec .= sin.(angles)
+    
+    alfaBarVec = @view ws.aij_x_Vec[1:num_neighbors] # Reuse buffer
+    betaBarVec = @view ws.aij_y_Vec[1:num_neighbors] # Reuse buffer
+    
+    alfaBarVec .= nxVec .* coeff_x_Vec .+ nyVec .* coeff_y_Vec
+    betaBarVec .= (-nyVec) .* coeff_x_Vec .+ nxVec .* coeff_y_Vec
+    
+    dot_vel_n = coeff_x_Vec # Reuse buffer
+    dot_vel_s = coeff_y_Vec # Reuse buffer
+    
+    dot_vel_n .= vel[1] .* nxVec .+ vel[2] .* nyVec
+    dot_vel_s .= vel[1] .* (-nyVec) .+ vel[2] .* nxVec
+
+    bracketMinusVec  = min.(dot_vel_n, 0.0)
+    bracketMinus2Vec = min.(betaBarVec .* dot_vel_s, 0.0)
+    
+    cijVec = alfaBarVec # Reuse buffer
+    cijVec .*= bracketMinusVec
+    cijVec .+= bracketMinus2Vec
+    
+    div = 2 * dot(cijVec, dfVec)
+    
+    return div
 end
 

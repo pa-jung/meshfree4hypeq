@@ -80,7 +80,7 @@ function (weno::WENO{1})(
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
         leftWindow[i] = dxVec[i] < 0.0
     end
-    wVec .= weno.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
+    weno.weightFunction(wVec, dxVec; param=settings.interpAlpha, normalisation=1.0)
 
     # One-sided stencil
     stencil = velocity(eq, 0.0) > 0.0 ? leftWindow : .!leftWindow
@@ -145,7 +145,7 @@ function (weno::WENO{2})(
         leftWindow[i] = dx < 0.0
         topWindow[i] = dy > 0.0
     end
-    wVec_pristine .= weno.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+    weightFunction(wVec_pristine, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
     vel = velocity(eq, 0.0)
 
     # --- Create a temporary buffer for mutated weights ---
@@ -314,7 +314,7 @@ function (weno::DumbserWENO)(
             continue
         end
 
-        wVec_stencil = weno.weightFunction((@view dxVec[stencil_view]), (@view dyVec[stencil_view]); param=settings.interpAlpha, normalisation=1.0)
+        weno.weightFunction(wVec_stencil, (@view dxVec[stencil_view]), (@view dyVec[stencil_view]); param=settings.interpAlpha, normalisation=1.0)
         
         try
             gradInterpolation!((@view dxVec[stencil_view]), (@view dyVec[stencil_view]), wVec_stencil, (@view dfVec[stencil_view]), weno.res; order=weno.order)

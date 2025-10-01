@@ -12,6 +12,22 @@ using Random
 using LinearAlgebra
 using IPlotPDESols
 
+function create_kinetic_map(num_kinetic_per_macro::Vector{<:Integer})
+
+    cumulative_counts = [0; cumsum(num_kinetic_per_macro)]
+
+    kinetic_to_macro_map = [
+        collect((cumulative_counts[i] + 1) : cumulative_counts[i+1])
+        for i in 1:length(num_kinetic_per_macro)
+    ]
+    
+    return kinetic_to_macro_map
+end
+
+@inline function create_kinetic_num(relax_vel::Vector)
+    return [length(v) for v in relax_vel]
+end
+
 """
     runSystemSimulation(params::ParamDictType) -> Union{AbstractSimData, Nothing}
 
@@ -72,9 +88,9 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             end
             return createSimData(xs, us, ts, run_params)
         end
-        
+        RV = dimension == 1 ? Vector{Vector{Float64}} : Vector{Vector{Tuple{Float64,Float64}}}
         # --- 3. Load Remaining Numerical Parameters ---
-        relax_velocities_config::AbstractVector = run_params["relax_velocities"]
+        relax_velocities_config::RV = run_params["relax_velocities"]
         relax_eps::Float64 = run_params["relax_epsilon"]
         main_grad_name::String = run_params["main_gradient"]
         fallback_grad_name = get(run_params,"fallback_gradient",nothing)
@@ -96,16 +112,14 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         @assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
         
         # --- 4. Construct Kinetic System (Dimension-Aware) ---
-        num_kinetic_per_macro = [length(v) for v in relax_velocities_config]
+        num_kinetic_per_macro::Vector{Int} = create_kinetic_num(relax_velocities_config)
         N_total_kinetic = sum(num_kinetic_per_macro)
         
         kinetic_eqs_vec = Vector{LinearAdvection{dimension}}(undef, N_total_kinetic)
-        M_funcs_vec = Vector{MaxwellianFunctor}(undef, N_total_kinetic)
+        SE = typeof(system_eq)
+        M_funcs_vec = Vector{MaxwellianFunctor{dimension,N_macro_vars,SE}}(undef, N_total_kinetic)
         
-        kinetic_to_macro_map = [
-            collect(sum(num_kinetic_per_macro[1:i-1])+1 : sum(num_kinetic_per_macro[1:i]))
-            for i in 1:N_macro_vars
-        ]
+        kinetic_to_macro_map = create_kinetic_map(num_kinetic_per_macro)
         
         # Set Maxwellian parameters based on dimension
         coeff, int_factor = dimension == 1 ? (0.5, 1.0) : (0.25, 2.)
@@ -134,7 +148,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         N_ghost = bc == :periodic ? 0 : ceil(Int, interp_range_factor) + 1
         rng = MersenneTwister(seed_val)
         
-        local particleGrid_template, interp_range
+        local particleGrid_template::Union{ParticleGrid1D, ParticleGrid2D}, interp_range
         if dimension == 1
             Nx = run_params["N"]
             dx_nominal = (xmax - xmin) / Nx
@@ -155,22 +169,23 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
         # 1. Calculate the macroscopic initial condition at all particle positions (including ghosts).
         #    This creates a vector of tuples, e.g., [(rho,m,E)_1, (rho,m,E)_2, ...].
-        macro_ic_at_points = [IC(pos...) for pos in particleGrid_template.positions]
+        #macro_ic_at_points = [IC(pos...) for pos in particleGrid_template.positions]
 
         # 2. Create the tuple of particle grids for each kinetic component.
-        particleGrids_vec = [deepcopy(particleGrid_template) for _ in 1:N_total_kinetic]
+        PG = typeof(particleGrid_template)
+        particleGrids_vec::Vector{PG} = [deepcopy(particleGrid_template) for _ in 1:N_total_kinetic]
 
-        # 3. Initialize each kinetic grid to be in local thermodynamic equilibrium.
-        for k in 1:N_total_kinetic
-            pg_k = particleGrids_vec[k]
-            M_k = M_funcs_vec[k]
-            map!(p_idx -> M_k(macro_ic_at_points[p_idx]), pg_k.rhos, 1:pg_k.N)
-        end
+        setInitialConditions!(particleGrids_vec, M_funcs_vec, IC)
         
         # --- 6. Time Step Calculation (Dimension-Aware) ---
         local dt::Float64
         if !isnothing(cfl)
-            max_abs_speed = maximum(norm(s) for group in relax_velocities_config for s in group)
+            max_abs_speed = 0.0
+            for group in relax_velocities_config
+                for s in group
+                    max_abs_speed = max(max_abs_speed, norm(s))
+                end
+            end
             if max_abs_speed < 1e-9; max_abs_speed = 1.0; end
             
             temp_eq_for_dt = dimension == 1 ? LinearAdvection(max_abs_speed) : LinearAdvection((max_abs_speed, max_abs_speed))
@@ -245,18 +260,18 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         kinetic_eqs = Tuple(kinetic_eqs_vec)
         particleGrids = Tuple(particleGrids_vec)
 
-        elapsed_time, sys_xs_data, sys_us_kinetic, ts = mainTimeIntegrator!(system_method, kinetic_eqs, particleGrids, settings)
+        elapsed_time, xs_data, sys_us_kinetic, ts = mainTimeIntegrator!(system_method, kinetic_eqs, particleGrids, settings)
         @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
         # --- 8. Post-process & Return ---
         
-        local us_final, xs_final
+        local us_final
         if save_relax
             us_final = sys_us_kinetic
-            xs_final = sys_xs_data
         else
+            m = length(ts)
             # Pre-allocate the final macroscopic solution array
-            us_final = Vector{Matrix{Float64}}(undef, length(ts))
+            us_final = Vector{Matrix{Float64}}(undef, m)
             
             # Use an efficient loop instead of `map`
             for t_idx in eachindex(ts)
@@ -271,12 +286,9 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                 end
                 us_final[t_idx] = macro_data_at_t
             end
-
-            # Efficiently extract just the position data for 1D/2D
-            xs_final = [map(p -> p[1], pos_tuples) for pos_tuples in sys_xs_data]
         end
 
-        sim_data_result = createSimData(xs_final, us_final, ts, run_params)
+        sim_data_result = createSimData(xs_data, us_final, ts, run_params)
         sim_data_result.stats["time"] = elapsed_time
         return sim_data_result
 

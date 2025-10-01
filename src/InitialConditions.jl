@@ -41,6 +41,26 @@ function setInitialConditions!(particleGrid::ParticleGrid{2}, IC::InitialConditi
     map!(x -> IC(x[1],x[2]), particleGrid.rhos, particleGrid.positions)
 end
 
+function setInitialConditions!(
+    particleGrids_vec::AbstractVector, # e.g., Vector{ParticleGrid}
+    M_funcs_vec::AbstractVector,     # e.g., Vector{MaxwellianFunctor}
+    IC::InitialCondition                               # The initial condition functor, e.g., an instance of Gauss
+)
+    # The number of kinetic descriptions can be found from the input vectors
+    N_total_kinetic = length(particleGrids_vec)
+
+    for k in 1:N_total_kinetic
+        pg_k = particleGrids_vec[k]
+        M_k = M_funcs_vec[k]
+
+        # This `map!` is now fully type-stable because the compiler knows the
+        # concrete type of `IC` within this specialized function.
+        map!(p_idx -> M_k(IC(pg_k.positions[p_idx]...)), pg_k.rhos, 1:pg_k.N)
+    end
+
+    return nothing
+end
+
 "Gaussian distribution for scalar or system states."
 struct Gauss{T, S} <: SmoothInitialCondition
     a::S      # Amplitude (can be a scalar or a vector/tuple)
@@ -508,7 +528,7 @@ end
 
 
 # --- 4. Factory Function (SIMPLIFIED) ---
-function getInitialCondition(name::String, params::Tuple)::InitialCondition
+function getInitialCondition(name::String, params::Tuple)
     if name == "gauss"; return Gauss(params...);
     elseif name == "box"; return Box(params...);
     elseif name == "sine"; return Sine(params...);
