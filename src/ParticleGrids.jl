@@ -198,6 +198,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
     dx::Float64; dy::Float64; regular::Bool; bc::Symbol
     interior_indices::Vector{Int}
     voxel_map::Dict{Int, Vector{Int}}
+    temp::Matrix{Float64}
 
     function ParticleGrid2D(
         xmin::Real, xmax::Real, ymin::Real, ymax::Real, 
@@ -251,7 +252,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
             zeros(Int, N_total), falses(N_total), [Int[] for _ in 1:N_total],
             xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_total, N_ghost,
             dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices,
-            Dict{Int, Vector{Int}}())
+            Dict{Int, Vector{Int}}(), zeros(N_total, 2))
     end
 end
 

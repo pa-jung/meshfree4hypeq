@@ -221,13 +221,13 @@ function ensure_particle_capacity!(ws::MUSCLWorkspace2D, N::Int)
     end
 end
 
-struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter} <: GradientInterpolator
+struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, WS<:MUSCLWorkspace} <: GradientInterpolator
     order::ORDER
     limiter::L
     res::Vector{Float64}
     weightFunction::MLSWeightFunction
     numericalFlux::NumericalFluxFunction
-    workspace::MUSCLWorkspace
+    workspace::WS
     
 end
 function MUSCL(
@@ -246,15 +246,16 @@ function MUSCL(
     ws = dimension == 1 ? MUSCLWorkspace1D() : MUSCLWorkspace2D()
     res_size = (dimension == 1) ? order : (order == 1 ? 2 : 5) # Determine size of result buffer
     
+    WS = typeof(ws)
     # Call the simple default constructor with the correct, inferred types.
     if order == 1
-        return MUSCL{dimension, MUSCLORDER1, L}(MUSCLORDER1(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER1, L, WS}(MUSCLORDER1(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
     elseif order == 2
-        return MUSCL{dimension, MUSCLORDER2, L}(MUSCLORDER2(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER2, L, WS}(MUSCLORDER2(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
     elseif order == 3
-        return MUSCL{dimension, MUSCLORDER3, L}(MUSCLORDER3(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER3, L, WS}(MUSCLORDER3(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
     elseif order == 4
-        return MUSCL{dimension, MUSCLORDER4, L}(MUSCLORDER4(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER4, L, WS}(MUSCLORDER4(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
     else
         error("Order must be 1, 2, 3, or 4.")
     end
@@ -279,36 +280,6 @@ function limit_slopes!(strategy::Union{SuperbeeLimiter, MinmodLimiter}, ws::MUSC
             phi = strategy isa SuperbeeLimiter ? superbee_phi(r) : minmod_phi(r)
             ws.slopes[i] = phi * slope_R
         end
-    end
-end
-
-# 2D geometric limiter (in-place)
-function limit_slopes!(strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter}, ws::MUSCLWorkspace2D, grid::ParticleGrid2D, fVec)
-    
-    for i in 1:grid.N
-        ui = fVec[i]
-        neighbors = grid.neighbour_indices[i]
-        sigma_i_unlimited = (ws.slopes_x[i], ws.slopes_y[i])
-        
-        if isempty(neighbors) || norm(sigma_i_unlimited) < 1e-12; ws.slopes_x[i]=0.0; ws.slopes_y[i]=0.0; continue; end
-
-        u_max, u_min = ui, ui
-        for nb_idx in neighbors; u_max=max(u_max, fVec[nb_idx]); u_min=min(u_min, fVec[nb_idx]); end
-
-        phi_i = 1.0
-        for nb_idx in neighbors
-            dx_ij = getDistance(grid, i, nb_idx)
-            delta_recon = dot(sigma_i_unlimited, dx_ij)
-            if abs(delta_recon) < 1e-12; continue; end
-            
-            r = delta_recon > 0.0 ? (u_max - ui)/delta_recon : (u_min - ui)/delta_recon
-            phi_j = strategy isa BarthJespersenLimiter ? min(1.0, r) : venkatakrishnan_psi(r)
-            phi_i = min(phi_i, phi_j)
-        end
-        phi_i = clamp(phi_i, 0.0, 1.0)
-        ws.slopes_x[i] *= phi_i
-        ws.slopes_y[i] *= phi_i
-        if isnan(ws.slopes_y[i]) || isnan(ws.slopes_x[i]); error("Found NaN while Limiting!") end
     end
 end
 
@@ -350,6 +321,35 @@ function limit_slopes!(strategy::Union{BarthJespersenLimiter, VenkatakrishnanLim
     end
 end
 
+# 2D geometric limiter (in-place)
+function limit_slopes!(strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter}, ws::MUSCLWorkspace2D, grid::ParticleGrid2D, fVec)
+    
+    for i in 1:grid.N
+        ui = fVec[i]
+        neighbors = grid.neighbour_indices[i]
+        sigma_i_unlimited = (ws.slopes_x[i], ws.slopes_y[i])
+        
+        if isempty(neighbors) || norm(sigma_i_unlimited) < 1e-12; ws.slopes_x[i]=0.0; ws.slopes_y[i]=0.0; continue; end
+
+        u_max, u_min = ui, ui
+        for nb_idx in neighbors; u_max=max(u_max, fVec[nb_idx]); u_min=min(u_min, fVec[nb_idx]); end
+
+        phi_i = 1.0
+        for nb_idx in neighbors
+            dx_ij = getDistance(grid, i, nb_idx)
+            delta_recon = dot(sigma_i_unlimited, dx_ij)
+            if abs(delta_recon) < 1e-12; continue; end
+            
+            r = delta_recon > 0.0 ? (u_max - ui)/delta_recon : (u_min - ui)/delta_recon
+            phi_j = strategy isa BarthJespersenLimiter ? min(1.0, r) : venkatakrishnan_psi(r)
+            phi_i = min(phi_i, phi_j)
+        end
+        phi_i = clamp(phi_i, 0.0, 1.0)
+        ws.slopes_x[i] *= phi_i
+        ws.slopes_y[i] *= phi_i
+        if isnan(ws.slopes_y[i]) || isnan(ws.slopes_x[i]); error("Found NaN while Limiting!") end
+    end
+end
 
 function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid1D, interpAlpha::Real, interpRange::Real)
     ws = muscl.workspace
@@ -528,7 +528,7 @@ function (muscl::MUSCL{1, MUSCLORDER1,L})(
     setCurvature::Bool=true
 ) where {L <: RealSlopeLimiter}
     div = 0.0
-    ws = muscl.workspace::MUSCLWorkspace1D
+    ws = muscl.workspace
     
     # Retrieve the pre-calculated LIMITED slope for the current particle
     sigma_i_lim = ws.slopes[particleIndex]

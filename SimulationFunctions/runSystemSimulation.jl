@@ -255,10 +255,25 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             us_final = sys_us_kinetic
             xs_final = sys_xs_data
         else
-            us_final = map(sys_us_kinetic) do kinetic_data_at_t
-                hcat([sum(eachcol(view(kinetic_data_at_t, :, indices))) for indices in kinetic_to_macro_map]...) 
+            # Pre-allocate the final macroscopic solution array
+            us_final = Vector{Matrix{Float64}}(undef, length(ts))
+            
+            # Use an efficient loop instead of `map`
+            for t_idx in eachindex(ts)
+                kinetic_data_at_t = sys_us_kinetic[t_idx]
+                # Pre-allocate the matrix for this time step
+                macro_data_at_t = similar(kinetic_data_at_t, size(kinetic_data_at_t, 1), N_macro_vars)
+                
+                for i_macro in 1:N_macro_vars
+                    indices = kinetic_to_macro_map[i_macro]
+                    # Sum the relevant columns directly into the output matrix without intermediate allocations
+                    sum!(@view(macro_data_at_t[:, i_macro]), @view(kinetic_data_at_t[:, indices]))
+                end
+                us_final[t_idx] = macro_data_at_t
             end
-            xs_final = [sys_x[:,1] for sys_x = sys_xs_data]
+
+            # Efficiently extract just the position data for 1D/2D
+            xs_final = [map(p -> p[1], pos_tuples) for pos_tuples in sys_xs_data]
         end
 
         sim_data_result = createSimData(xs_final, us_final, ts, run_params)

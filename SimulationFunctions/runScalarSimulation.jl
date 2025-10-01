@@ -176,8 +176,9 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
         MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                      elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
-                     elseif main_grad_name == "Central"; CentralGradient(order; weightFunction=weight_func)
+                     elseif main_grad_name == "Central"; CentralGradient(order, dimension; weightFunction=weight_func)
                      elseif main_grad_name == "WENO"; WENO(order, dimension; weightFunction = weight_func)
+                     elseif main_grad_name == "DumbserWENO"; @assert dimension == 2 "DumbserWENO can only be used for 2D, for 1D use WENO instead!"; DumbserWENO(order; weightFunction = weight_func)
                      elseif !is_classic; error("Main Gradient '$main_grad_name' not implemented for 2D.")
                      end
 

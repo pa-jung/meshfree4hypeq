@@ -193,3 +193,172 @@ function (weno::WENO{2})(
 
     return (wH*resHx + wCx*resCx)*vel[1] + (wV*resVy + wCy*resCy)*vel[2]
 end
+
+# --- In your Interpolations.jl file ---
+
+#==============================================================================
+  Dumbser WENO Scheme (Optimized for SoA Grids & Workspace)
+==============================================================================#
+
+# --- 1. Define Helper and Workspace ---
+
+function getStencil(deltaX::Real, deltaY::Real, s::Int)
+    # This robust version maps the angle from atan to an integer sector [0, s-1]
+    angle = atan(deltaY, deltaX)
+    # Shift angle to be in [0, 2*pi]
+    if angle < 0.0
+        angle += 2.0 * pi
+    end
+    # Normalize to [0, s] and floor to get the integer index
+    stencil = floor(Int, (angle * s) / (2.0 * pi))
+    # Clamp to ensure it's in the range [0, s-1] due to floating point nuances
+    return clamp(stencil, 0, s - 1)
+end
+
+
+mutable struct DumbserWENOWorkspace <: MUSCLWorkspace
+    # Buffers for neighbor-specific calculations
+    dx_buffer::Vector{Float64}
+    dy_buffer::Vector{Float64}
+    df_buffer::Vector{Float64}
+    w_buffer::Vector{Float64}
+    
+    # Buffers specific to Dumbser WENO logic
+    window_matrix::Matrix{Bool}
+    gradients::Matrix{Float64}
+    weights::Vector{Float64}
+    
+    max_neighbors::Int
+    
+    function DumbserWENOWorkspace(s::Int=8, initial_capacity::Int=40)
+        new(
+            zeros(initial_capacity), zeros(initial_capacity), zeros(initial_capacity),
+            zeros(initial_capacity),
+            falses(initial_capacity, s + 1), # s one-sided stencils + 1 central
+            zeros(5, s + 1), # 5 derivatives (x, y, xx, yy, xy) for each stencil
+            zeros(s + 1),
+            initial_capacity
+        )
+    end
+end
+
+# Specialize ensure_capacity! for the new workspace
+function ensure_capacity!(ws::DumbserWENOWorkspace, n::Int)
+    if n > ws.max_neighbors
+        ws.max_neighbors = n
+        resize!(ws.dx_buffer, n); resize!(ws.dy_buffer, n);
+        resize!(ws.df_buffer, n); resize!(ws.w_buffer, n);
+        ws.window_matrix = falses(n, size(ws.window_matrix, 2))
+    end
+end
+
+# --- 2. Refactored DumbserWENO Struct and Constructor ---
+
+mutable struct DumbserWENO <: GradientInterpolator
+    order::Int
+    res::Vector{Float64}
+    weightFunction::MLSWeightFunction
+    s::Int # amount of one-sided stencils
+    workspace::DumbserWENOWorkspace
+
+    function DumbserWENO(order::Int=2; weightFunction::MLSWeightFunction=exponentialWeightFunction(), s::Int=8)
+        @assert order == 2 "DumbserWENO currently only supports order=2."
+        ws = DumbserWENOWorkspace(s)
+        # res buffer is for the result of a single gradInterpolation! call
+        new(order, zeros(5), weightFunction, s, ws)
+    end
+end
+
+
+# --- 2. Refactored and Corrected DumbserWENO Functor for 2D ---
+function (weno::DumbserWENO)(
+    particleGrid::ParticleGrid2D, 
+    particleIndex::Integer, 
+    fVec::AbstractVector, 
+    eq::LinearAdvection{2}, 
+    settings::SimSetting; 
+    setCurvature::Bool=true
+)::Real
+    
+    ws = weno.workspace
+    neighbors = particleGrid.neighbour_indices[particleIndex]
+    num_neighbors = length(neighbors)
+    
+    #if num_neighbors < 10; return 0.0; end # Heuristic check
+
+    ensure_capacity!(ws, num_neighbors)
+    dxVec = @view ws.dx_buffer[1:num_neighbors]
+    dyVec = @view ws.dy_buffer[1:num_neighbors]
+    dfVec = @view ws.df_buffer[1:num_neighbors]
+    windowMatrix = @view ws.window_matrix[1:num_neighbors, :]
+
+    fill!(windowMatrix, false)
+    windowMatrix[:, 1] .= true
+
+    for i in 1:num_neighbors
+        nbIndex = neighbors[i]
+        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
+        dxVec[i] = deltaX / settings.interpRange
+        dyVec[i] = deltaY / settings.interpRange
+        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
+        stencil = getStencil(deltaX, deltaY, weno.s)
+        windowMatrix[i, stencil + 2] = true
+    end
+
+    # --- Calculate Gradients for Each Stencil ---
+    for stencil_idx in 1:(weno.s + 1)
+        stencil_view = @view windowMatrix[:, stencil_idx]
+        
+        if count(stencil_view) < 5
+            ws.gradients[:, stencil_idx] .= 1e10 
+            continue
+        end
+
+        wVec_stencil = weno.weightFunction((@view dxVec[stencil_view]), (@view dyVec[stencil_view]); param=settings.interpAlpha, normalisation=1.0)
+        
+        try
+            gradInterpolation!((@view dxVec[stencil_view]), (@view dyVec[stencil_view]), wVec_stencil, (@view dfVec[stencil_view]), weno.res; order=weno.order)
+            
+            ws.gradients[1, stencil_idx] = weno.res[1] / settings.interpRange
+            ws.gradients[2, stencil_idx] = weno.res[2] / settings.interpRange
+            ws.gradients[3, stencil_idx] = weno.res[3] / (settings.interpRange^2)
+            ws.gradients[4, stencil_idx] = weno.res[4] / (settings.interpRange^2)
+            ws.gradients[5, stencil_idx] = weno.res[5] / (settings.interpRange^2)
+        catch e
+            if e isa SingularException
+                ws.gradients[:, stencil_idx] .= 1e10
+            else
+                rethrow(e)
+            end
+        end
+    end
+
+    # --- Compute Non-Linear Weights (Corrected and Stabilized) ---
+    r = 4
+    eps = 1e-14
+    
+    for i in 1:(weno.s + 1)
+        lambda = (i == 1) ? 1e5 : 1.0 # High weight for central stencil
+        
+        # A more robust smoothness indicator that is less sensitive to scaling
+        smoothness = sum(ws.gradients[k, i]^2 for k in 1:5)
+        
+        ws.weights[i] = lambda / ((eps + smoothness)^r)
+    end
+
+    # Normalize weights
+    sum_weights = sum(ws.weights)
+    if sum_weights < 1e-14; return 0.0; end
+    ws.weights ./= sum_weights
+    
+    if setCurvature 
+        particleGrid.curvatures[particleIndex, 1] = dot(ws.weights, @view ws.gradients[3, :])
+        particleGrid.curvatures[particleIndex, 2] = dot(ws.weights, @view ws.gradients[4, :])
+    end
+
+    vel = velocity(eq, 0.0)
+    div_x = dot(ws.weights, @view ws.gradients[1, :])
+    div_y = dot(ws.weights, @view ws.gradients[2, :])
+    
+    return div_x * vel[1] + div_y * vel[2]
+end

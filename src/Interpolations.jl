@@ -213,15 +213,16 @@ function gradInterpolation!(dxVec::AV1, dyVec::AV5, wVec::AV2, dfVec::AV3, res::
         @assert !any(isnan, res) "Gradient contains NaN's in gradInterpolation! method. $(res), $((A12^2) - A22*A11), $(dfVec), $(dxVec), $(dyVec)"
     elseif order == 2
         @assert length(res) == 5
-        # Solve LS problem using Julia's backslash operator. Requires an allocation (A), but condition number doesn't square!
-        A = Matrix{Float64}(undef, length(dxVec), 5)
+        # Solve LS problem using the robust pseudo-inverse `pinv`.
+        A = similar(dxVec, length(dxVec), 5) # Use a local temporary matrix
         @. A[:, 1] = dxVec * wVec
         @. A[:, 2] = dyVec * wVec
         @. A[:, 3] = (dxVec^2) * wVec / 2
         @. A[:, 4] = (dyVec^2) * wVec / 2
         @. A[:, 5] = dxVec * dyVec * wVec
-        wVec .= wVec .* dfVec
-        res .= A \ wVec
+        
+        # Use pinv for robustness against singular stencils
+        res .= pinv(A, rtol = sqrt(eps(real(float(oneunit(eltype(A))))))) * (wVec .* dfVec)
     else
         error("Order not implemented.")
     end
@@ -239,299 +240,89 @@ abstract type GradientInterpolator end
 
 function initTimeStep(g::GradientInterpolator, particleGrid::ParticleGrid, interpAlpha::Real, interpRange::Real) end  # Function called at the start of a time step (order RK-stage)
 
-# ------------------------------- CentralGradient -------------------------------
-struct CentralGradient <: GradientInterpolator
-    order::Int64
-    res::Vector{Float64}
-    weightFunction::MLSWeightFunction
+# # ------------------------------- Dumbser WENO -------------------------------
 
-    function CentralGradient(order::Int64 = 1; weightFunction::MLSWeightFunction = exponentialWeightFunction())
-        @assert order >= 1 "Order must be larger or equal to one."
-        if order == 1
-            size = 2  # In 2D res has length 2, in 1D res has length 1
-        elseif order == 2
-            size = 5  # In 2D res had length 5, in 1D res has length 2
-        end
-        new(order, Vector{Float64}(undef, size), weightFunction)
-    end
-end
+# function getStencil(deltaX::Real, deltaY::Real, s::Int64)
+#     stencil = convert(Int64, div(s*(atan(deltaY, deltaX) + pi)*4/pi, s))
+#     stencil = stencil == 8 ? 0 : stencil  # Negative x-axis should be contained in stencil 0
+#     return stencil
+# end
 
-function (central::CentralGradient)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractArray{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
-    Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
-    dxVec = Vector{Float64}(undef, Npts)
-    dyVec = Vector{Float64}(undef, Npts)
-    dfVec = Vector{Float64}(undef, Npts)
-
-    for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
-        nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        dxVec[i] = deltaX/particleGrid.dx
-        dyVec[i] = deltaY/particleGrid.dx
-        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-    end
-    wVec = central.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
-
-    gradInterpolation!(dxVec, dyVec, wVec, dfVec, central.res; order=central.order)
-
-    if setCurvature && (central.order == 1)
-        particleGrid.grid[particleIndex].curvature[1] = 0.0
-        particleGrid.grid[particleIndex].curvature[2] = 0.0
-    elseif setCurvature && (central.order == 2)
-        particleGrid.grid[particleIndex].curvature[1] = central.res[3]/(particleGrid.dx^2)
-        particleGrid.grid[particleIndex].curvature[2] = central.res[4]/(particleGrid.dx^2)
-    end
-
-    return eq.vel[1]*central.res[1]/particleGrid.dx + eq.vel[2]*central.res[2]/particleGrid.dx
-end
-
-function (central::CentralGradient)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{1}, settings::SimSetting; setCurvature::Bool=true)::Real
-    Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
-    dxVec = Vector{Float64}(undef, Npts)
-    dfVec = Vector{Float64}(undef, Npts)
-
-    for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
-        nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
-        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
-        dxVec[i] = deltaPos/particleGrid.dx
-        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-    end
-    wVec = central.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
-
-    gradInterpolation!(dxVec, wVec, dfVec, central.res; order=central.order)
-
-    if setCurvature && (central.order == 1)
-        particleGrid.grid[particleIndex].curvature = 0.0
-    elseif setCurvature && (central.order == 2)
-        particleGrid.grid[particleIndex].curvature = central.res[2]/(particleGrid.dx^2)
-    end
-
-    return eq.vel[1]*central.res[1]/particleGrid.dx
-end
-
-# ------------------------------- WENO -------------------------------
-# struct WENO <: GradientInterpolator
+# struct DumbserWENO <: GradientInterpolator
 #     order::Int64
 #     res::Vector{Float64}
 #     weightFunction::MLSWeightFunction
+#     s::Integer  # amount of one-sided stencils
+#     gradients::Matrix{Float64}
+#     weights::Vector{Float64}
 
-#     function WENO(order::Int64 = 1; weightFunction::MLSWeightFunction = exponentialWeightFunction())
-#         @assert order >= 2 "Order must be larger or equal to two, since the WENO weights require a second derivative."
-#         if order == 1
-#             size = 2  # In 2D res has length 2, in 1D res has length 1
-#         elseif order == 2
-#             size = 5  # In 2D res had length 5, in 1D res has length 2
-#         end
-#         new(order, Vector{Float64}(undef, size), weightFunction)
+#     function DumbserWENO(order::Int64 = 2; weightFunction::MLSWeightFunction = exponentialWeightFunction())
+#         @assert order == 2 "Order must be to two, since the WENO weights require a second derivative."
+#         new(order, Vector{Float64}(undef, 5), weightFunction, 8, Matrix{Float64}(undef, (5, 9)), Vector{Float64}(undef, 9))
 #     end
 # end
 
-# function (weno::WENO)(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{1}, settings::SimSetting; setCurvature::Bool=true)::Real
-#     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
-#     dxVec = Vector{Float64}(undef, Npts)
-#     dfVec = Vector{Float64}(undef, Npts)
-#     leftWindow = Vector{Bool}(undef, Npts)
-#     for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
-#         nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
-#         deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
-#         dxVec[i] = deltaPos
-#         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-#         leftWindow[i] = deltaPos > 0.0 ? false : true
-#     end
-#     wVec = weno.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
+# function (weno::DumbserWENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
+#     @assert settings.interpRange >= sqrt(5.0^2 + 3.0^2)*particleGrid.dx "Interpolation must be sufficiently larger, otherwise one cannot guarantee sufficient neighbours are found." 
+#     particle = particleGrid.grid[particleIndex]
+#     Npts = length(particle.neighbourIndices)
 
-#     # One-sided stencil
-#     if eq.vel[1] > 0.0
-#         # Left stencil
-#         gradInterpolation!(dxVec[leftWindow], wVec[leftWindow], dfVec[leftWindow], weno.res; order=weno.order)
-#     else
-#         # Right stencil
-#         gradInterpolation!(dxVec[.!leftWindow], wVec[.!leftWindow], dfVec[.!leftWindow], weno.res; order=weno.order)
-#     end
-#     resS1 = weno.res[1]
-#     resS2 = weno.res[2]
+#     # Divide points in stencils
+#     windowMatrix = zeros(Bool, (Npts, weno.s+1))
+#     windowMatrix[:, 1] .= true  # First column is the central stencil
 
-#     # Central stencil
-#     wVec .= weno.weightFunction(dxVec; param=settings.interpAlpha, normalisation=1.0)
-#     gradInterpolation!(dxVec, wVec, dfVec, weno.res; order=weno.order)
-#     resC1 = weno.res[1]
-#     resC2 = weno.res[2]
-
-#     e = 1e-6
-#     dx2 = particleGrid.dx^2
-#     dx4 = dx2^2
-#     betaS = 0.5/(((resS1^2)*dx2 + (resS2^2)*dx4 + e)^2)
-#     betaC = 0.5/(((resC1^2)*dx2 + (resC2^2)*dx4 + e)^2)
-#     ω_s = betaS/(betaC + betaS)
-#     ω_c = betaC/(betaC + betaS)
-
-#     if setCurvature
-#         particleGrid.grid[particleIndex].curvature = resS2*ω_s + resC2*ω_c
-#     end
-
-#     res = resS1*ω_s + resC1*ω_c
-#     @assert !isnan(res) "$(weno.res), $(weno.res), $(betaS), $(betaC), $(ω_s), $(ω_c), $(dfVec)"
-#     return res*eq.vel[1]
-# end
-
-# function (weno::WENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
-#     Npts = length(particleGrid.grid[particleIndex].neighbourIndices)
-#     dxVec = Vector{Float64}(undef, Npts)
-#     dyVec = Vector{Float64}(undef, Npts)
-#     dfVec = Vector{Float64}(undef, Npts)
-#     leftWindow = Vector{Bool}(undef, Npts)
-#     topWindow = Vector{Bool}(undef, Npts)
-#     for i in eachindex(particleGrid.grid[particleIndex].neighbourIndices)
-#         nbIndex = particleGrid.grid[particleIndex].neighbourIndices[i]
+#     for i in eachindex(particle.neighbourIndices)
+#         nbIndex = particle.neighbourIndices[i]
 #         deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-#         dxVec[i] = deltaX/settings.interpRange
-#         dyVec[i] = deltaY/settings.interpRange
-#         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-#         leftWindow[i] = deltaX > 0.0 ? false : true
-#         topWindow[i] = deltaY > 0.0 ? true : false
+#         particle.dxVec[i] = deltaX/settings.interpRange
+#         particle.dyVec[i] = deltaY/settings.interpRange
+#         particle.dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
+#         stencil = getStencil(deltaX, deltaY, weno.s)  # in [0, 7]
+#         windowMatrix[i, stencil+2] = true
 #     end
-#     wVec = weno.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+#     for stencil in 1:weno.s+1
+#         particle.wVec .= weno.weightFunction(particle.dxVec, particle.dyVec; param=settings.interpAlpha, normalisation=1.0)
+        
+#         # There should be at least 5 points in each stencil!
+#         @assert count(windowMatrix[:, stencil]) >= 5 "($(particle.pos[1]), $(particle.pos[2])), $(count(windowMatrix[:, stencil])), $(stencil)"
+#         gradInterpolation!(particle.dxVec[windowMatrix[:, stencil]], particle.dyVec[windowMatrix[:, stencil]], particle.wVec[windowMatrix[:, stencil]], particle.dfVec[windowMatrix[:, stencil]], weno.res; order=weno.order)
 
-#     # One-sided stencil - Left & Right
-#     if eq.vel[1] > 0.0
-#         # Left stencil
-#         gradInterpolation!(dxVec[leftWindow], dyVec[leftWindow], wVec[leftWindow], dfVec[leftWindow], weno.res; order=weno.order)
-#     else
-#         # Right stencil
-#         gradInterpolation!(dxVec[.!leftWindow], dyVec[.!leftWindow], wVec[.!leftWindow], dfVec[.!leftWindow], weno.res; order=weno.order)
+#         # Rescale results
+#         weno.gradients[1, stencil] = weno.res[1]/settings.interpRange
+#         weno.gradients[2, stencil] = weno.res[2]/settings.interpRange  
+#         weno.gradients[3, stencil] = weno.res[3]/(settings.interpRange^2)
+#         weno.gradients[4, stencil] = weno.res[4]/(settings.interpRange^2)
+#         weno.gradients[5, stencil] = weno.res[5]/(settings.interpRange^2)
+
+#         # Compute weights
+#         r = 4
+#         eps = 1e-14
+#         lambda = (stencil == 1) ? 10^5 : 1.0
+#         weno.weights[stencil] = lambda/((eps + sum((x^2 for x in weno.gradients[:, stencil])))^r)
 #     end
-#     resHx = weno.res[1]/settings.interpRange
-#     resHy = weno.res[2]/settings.interpRange
-#     resHxx = weno.res[3]/(settings.interpRange^2)
-#     resHyy = weno.res[4]/(settings.interpRange^2)
-#     resHxy = weno.res[5]/(settings.interpRange^2)
+
+#     # Normalise weights
+#     weno.weights .= weno.weights ./ sum(weno.weights)
     
-#     # One-sided stencil - Up & Down
-#     wVec .= weno.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
-#     if eq.vel[2] < 0.0
-#         # Top stencil
-#         gradInterpolation!(dxVec[topWindow], dyVec[topWindow], wVec[topWindow], dfVec[topWindow], weno.res; order=weno.order)
-#     else
-#         # Bottom stencil
-#         gradInterpolation!(dxVec[.!topWindow], dyVec[.!topWindow], wVec[.!topWindow], dfVec[.!topWindow], weno.res; order=weno.order)
-#     end
-#     resVx = weno.res[1]/settings.interpRange
-#     resVy = weno.res[2]/settings.interpRange
-#     resVxx = weno.res[3]/(settings.interpRange^2)
-#     resVyy = weno.res[4]/(settings.interpRange^2)
-#     resVxy = weno.res[5]/(settings.interpRange^2)
-
-#     # Central stencil
-#     wVec .= weno.weightFunction(dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
-#     gradInterpolation!(dxVec, dyVec, wVec, dfVec, weno.res; order=weno.order)
-#     resCx = weno.res[1]/settings.interpRange
-#     resCy = weno.res[2]/settings.interpRange
-#     resCxx = weno.res[3]/(settings.interpRange^2)
-#     resCyy = weno.res[4]/(settings.interpRange^2)
-#     resCxy = weno.res[5]/(settings.interpRange^2)
-
-#     # Compute non-linear weights
-#     e = 1e-12
-#     dx2 = particleGrid.dx^2
-#     dx4 = dx2^2
-#     betaH = 0.5/((resHx^2)*dx2 + (resHy^2)*dx2 + (resHxx^2)*dx4 + (resHyy^2)*dx4 + (resHxy^2)*dx4 + e)^2
-#     betaV = 0.5/((resVx^2)*dx2 + (resVy^2)*dx2 + (resVxx^2)*dx4 + (resVyy^2)*dx4 + (resVxy^2)*dx4 + e)^2
-#     betaC = 0.5/((resCx^2)*dx2 + (resCy^2)*dx2 + (resCxx^2)*dx4 + (resCyy^2)*dx4 + (resCxy^2)*dx4 + e)^2
-#     wH = betaH/(betaH + betaC)
-#     wCx = betaC/(betaH + betaC)
-#     wV = betaV/(betaC + betaV)
-#     wCy = betaC/(betaC + betaV)
-
-#     if setCurvature
-#         particleGrid.grid[particleIndex].curvature[1] = wH*resHxx + wCx*resCxx
-#         particleGrid.grid[particleIndex].curvature[2] = wV*resVyy + wCy*resCyy
+#     if setCurvature 
+#         particle.curvature[1] = 0.0
+#         particle.curvature[2] = 0.0
+#         for i in eachindex(weno.weights)  # Write out inner product
+#             particle.curvature[1] += weno.weights[i]*weno.gradients[3, i]
+#             particle.curvature[2] += weno.weights[i]*weno.gradients[4, i]
+#         end
 #     end
 
-#     return (wH*resHx + wCx*resCx)*eq.vel[1] + (wV*resVy + wCy*resCy)*eq.vel[2]
+#     # Compute divergence
+#     res = 0.0
+    
+#     for i in eachindex(weno.weights)  # Write out inner product
+#         res += weno.weights[i]*(weno.gradients[1, i]*eq.vel[1] + eq.vel[2]*weno.gradients[2, i])
+#     end
+#     return res
 # end
 
-
-# ------------------------------- Dumbser WENO -------------------------------
-
-function getStencil(deltaX::Real, deltaY::Real, s::Int64)
-    stencil = convert(Int64, div(s*(atan(deltaY, deltaX) + pi)*4/pi, s))
-    stencil = stencil == 8 ? 0 : stencil  # Negative x-axis should be contained in stencil 0
-    return stencil
-end
-
-struct DumbserWENO <: GradientInterpolator
-    order::Int64
-    res::Vector{Float64}
-    weightFunction::MLSWeightFunction
-    s::Integer  # amount of one-sided stencils
-    gradients::Matrix{Float64}
-    weights::Vector{Float64}
-
-    function DumbserWENO(order::Int64 = 2; weightFunction::MLSWeightFunction = exponentialWeightFunction())
-        @assert order == 2 "Order must be to two, since the WENO weights require a second derivative."
-        new(order, Vector{Float64}(undef, 5), weightFunction, 8, Matrix{Float64}(undef, (5, 9)), Vector{Float64}(undef, 9))
-    end
-end
-
-function (weno::DumbserWENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
-    @assert settings.interpRange >= sqrt(5.0^2 + 3.0^2)*particleGrid.dx "Interpolation must be sufficiently larger, otherwise one cannot guarantee sufficient neighbours are found." 
-    particle = particleGrid.grid[particleIndex]
-    Npts = length(particle.neighbourIndices)
-
-    # Divide points in stencils
-    windowMatrix = zeros(Bool, (Npts, weno.s+1))
-    windowMatrix[:, 1] .= true  # First column is the central stencil
-
-    for i in eachindex(particle.neighbourIndices)
-        nbIndex = particle.neighbourIndices[i]
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        particle.dxVec[i] = deltaX/settings.interpRange
-        particle.dyVec[i] = deltaY/settings.interpRange
-        particle.dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-        stencil = getStencil(deltaX, deltaY, weno.s)  # in [0, 7]
-        windowMatrix[i, stencil+2] = true
-    end
-    for stencil in 1:weno.s+1
-        particle.wVec .= weno.weightFunction(particle.dxVec, particle.dyVec; param=settings.interpAlpha, normalisation=1.0)
-        
-        # There should be at least 5 points in each stencil!
-        @assert count(windowMatrix[:, stencil]) >= 5 "($(particle.pos[1]), $(particle.pos[2])), $(count(windowMatrix[:, stencil])), $(stencil)"
-        gradInterpolation!(particle.dxVec[windowMatrix[:, stencil]], particle.dyVec[windowMatrix[:, stencil]], particle.wVec[windowMatrix[:, stencil]], particle.dfVec[windowMatrix[:, stencil]], weno.res; order=weno.order)
-
-        # Rescale results
-        weno.gradients[1, stencil] = weno.res[1]/settings.interpRange
-        weno.gradients[2, stencil] = weno.res[2]/settings.interpRange  
-        weno.gradients[3, stencil] = weno.res[3]/(settings.interpRange^2)
-        weno.gradients[4, stencil] = weno.res[4]/(settings.interpRange^2)
-        weno.gradients[5, stencil] = weno.res[5]/(settings.interpRange^2)
-
-        # Compute weights
-        r = 4
-        eps = 1e-14
-        lambda = (stencil == 1) ? 10^5 : 1.0
-        weno.weights[stencil] = lambda/((eps + sum((x^2 for x in weno.gradients[:, stencil])))^r)
-    end
-
-    # Normalise weights
-    weno.weights .= weno.weights ./ sum(weno.weights)
-    
-    if setCurvature 
-        particle.curvature[1] = 0.0
-        particle.curvature[2] = 0.0
-        for i in eachindex(weno.weights)  # Write out inner product
-            particle.curvature[1] += weno.weights[i]*weno.gradients[3, i]
-            particle.curvature[2] += weno.weights[i]*weno.gradients[4, i]
-        end
-    end
-
-    # Compute divergence
-    res = 0.0
-    
-    for i in eachindex(weno.weights)  # Write out inner product
-        res += weno.weights[i]*(weno.gradients[1, i]*eq.vel[1] + eq.vel[2]*weno.gradients[2, i])
-    end
-    return res
-end
-
+include("./CentralGradient.jl")
 include("./MUSCL.jl")
 include("./Upwind.jl")
 include("./WENO.jl")

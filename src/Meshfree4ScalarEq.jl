@@ -25,9 +25,6 @@ using .HyperbolicPDEs
 include("FluxFunctions.jl")
 using .FluxFunctions
 
-include("Particles.jl")
-using .Particles
-
 include("SimSettings.jl")
 using .SimSettings
 

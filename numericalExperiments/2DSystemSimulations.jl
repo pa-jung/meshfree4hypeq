@@ -103,8 +103,8 @@ sim_config_2d = SimulationConfig(
             "MOOD" => "U2","delta_relax" => 0.,
         ),            
     ),
-    "ARS222Upwind"
-    #["ARS222MUSCL2","ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Praveen)","ARS222Upwind"]
+    #"ARS222Upwind"
+    ["ARS222MUSCL2","ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Praveen)","ARS222Upwind"]
 );
 
 # --- How to run this with your IPlotPDESols package ---
@@ -141,8 +141,8 @@ params = ParamDict(
         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
     )
 
-#@profview runSystem2DSim(params);
-runSystemSimulation(params);
+@profview runSystemSimulation(params);
+#runSystemSimulation(params);
 #using Test # You might need to run `using Pkg; Pkg.add("Test")` if not in a test environment.
 
 # Assume your modules are loaded, e.g.:
