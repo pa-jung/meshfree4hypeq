@@ -6,6 +6,16 @@ include("ButcherTableaus.jl")
 
 # --- In your TimeIntegration.jl file ---
 
+using InteractiveUtils
+
+function run_functor_test(rs, S_out, U_kin, pos, time)
+    # This is the call we want to inspect
+    rs(S_out, U_kin, pos, time)
+end
+
+# In your main code, after `my_source_term` is defined:
+# 
+
 #==============================================================================
   Simple Splitting Timestepper (Optimized for SoA Grids)
 ==============================================================================#
@@ -132,6 +142,7 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
     Y_stages_sys::Vector{Matrix{Float64}}
     K_E_stages_sys::Vector{Matrix{Float64}}
     K_I_stages_sys::Vector{Matrix{Float64}}
+    rho_buffer::Vector{Float64}
     
     # --- Particle-local buffers for implicit solve ---
     u_particle_iter_buffer::Vector{Float64}
@@ -151,7 +162,7 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
             gradientInterpolator, fallbackInterpolator, mood, implicit_solver, 
             source_term_object, butcher_tableau,
             Matrix{Float64}(undef,0,0), [Matrix{Float64}(undef,0,0) for _ in 1:s],
-            [Matrix{Float64}(undef,0,0) for _ in 1:s], [Matrix{Float64}(undef,0,0) for _ in 1:s],
+            [Matrix{Float64}(undef,0,0) for _ in 1:s], [Matrix{Float64}(undef,0,0) for _ in 1:s], Vector{Float64}(undef, 0),
             Float64[], Float64[], s
         )
     end
@@ -185,12 +196,17 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
 
     # --- Ensure buffers are correctly sized for the current grid ---
     if size(imex_ts.U_n_sys, 1) != N_particles
-        imex_ts.U_n_sys = zeros(N_particles, N_components)
-        imex_ts.Y_stages_sys = [zeros(N_particles, N_components) for _ in 1:s]
-        imex_ts.K_E_stages_sys = [zeros(N_particles, N_components) for _ in 1:s]
-        imex_ts.K_I_stages_sys = [zeros(N_particles, N_components) for _ in 1:s]
-        imex_ts.u_particle_iter_buffer = zeros(N_components)
-        imex_ts.Y_i_base_particle_buffer = zeros(N_components)
+        # Re-create matrices (necessary) using undef for a small speedup
+        imex_ts.U_n_sys = Matrix{Float64}(undef, N_particles, N_components)
+        # Re-create the stage matrices
+        for i in 1:s
+            imex_ts.Y_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
+            imex_ts.K_E_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
+            imex_ts.K_I_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
+        end
+        resize!(imex_ts.rho_buffer, N_particles)
+        resize!(imex_ts.u_particle_iter_buffer, N_components)
+        resize!(imex_ts.Y_i_base_particle_buffer, N_components)
     end
 
     # --- 0. Store U^n from system_pg ---
@@ -231,13 +247,20 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         
         # --- Evaluate and store tendencies K_E and K_I ---
         compute_explicit_tendency_with_mood!(
-            imex_ts.K_E_stages_sys[i], current_Y_i_sys, 
+            imex_ts.K_E_stages_sys[i], current_Y_i_sys, imex_ts.rho_buffer,
             imex_ts.gradientInterpolator, imex_ts.fallbackInterpolator, imex_ts.mood,
             scalar_equations, system_pg, settings, dt, (i==1)
         )
 
         time_implicit_for_KI = time_n + bt.c[i] * dt 
+        
         for p_idx in 1:N_particles
+            # @code_warntype run_functor_test(imex_ts.source_term_object,
+            #     @view(imex_ts.K_I_stages_sys[i][p_idx, :]), 
+            #     @view(current_Y_i_sys[p_idx, :]), 
+            #     system_pg[1].positions[p_idx], 
+            #     time_implicit_for_KI
+            # )
             imex_ts.source_term_object(
                 @view(imex_ts.K_I_stages_sys[i][p_idx, :]), 
                 @view(current_Y_i_sys[p_idx, :]), 
@@ -266,6 +289,7 @@ end
 function compute_explicit_tendency_with_mood!(
     K_E_out::Matrix{Float64},
     U_state::Matrix{Float64},
+    rho_buffer::Vector{Float64},
     grad_interp, fallback_interp, mood,
     eqs::DiagonalHyperbolicSystem{N,D},
     grids::ParticleGridSystem{N},
@@ -281,35 +305,35 @@ function compute_explicit_tendency_with_mood!(
         eq_k = eqs[k]
         
         # Backup the current state of the physical grid component
-        temp_rho_backup = copy(grid_k.rhos)
+        rho_buffer .= grid_k.rhos
 
-        try
-            # Temporarily update the physical grid's state to U_state for this stage
-            grid_k.rhos .= @view U_state[:, k]
-            
-            # Pre-computation steps for interpolators for this stage
-            initTimeStep(grad_interp, grid_k, settings.interpAlpha, settings.interpRange)
-            if !isnothing(fallback_interp)
-                initTimeStep(fallback_interp, grid_k, settings.interpAlpha, settings.interpRange)
-            end
-            copyCurvatures!(grid_k)
-
-            # Calculate divergence for each interior particle
-            for p_idx in interior
-                div_high = grad_interp(grid_k, p_idx, grid_k.rhos, eq_k, settings; setCurvature=true)
-                rho_candidate = U_state[p_idx, k] - dt * div_high
-                
-                if !isnothing(fallback_interp) && mood(grid_k, p_idx, @view(U_state[:, k]), rho_candidate; firstStage=is_first_stage)
-                    div_fallback = fallback_interp(grid_k, p_idx, grid_k.rhos, eq_k, settings; setCurvature=false)
-                    K_E_out[p_idx, k] = -div_fallback
-                else
-                    K_E_out[p_idx, k] = -div_high
-                end
-            end
-        finally
-            # Always restore the original grid state
-            grid_k.rhos .= temp_rho_backup
+#        try
+        # Temporarily update the physical grid's state to U_state for this stage
+        grid_k.rhos .= @view U_state[:, k]
+        
+        # Pre-computation steps for interpolators for this stage
+        initTimeStep(grad_interp, grid_k, settings.interpAlpha, settings.interpRange)
+        if !isnothing(fallback_interp)
+            initTimeStep(fallback_interp, grid_k, settings.interpAlpha, settings.interpRange)
         end
+        copyCurvatures!(grid_k)
+
+        # Calculate divergence for each interior particle
+        for p_idx in interior
+            div_high = grad_interp(grid_k, p_idx, grid_k.rhos, eq_k, settings; setCurvature=true)
+            rho_candidate = U_state[p_idx, k] - dt * div_high
+            
+            if !isnothing(fallback_interp) && mood(grid_k, p_idx, @view(U_state[:, k]), rho_candidate; firstStage=is_first_stage)
+                div_fallback = fallback_interp(grid_k, p_idx, grid_k.rhos, eq_k, settings; setCurvature=false)
+                K_E_out[p_idx, k] = -div_fallback
+            else
+                K_E_out[p_idx, k] = -div_high
+            end
+        end
+#        finally
+        # Always restore the original grid state
+        grid_k.rhos .= rho_buffer
+#        end
     end
 end
 

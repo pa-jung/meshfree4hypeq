@@ -152,16 +152,16 @@ function solve!(
     N_macro_vars = source_term_object.num_macro_variables
 
     # Create a tuple directly. `ntuple` is type-stable and non-allocating.
-    U_macro_base_tuple = ntuple(N_macro_vars) do i_macro
-        # Using a generator `( ... for ...)` inside sum is good practice
-        sum(RHS_const_particle[k] for k in kinetic_map[i_macro])
+    macro_buffer = source_term_object.macro_buffer
+    for i = 1:N_macro_vars
+        macro_buffer[i] = sum(RHS_const_particle[k] for k in kinetic_map[i])
     end
 
     for k_global_comp in 1:N_total_kinetic_components_arg
         v_k_base_kinetic = RHS_const_particle[k_global_comp]
         
         # The Maxwellian now receives the TUPLE, which can be splatted efficiently
-        Mk_val = maxwellians[k_global_comp](U_macro_base_tuple)
+        Mk_val = maxwellians[k_global_comp](macro_buffer)
         
         Y_out_particle[k_global_comp] = (epsilon * v_k_base_kinetic + dt_coefficient_for_S * Mk_val) * coeff_sum_inv
     end

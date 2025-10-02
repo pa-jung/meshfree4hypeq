@@ -41,7 +41,7 @@ end
 # --- Method 1: Specialized for SCALAR PDEs (N=1) ---
 
 # This method is only called if the functor's type is MaxwellianFunctor{D, 1, E}
-function (m::MaxwellianFunctor{D, 1, E})(U::Tuple{Float64})::Float64 where {D, E}
+function (m::MaxwellianFunctor{D, 1, E})(U)::Float64 where {D, E}
     # For a scalar equation, U is a 1-tuple, e.g., (rho,). We extract the value.
     u_scalar = U[1]
     
@@ -60,7 +60,7 @@ end
 
 # This method is called for any MaxwellianFunctor, but because we defined a more
 # specific one for N=1, this one will be used for all N > 1 cases.
-function (m::MaxwellianFunctor{D, N, E})(U::Tuple)::Float64 where {D, N, E}
+function (m::MaxwellianFunctor{D, N, E})(U)::Float64 where {D, N, E}
     macro_val = U[m.i_macro]
     
     # The flux function for a system PDE expects a tuple
@@ -140,7 +140,7 @@ struct RelaxationSourceTerm{MF <: Tuple, KI <: Tuple} <: AbstractSourceTerm
     num_total_kinetic_components::Int64
     num_macro_variables::Int64
     # The buffer now has a concrete type!
-    buffer::Vector{Float64} 
+    macro_buffer::Vector{Float64}
 end
 
 function RelaxationSourceTerm(
@@ -160,54 +160,27 @@ function RelaxationSourceTerm(
         num_total_kin,
         num_macro_vars,
         # Initialize the buffer with a concrete type
-        Vector{Float64}(undef, num_total_kin) 
+        Vector{Float64}(undef, num_macro_vars)
     )
-end
-
-# This helper function will be "unrolled" by the compiler for ultimate performance.
-# This helper function is guaranteed to be unrolled for ultimate performance.
-@generated function _evaluate_maxwellians!(buffer, maxwellians_tuple::T, U_macro_tuple) where {T <: Tuple}
-    # This code runs at COMPILE TIME.
-    # T is the type of the tuple, e.g., Tuple{Maxwellian1, Maxwellian2}
-
-    # 1. Get the number of elements in the tuple from its type.
-    N = fieldcount(T)
-    
-    # 2. Build a list of expressions, one for each element in the tuple.
-    #    e.g., [:(buffer[1] = maxwellians_tuple[1](U_macro_tuple)),
-    #           :(buffer[2] = maxwellians_tuple[2](U_macro_tuple)),
-    #           ...]
-    assignments = [:(buffer[$i] = maxwellians_tuple[$i](U_macro_tuple)) for i in 1:N]
-    
-    # 3. Return these expressions wrapped in a code block (`quote`).
-    #    This block becomes the body of the function that runs at RUNTIME.
-    #    We add @inbounds for a small extra speed boost.
-    return quote
-        @inbounds begin
-            $(assignments...)
-        end
-        return nothing
-    end
 end
 
 function (rs::RelaxationSourceTerm{MF,KI})(
     S_out_particle::AbstractVector{Float64},
     U_kinetic_particle::AbstractVector{Float64},
-    particle_pos::Any, 
-    time::Real             
+    particle_pos::Tuple{Float64,Float64}, 
+    time::Float64             
 ) where {MF <: Tuple, KI <: Tuple}
     if length(U_kinetic_particle) != rs.num_total_kinetic_components || length(S_out_particle) != rs.num_total_kinetic_components
         error("Dimension mismatch in RelaxationSourceTerm functor.")
     end
 
-    U_macro_tuple = ntuple(i -> sum(U_kinetic_particle[k] for k in rs.kinetic_indices[i]), rs.num_macro_variables)
+    for i = 1:rs.num_macro_variables
+        rs.macro_buffer[i] = sum(U_kinetic_particle[k] for k in rs.kinetic_indices[i])
+    end
+    for (k_global_comp, maxwellian) in enumerate(rs.maxwellians)
 
-    # --- THE FIX ---
-    # Populate the buffer using our type-stable, unrolled helper
-    _evaluate_maxwellians!(rs.buffer, rs.maxwellians, U_macro_tuple)
-    # This loop is now fast because rs.buffer is a concrete Vector{Float64}
-    for k_global_comp in 1:rs.num_total_kinetic_components
-        mk_of_U_macro = rs.buffer[k_global_comp]
+        mk_of_U_macro = maxwellian(rs.macro_buffer)
+        
         S_out_particle[k_global_comp] = (mk_of_U_macro - U_kinetic_particle[k_global_comp]) / rs.epsilon
     end
 end

@@ -27,6 +27,9 @@ end
 @inline function create_kinetic_num(relax_vel::Vector)
     return [length(v) for v in relax_vel]
 end
+function stable_vel_config(relax_vel::Union{Vector{Vector{Float64}}, Vector{Vector{Tuple{Float64,Float64}}}})
+    return relax_vel
+end
 
 """
     runSystemSimulation(params::ParamDictType) -> Union{AbstractSimData, Nothing}
@@ -88,9 +91,8 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             end
             return createSimData(xs, us, ts, run_params)
         end
-        RV = dimension == 1 ? Vector{Vector{Float64}} : Vector{Vector{Tuple{Float64,Float64}}}
         # --- 3. Load Remaining Numerical Parameters ---
-        relax_velocities_config::RV = run_params["relax_velocities"]
+        relax_velocities_config = stable_vel_config(params["relax_velocities"])
         relax_eps::Float64 = run_params["relax_epsilon"]
         main_grad_name::String = run_params["main_gradient"]
         fallback_grad_name = get(run_params,"fallback_gradient",nothing)
@@ -112,7 +114,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         @assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
         
         # --- 4. Construct Kinetic System (Dimension-Aware) ---
-        num_kinetic_per_macro::Vector{Int} = create_kinetic_num(relax_velocities_config)
+        num_kinetic_per_macro::Vector{Int} = [length(v) for v in relax_velocities_config]
         N_total_kinetic = sum(num_kinetic_per_macro)
         
         kinetic_eqs_vec = Vector{LinearAdvection{dimension}}(undef, N_total_kinetic)
@@ -253,7 +255,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                         elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
                         elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
                         elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
-                        elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad, N_total_particles; fallbackInterpolator=FallbackGrad, mood=mood_fun))
+                        elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term)
                         else error("Unknown TimeStepper name for system: '$timestepper_name'") end
         
         # Convert to tuples for performance before passing to the integrator

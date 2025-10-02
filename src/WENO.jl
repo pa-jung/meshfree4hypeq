@@ -5,11 +5,14 @@ mutable struct WENOWorkspace1D <: WENOWorkspace
     dx_buffer::Vector{Float64}
     df_buffer::Vector{Float64}
     w_buffer::Vector{Float64}
+    dx_stencil_buffer::Vector{Float64}
+    w_stencil_buffer::Vector{Float64}
+    df_stencil_buffer::Vector{Float64}
     left_window_buffer::BitVector
     max_neighbors::Int
 
     function WENOWorkspace1D(;cap=20)
-        new(zeros(cap), zeros(cap), zeros(cap), falses(cap), cap)
+        new(zeros(cap), zeros(cap), zeros(cap), zeros(cap), zeros(cap), zeros(cap), falses(cap), cap)
     end
 end
 
@@ -31,7 +34,8 @@ function ensure_capacity!(ws::WENOWorkspace, n::Int)
     if n > ws.max_neighbors
         ws.max_neighbors = n
         resize!(ws.dx_buffer, n); resize!(ws.df_buffer, n); resize!(ws.w_buffer, n)
-        resize!(ws.left_window_buffer, n)
+        resize!(ws.left_window_buffer, n); resize!(ws.dx_stencil_buffer,n); resize!(w_stencil_buffer, n)
+        resize!(ws.df_stencil_buffer, n)
         if ws isa WENOWorkspace2D
             resize!(ws.dy_buffer, n)
             resize!(ws.top_window_buffer, n)
@@ -82,11 +86,40 @@ function (weno::WENO{1})(
     end
     weno.weightFunction(wVec, dxVec; param=settings.interpAlpha, normalisation=1.0)
 
-    # One-sided stencil
-    stencil = velocity(eq, 0.0) > 0.0 ? leftWindow : .!leftWindow
-    if count(stencil) < weno.order; return 0.0; end # Not enough points in one-sided stencil
+    # --- CHOOSE STENCIL AND FILTER DATA (Corrected Logic) ---
+    stencil_size = 0 # 1. Initialize counter here
+    if velocity(eq, 0.0) > 0.0
+        # --- Left-sided stencil ---
+        for i in 1:num_neighbors
+            if leftWindow[i]
+                stencil_size += 1 # 2. Use stencil_size as the counter
+                ws.dx_stencil_buffer[stencil_size] = dxVec[i]
+                ws.w_stencil_buffer[stencil_size] = wVec[i]
+                ws.df_stencil_buffer[stencil_size] = dfVec[i]
+            end
+        end
+    else
+        # --- Right-sided stencil ---
+        for i in 1:num_neighbors
+            if !leftWindow[i]
+                stencil_size += 1 # 2. Use stencil_size as the counter
+                ws.dx_stencil_buffer[stencil_size] = dxVec[i]
+                ws.w_stencil_buffer[stencil_size] = wVec[i]
+                ws.df_stencil_buffer[stencil_size] = dfVec[i]
+            end
+        end
+    end
+
+    # 3. Perform a single, efficient check after filtering
+    if stencil_size < weno.order; return 0.0; end
+
+    # Create views of the now-populated stencil buffers
+    dx_stencil = @view ws.dx_stencil_buffer[1:stencil_size]
+    w_stencil  = @view ws.w_stencil_buffer[1:stencil_size]
+    df_stencil = @view ws.df_stencil_buffer[1:stencil_size]
     
-    gradInterpolation!(dxVec[stencil], wVec[stencil], dfVec[stencil], weno.res; order=weno.order)
+    # This call is now allocation-free!
+    gradInterpolation!(dx_stencil, w_stencil, df_stencil, weno.res; order=weno.order)
     resS1, resS2 = weno.res[1], weno.res[2]
 
     # Central stencil

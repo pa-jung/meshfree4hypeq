@@ -66,7 +66,7 @@ function pressure_from_euler_conserved(rho::Float64, m::Float64, E::Float64)::Fl
     return max(pressure, 1e-9)
 end
 
-function flux(eq::Euler1D, U::NTuple{3, Float64})::NTuple{3, Float64}
+function flux(eq::Euler1D, U)::NTuple{3, Float64}
     rho, m, E = U
     if rho < 1e-9; return (0.0, pressure_from_euler_conserved(1e-9, 0.0, 0.0), 0.0); end
     ux = m / rho
@@ -78,14 +78,14 @@ end
 # --- 2D Euler Equations ---
 struct Euler2D <: HyperbolicPDESystem{2, 4} end
 
-function pressure_from_euler_conserved(U::NTuple{4, Float64})::Float64
+function pressure_from_euler_conserved(U)::Float64
     rho, mx, my, E = U
     if rho < 1e-9; return 1e-9; end
     pressure = (GAS_GAMMA_EULER - 1.0) * (E - 0.5 * (mx^2 + my^2) / rho)
     return max(pressure, 1e-9)
 end
 
-function flux(eq::Euler2D, U::NTuple{4, Float64})::NTuple{2, NTuple{4, Float64}}
+function flux(eq::Euler2D, U)::NTuple{2, NTuple{4, Float64}}
     rho, mx, my, E = U
     if rho < 1e-9
         # --- REFINEMENT 3: Clean up redundant calls ---

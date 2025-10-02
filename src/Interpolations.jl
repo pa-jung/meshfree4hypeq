@@ -174,8 +174,8 @@ function gradInterpolation!(dxVec::AV1, wVec::AV2, dfVec::AV3, res::AV4; order::
         @assert !isnan(b1) "$(b1), $(dfVec), $(wVec)"
         A11 = dot(wVec, dxVec)
         res[1] = b1/A11
-        @assert !any(isnan, res[1]) "Gradient contains NaN's in gradInterpolation! method. $(res), $(A11), $(dfVec), $(wVec), $(dxVec)"
-        @assert !any(isinf, res[1]) "Gradient contains Inf's in gradInterpolation! method. $(res), $(A11), $(dfVec), $(wVec), $(dxVec)"
+        @assert !isnan(res[1]) "Gradient contains NaN's in gradInterpolation! method. $(res), $(A11), $(dfVec), $(wVec), $(dxVec)"
+        @assert !isinf(res[1]) "Gradient contains Inf's in gradInterpolation! method. $(res), $(A11), $(dfVec), $(wVec), $(dxVec)"
     elseif order == 2
         # Generate normal equations
         wVec .= wVec .* dxVec  # wVec = dx .* wVec
@@ -190,8 +190,8 @@ function gradInterpolation!(dxVec::AV1, wVec::AV2, dfVec::AV3, res::AV4; order::
         # Explicit solve of 2x2 linear system
         res[1] = (b3*A12 - A22*b2)/((A12^2) - A22*A11)
         res[2] = (b3 - A12*res[1])/A22
-        @assert !any(isnan, res[1:2]) "Gradient contains NaN's in gradInterpolation! method. $(res), $((A12^2) - A22*A11), $(dfVec)"
-        @assert !any(isinf, res[1:2]) "Gradient contains Inf's in gradInterpolation! method. $(res), $((A12^2) - A22*A11), $(dfVec)"
+        @assert (!isnan(res[1]) && !isnan(res[2])) "Gradient contains NaN's in gradInterpolation! method. $(res), $((A12^2) - A22*A11), $(dfVec)"
+        @assert (!isinf(res[1]) && !isinf(res[2])) "Gradient contains Inf's in gradInterpolation! method. $(res), $((A12^2) - A22*A11), $(dfVec)"
     else
         error("Order not implemented.")
     end
