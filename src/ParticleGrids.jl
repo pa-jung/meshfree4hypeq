@@ -118,9 +118,7 @@ struct ParticleGrid1D <: ParticleGrid{1}
     regular::Bool
     bc::Symbol
     interior_indices::UnitRange{Int}
-    
-    # --- Temporary Buffers ---
-    temp::Vector{Float64} # Can be used for various temporary calculations
+    max_volume::Ref{Float64}
 
     function ParticleGrid1D(
         xmin::Real, xmax::Real, N_interior::Integer, N_ghost::Integer, bc::Symbol; 
@@ -179,7 +177,7 @@ struct ParticleGrid1D <: ParticleGrid{1}
         regular = (randomness == 0.0)
         new(positions, rhos, curvatures, is_boundary, volumes, mood_events,
             neighbour_indices, xmin, xmax, N_total, dx, regular, bc, 
-            interior_indices, temp)
+            interior_indices, Ref(0.))
     end
 end
 
@@ -198,7 +196,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
     dx::Float64; dy::Float64; regular::Bool; bc::Symbol
     interior_indices::Vector{Int}
     voxel_map::Dict{Int, Vector{Int}}
-    temp::Matrix{Float64}
+    max_volume::Ref{Float64}
 
     function ParticleGrid2D(
         xmin::Real, xmax::Real, ymin::Real, ymax::Real, 
@@ -252,7 +250,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
             zeros(Int, N_total), falses(N_total), [Int[] for _ in 1:N_total],
             xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_total, N_ghost,
             dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices,
-            Dict{Int, Vector{Int}}(), zeros(N_total, 2))
+            Dict{Int, Vector{Int}}(), Ref{0.})
     end
 end
 
@@ -467,6 +465,8 @@ function determineVolumes!(particleGrid::ParticleGrid1D)
             volumes[i] = (positions[i+1] - positions[i-1]) / 2.0
         end
     end
+    particleGrid.max_volume[] = maximum(volumes)
+    return
 end
 
 """
@@ -484,12 +484,13 @@ function determineVolumes!(particleGrid::ParticleGrid2D)
     # The `calculate_voronoi_volumes_2d` helper function is assumed to be defined
     # at the top of the module as in your original file.
     vols = calculate_voronoi_volumes_2d(particleGrid.positions, xmin_b, xmax_b, ymin_b, ymax_b)
-    
     if length(vols) == particleGrid.N
         particleGrid.volumes .= vols
     else
         @warn "Voronoi cell calculation returned an incorrect number of volumes. Volumes not updated."
     end
+    particleGrid.max_volume[] = maximum(vols)
+    return 
 end
 
 """
@@ -550,7 +551,7 @@ function findLocalExtrema!(particleGrid::ParticleGrid, particleIndex::Integer, f
     # This function now works for both 1D and 2D without changes
     mini = fVec[particleIndex]
     maxi = fVec[particleIndex]
-    for i in particleGrid.neighbour_indices[particleIndex]
+    for i in (particleGrid.neighbour_indices[particleIndex])
         mini = min(mini, fVec[i])
         maxi = max(maxi, fVec[i])
     end

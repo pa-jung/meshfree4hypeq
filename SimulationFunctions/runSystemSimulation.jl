@@ -8,6 +8,7 @@ using Meshfree4ScalarEq.FluxFunctions
 using Meshfree4ScalarEq.SourceTerms 
 using Meshfree4ScalarEq.ImplicitSolvers 
 using Meshfree4ScalarEq.InitialConditions
+using Meshfree4ScalarEq.MOOD
 using Random
 using LinearAlgebra
 using IPlotPDESols
@@ -247,7 +248,8 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                     UpwindGradient(1; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                 else error("Unknown MainGrad: $main_grad_name"); end
         FallbackGrad = if fallback_grad_name == "Upwind" UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
-                       elseif !isnothing(fallback_grad_name) error("Only Upwind implemented as Fallback!") end
+                        elseif isnothing(fallback_grad_name) NoFallbackGrad()
+                       else error("Only Upwind implemented as Fallback!") end
         implicit_solver = LinearizedRelaxationImplicitSolver()
         N_total_particles = particleGrid_template.N
         

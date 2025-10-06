@@ -40,6 +40,9 @@ using .SourceTerms
 include("ImplicitSolvers.jl")
 using .ImplicitSolvers
 
+include("MOOD.jl")
+using .MOOD
+
 include("TimeIntegration.jl")
 using .TimeIntegration
 

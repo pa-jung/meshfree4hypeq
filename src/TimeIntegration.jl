@@ -8,6 +8,7 @@ using ..HyperbolicPDEs
 using ..Interpolations
 using ..SourceTerms
 using ..ImplicitSolvers
+using ..MOOD
 
 export mainTimeIntegrator!, mainTimeIntegratorNew!
 

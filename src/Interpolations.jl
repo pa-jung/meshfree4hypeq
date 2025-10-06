@@ -8,7 +8,7 @@ using ..Meshfree4ScalarEq.HyperbolicPDEs
 using ..Meshfree4ScalarEq.FluxFunctions
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil, LaxFriedrichsGradient, MUSCLlimited,
-       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter  
+       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad  
 
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
@@ -260,6 +260,9 @@ at a gridpoint can then be computed using the ()-operator; see for example Upwin
 the correct stencil and then call the MLS routine (gradInterpolation).
 """
 abstract type GradientInterpolator end
+
+# Fallback Gradient interpolator for no fallback
+struct NoFallbackGrad <: GradientInterpolator end
 
 function initTimeStep(g::GradientInterpolator, particleGrid::ParticleGrid, interpAlpha::Real, interpRange::Real) end  # Function called at the start of a time step (order RK-stage)
 

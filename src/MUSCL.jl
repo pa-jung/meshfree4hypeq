@@ -471,14 +471,8 @@ function _compute_muscl_coeffs!(::MUSCLORDER4, dxVec, wVec, A, alfaij, alfaijBar
 end
 
 function reconstruct_interface_states(::MUSCLORDER1, particleGrid, fVec, ws, p_idx, nb_idx, deltaPos)
-    neighbors_i = particleGrid.neighbour_indices[p_idx]
-    neighbors_j = particleGrid.neighbour_indices[nb_idx]
-    
-    slope_i = sum(ws.alfaijs[p_idx][k] * (fVec[nb_k] - fVec[p_idx]) for (k, nb_k) in enumerate(neighbors_i))
-    slope_j = sum(ws.alfaijs[nb_idx][k] * (fVec[nb_k] - fVec[nb_idx]) for (k, nb_k) in enumerate(neighbors_j))
-
-    fij = fVec[p_idx] + 0.5 * deltaPos * slope_i
-    fji = fVec[nb_idx] - 0.5 * deltaPos * slope_j
+    fij = fVec[p_idx] + 0.5 * deltaPos * ws.slopes[p_idx]
+    fji = fVec[nb_idx] - 0.5 * deltaPos * ws.slopes[nb_idx]
     return fij, fji
 end
 
@@ -518,51 +512,51 @@ function reconstruct_interface_states(::MUSCLORDER4, particleGrid, fVec, ws, p_i
     return fij, fji
 end
 
-function (muscl::MUSCL{1, MUSCLORDER1,L})(
-    particleGrid::ParticleGrid1D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector, 
-    eq::ScalarHyperbolicPDE, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
-) where {L <: RealSlopeLimiter}
-    div = 0.0
-    ws = muscl.workspace
+# function (muscl::MUSCL{1, MUSCLORDER1,L})(
+#     particleGrid::ParticleGrid1D, 
+#     particleIndex::Integer, 
+#     fVec::AbstractVector, 
+#     eq::ScalarHyperbolicPDE, 
+#     settings::SimSetting; 
+#     setCurvature::Bool=true
+# ) where {L <: RealSlopeLimiter}
+#     div = 0.0
+#     ws = muscl.workspace
     
-    # Retrieve the pre-calculated LIMITED slope for the current particle
-    sigma_i_lim = ws.slopes[particleIndex]
+#     # Retrieve the pre-calculated LIMITED slope for the current particle
+#     sigma_i_lim = ws.slopes[particleIndex]
 
-    for (index_in_list, nbIndex) in enumerate(particleGrid.neighbour_indices[particleIndex])
-        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
+#     for (index_in_list, nbIndex) in enumerate(particleGrid.neighbour_indices[particleIndex])
+#         deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
         
-        # Retrieve the pre-calculated LIMITED slope for the neighbor
-        sigma_j_lim = ws.slopes[nbIndex]
+#         # Retrieve the pre-calculated LIMITED slope for the neighbor
+#         sigma_j_lim = ws.slopes[nbIndex]
 
-        # Reconstruct states at midpoint using LIMITED slopes
-        fij = fVec[particleIndex] + 0.5 * deltaPos * sigma_i_lim
-        fji = fVec[nbIndex] - 0.5 * deltaPos * sigma_j_lim
+#         # Reconstruct states at midpoint using LIMITED slopes
+#         fij = fVec[particleIndex] + 0.5 * deltaPos * sigma_i_lim
+#         fji = fVec[nbIndex] - 0.5 * deltaPos * sigma_j_lim
         
-        fm, fp = sortFlux(fij, fji, deltaPos)
-        num_flux = muscl.numericalFlux(fm, fp, eq)
+#         fm, fp = sortFlux(fij, fji, deltaPos)
+#         num_flux = muscl.numericalFlux(fm, fp, eq)
         
-        # Divergence sum uses the geometric alfaij coefficients
-        div += ws.alfaijs[particleIndex][index_in_list] * (num_flux - flux(eq, fVec[particleIndex]))
-    end
+#         # Divergence sum uses the geometric alfaij coefficients
+#         div += ws.alfaijs[particleIndex][index_in_list] * (num_flux - flux(eq, fVec[particleIndex]))
+#     end
 
-    if setCurvature; particleGrid.curvatures[particleIndex] = 0.0; end
+#     if setCurvature; particleGrid.curvatures[particleIndex] = 0.0; end
     
-    return 2.0 * div
-end
+#     return 2.0 * div
+# end
 
 # --- 4. Refactored MUSCL Functor ---
-function (muscl::MUSCL{D,ORDER,NoLimiter})(
+function (muscl::MUSCL{D,ORDER,L})(
     particleGrid::ParticleGrid1D, 
     particleIndex::Integer, 
     fVec::AbstractVector{<:Real}, 
     eq::ScalarHyperbolicPDE, 
     settings::SimSetting; 
     setCurvature::Bool=true
-)::Real where {D,ORDER<:MUSCLORDER}
+)::Real where {D,ORDER<:MUSCLORDER,L<:AbstractSlopeLimiter}
     
     div = 0.0
     ws = muscl.workspace

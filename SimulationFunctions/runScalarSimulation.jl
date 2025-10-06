@@ -8,6 +8,7 @@ using Meshfree4ScalarEq.FluxFunctions
 using Meshfree4ScalarEq.SourceTerms 
 using Meshfree4ScalarEq.ImplicitSolvers 
 using Meshfree4ScalarEq.InitialConditions
+using Meshfree4ScalarEq.MOOD
 using Random
 using IPlotPDESols
 
@@ -182,7 +183,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                      elseif !is_classic; error("Main Gradient '$main_grad_name' not implemented for 2D.")
                      end
 
-        FallbackGrad = if isnothing(fallback_grad_name); nothing
+        FallbackGrad = if isnothing(fallback_grad_name); NoFallbackGrad()
                          elseif fallback_grad_name == "Upwind"; UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                          elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end

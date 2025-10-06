@@ -313,17 +313,16 @@ function compute_explicit_tendency_with_mood!(
         
         # Pre-computation steps for interpolators for this stage
         initTimeStep(grad_interp, grid_k, settings.interpAlpha, settings.interpRange)
-        if !isnothing(fallback_interp)
+        if !(fallback_interp isa NoFallbackGrad)
             initTimeStep(fallback_interp, grid_k, settings.interpAlpha, settings.interpRange)
         end
-        copyCurvatures!(grid_k)
 
         # Calculate divergence for each interior particle
         for p_idx in interior
             div_high = grad_interp(grid_k, p_idx, grid_k.rhos, eq_k, settings; setCurvature=true)
             rho_candidate = U_state[p_idx, k] - dt * div_high
             
-            if !isnothing(fallback_interp) && mood(grid_k, p_idx, @view(U_state[:, k]), rho_candidate; firstStage=is_first_stage)
+            if !(fallback_interp isa NoFallbackGrad) && mood(grid_k, p_idx, @view(U_state[:, k]), rho_candidate; firstStage=is_first_stage)
                 div_fallback = fallback_interp(grid_k, p_idx, grid_k.rhos, eq_k, settings; setCurvature=false)
                 K_E_out[p_idx, k] = -div_fallback
             else

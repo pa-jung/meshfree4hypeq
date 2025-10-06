@@ -62,13 +62,13 @@ function main()
 
         # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
         "timestepper" => "RalstonRK2",
-        "main_gradient" => "WENO",
+        "main_gradient" => "MUSCL",
         "fallback_gradient" => "Upwind",
         "fallback_flux" => "Rusanov",
         "order" =>2,
         "main_flux" => "Rusanov",
         #"limiter" => "superbee",
-        #"MOOD" => "U2", "delta_relax" => 0. # No MOOD for this run
+        "MOOD" => "U1", "delta_relax" => 0. # No MOOD for this run
     )
 
     # --- How to use this for testing ---
@@ -97,7 +97,7 @@ function main()
         "Test"
 
     );
-show1DSolutionFig(test_config)
+#show1DSolutionFig(test_config)
 scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
 #show2DCutFig(test_config;scene_options = scene_options)
 end
