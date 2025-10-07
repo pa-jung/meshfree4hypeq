@@ -1,59 +1,85 @@
 
 abstract type WENOWorkspace end
 
-mutable struct WENOWorkspace1D <: WENOWorkspace
+struct WENOWorkspace1D <: WENOWorkspace
+    # Main buffers for all neighbors
     dx_buffer::Vector{Float64}
     df_buffer::Vector{Float64}
     w_buffer::Vector{Float64}
-    dx_stencil_buffer::Vector{Float64}
-    w_stencil_buffer::Vector{Float64}
-    df_stencil_buffer::Vector{Float64}
     left_window_buffer::BitVector
-    max_neighbors::Int
-
-    function WENOWorkspace1D(;cap=20)
-        new(zeros(cap), zeros(cap), zeros(cap), zeros(cap), zeros(cap), zeros(cap), falses(cap), cap)
-    end
-end
-
-mutable struct WENOWorkspace2D <: WENOWorkspace
-    dx_buffer::Vector{Float64}
-    dy_buffer::Vector{Float64}
-    df_buffer::Vector{Float64}
-    w_buffer::Vector{Float64}
-    left_window_buffer::BitVector
-    top_window_buffer::BitVector
-    max_neighbors::Int
     
-    function WENOWorkspace2D(;cap=40)
-        new(zeros(cap), zeros(cap), zeros(cap), zeros(cap), falses(cap), falses(cap), cap)
+    # Scratch space for stencil calculations
+    dx_scratch::Vector{Float64}
+    df_scratch::Vector{Float64}
+    w_scratch::Vector{Float64}
+
+    function WENOWorkspace1D(max_neighbors::Int=30)
+        new(
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            BitVector(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors)
+        )
     end
 end
 
-function ensure_capacity!(ws::WENOWorkspace, n::Int)
-    if n > ws.max_neighbors
-        ws.max_neighbors = n
-        resize!(ws.dx_buffer, n); resize!(ws.df_buffer, n); resize!(ws.w_buffer, n)
-        resize!(ws.left_window_buffer, n); resize!(ws.dx_stencil_buffer,n); resize!(w_stencil_buffer, n)
-        resize!(ws.df_stencil_buffer, n)
-        if ws isa WENOWorkspace2D
-            resize!(ws.dy_buffer, n)
-            resize!(ws.top_window_buffer, n)
-        end
+struct WENOWorkspace2D <: WENOWorkspace
+    # Main buffers
+    dx_buffer::Vector{Float64}; dy_buffer::Vector{Float64}
+    df_buffer::Vector{Float64}; w_buffer::Vector{Float64}
+    left_window_buffer::BitVector; top_window_buffer::BitVector
+    
+    # Scratch space for stencil calculations
+    dx_scratch::Vector{Float64}; dy_scratch::Vector{Float64}
+    df_scratch::Vector{Float64}; w_scratch::Vector{Float64}
+
+    function WENOWorkspace2D(max_neighbors::Int=30)
+        new(
+            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors),
+            BitVector(undef, max_neighbors), BitVector(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors)
+        )
     end
 end
 
-mutable struct WENO{D} <: GradientInterpolator
+function ensure_capacity!(ws::WENOWorkspace1D, n::Int)
+    if n > length(ws.dx_buffer)
+        new_capacity = n + n ÷ 4
+        resize!.((ws.dx_buffer, ws.df_buffer, ws.w_buffer, 
+                  ws.dx_scratch, ws.df_scratch, ws.w_scratch), new_capacity)
+        resize!(ws.left_window_buffer, new_capacity)
+    end
+    return nothing
+end
+
+function ensure_capacity!(ws::WENOWorkspace2D, n::Int)
+    if n > length(ws.dx_buffer)
+        new_capacity = n + n ÷ 4
+        resize!.((ws.dx_buffer, ws.dy_buffer, ws.df_buffer, ws.w_buffer,
+                  ws.dx_scratch, ws.dy_scratch, ws.df_scratch, ws.w_scratch), new_capacity)
+        resize!.((ws.left_window_buffer, ws.top_window_buffer), new_capacity)
+    end
+    return nothing
+end
+
+struct WENO{D,WS <: WENOWorkspace, I <: Interpolator} <: GradientInterpolator
     order::Int
-    res::Vector{Float64}
     weightFunction::MLSWeightFunction
-    workspace::WENOWorkspace
+    workspace::WS
+    interpolator::I
 
     function WENO(order::Int, dimension::Int; weightFunction=exponentialWeightFunction())
         @assert order >= 2 "WENO requires order >= 2 for second derivatives."
         ws = dimension == 1 ? WENOWorkspace1D() : WENOWorkspace2D()
-        res_size = (dimension == 1) ? order : (order == 1 ? 2 : 5)
-        new{dimension}(order, zeros(res_size), weightFunction, ws)
+        interpolator = Interpolator{dimension, order, 1}() 
+        WS = typeof(ws)
+        I = typeof(interpolator)
+        new{dimension,WS,I}(order, weightFunction, ws, interpolator)
     end
 end
 
@@ -69,11 +95,12 @@ function (weno::WENO{1})(
 )::Real
     
     ws = weno.workspace::WENOWorkspace1D
+    interp = weno.interpolator
     neighbors = particleGrid.neighbour_indices[particleIndex]
     num_neighbors = length(neighbors)
     if num_neighbors < weno.order; return 0.0; end # Not enough points for interpolation
-
     ensure_capacity!(ws, num_neighbors)
+    ensure_capacity!(interp, num_neighbors)
     dxVec = @view ws.dx_buffer[1:num_neighbors]
     dfVec = @view ws.df_buffer[1:num_neighbors]
     wVec = @view ws.w_buffer[1:num_neighbors]
@@ -86,45 +113,40 @@ function (weno::WENO{1})(
     end
     weno.weightFunction(wVec, dxVec; param=settings.interpAlpha, normalisation=1.0)
 
-    # --- CHOOSE STENCIL AND FILTER DATA (Corrected Logic) ---
-    stencil_size = 0 # 1. Initialize counter here
-    if velocity(eq, 0.0) > 0.0
-        # --- Left-sided stencil ---
+    stencil_size = 0
+    if velocity(eq, 0.0) > 0.0 # Left-sided
         for i in 1:num_neighbors
             if leftWindow[i]
-                stencil_size += 1 # 2. Use stencil_size as the counter
-                ws.dx_stencil_buffer[stencil_size] = dxVec[i]
-                ws.w_stencil_buffer[stencil_size] = wVec[i]
-                ws.df_stencil_buffer[stencil_size] = dfVec[i]
+                stencil_size += 1
+                ws.dx_scratch[stencil_size] = dxVec[i]
+                ws.w_scratch[stencil_size] = wVec[i]
+                ws.df_scratch[stencil_size] = dfVec[i]
             end
         end
-    else
-        # --- Right-sided stencil ---
+    else # Right-sided
         for i in 1:num_neighbors
             if !leftWindow[i]
-                stencil_size += 1 # 2. Use stencil_size as the counter
-                ws.dx_stencil_buffer[stencil_size] = dxVec[i]
-                ws.w_stencil_buffer[stencil_size] = wVec[i]
-                ws.df_stencil_buffer[stencil_size] = dfVec[i]
+                stencil_size += 1
+                ws.dx_scratch[stencil_size] = dxVec[i]
+                ws.w_scratch[stencil_size] = wVec[i]
+                ws.df_scratch[stencil_size] = dfVec[i]
             end
         end
     end
 
-    # 3. Perform a single, efficient check after filtering
     if stencil_size < weno.order; return 0.0; end
 
-    # Create views of the now-populated stencil buffers
-    dx_stencil = @view ws.dx_stencil_buffer[1:stencil_size]
-    w_stencil  = @view ws.w_stencil_buffer[1:stencil_size]
-    df_stencil = @view ws.df_stencil_buffer[1:stencil_size]
+    # Create views of the populated scratch buffers
+    dx_stencil = @view ws.dx_scratch[1:stencil_size]
+    w_stencil  = @view ws.w_scratch[1:stencil_size]
+    df_stencil = @view ws.df_scratch[1:stencil_size]
     
-    # This call is now allocation-free!
-    gradInterpolation!(dx_stencil, w_stencil, df_stencil, weno.res; order=weno.order)
-    resS1, resS2 = weno.res[1], weno.res[2]
+    resS1, resS2 = interp(dx_stencil, w_stencil, df_stencil)
 
-    # Central stencil
-    gradInterpolation!(dxVec, wVec, dfVec, weno.res; order=weno.order)
-    resC1, resC2 = weno.res[1], weno.res[2]
+    # Central stencil (uses the original, unmodified buffers)
+    
+    resC1, resC2 = interp(dxVec, wVec, dfVec)
+    
 
     # Non-linear weights
     e = 1e-6
@@ -154,6 +176,7 @@ function (weno::WENO{2})(
 )::Real
     
     ws = weno.workspace::WENOWorkspace2D
+    interp = weno.interpolator
     neighbors = particleGrid.neighbour_indices[particleIndex]
     num_neighbors = length(neighbors)
     
@@ -163,14 +186,15 @@ function (weno::WENO{2})(
     end
 
     ensure_capacity!(ws, num_neighbors)
+    ensure_capacity!(interp, num_neighbors)
     dxVec = @view ws.dx_buffer[1:num_neighbors]
     dyVec = @view ws.dy_buffer[1:num_neighbors]
     dfVec = @view ws.df_buffer[1:num_neighbors]
-    wVec_pristine = @view ws.w_buffer[1:num_neighbors] # This will hold the original, correct weights
+    wVec  = @view ws.w_buffer[1:num_neighbors]
     leftWindow = @view ws.left_window_buffer[1:num_neighbors]
     topWindow = @view ws.top_window_buffer[1:num_neighbors]
 
-    # --- Populate Buffers ---
+    # --- Populate Main Buffers ---
     for (i, nbIndex) in enumerate(neighbors)
         dx, dy = getDistance(particleGrid, particleIndex, nbIndex)
         dxVec[i], dyVec[i] = dx / settings.interpRange, dy / settings.interpRange
@@ -178,33 +202,77 @@ function (weno::WENO{2})(
         leftWindow[i] = dx < 0.0
         topWindow[i] = dy > 0.0
     end
-    weightFunction(wVec_pristine, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+    weno.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
     vel = velocity(eq, 0.0)
 
-    # --- Create a temporary buffer for mutated weights ---
-    # This avoids allocating a new vector in every call.
-    wVec_temp_buffer = similar(wVec_pristine)
+    # --- Horizontal Stencil (Using Scratch Buffers) ---
+    stencil_size_h = 0
+    if vel[1] > 0.0 # Left-sided
+        for i in 1:num_neighbors
+            if leftWindow[i]
+                stencil_size_h += 1
+                ws.dx_scratch[stencil_size_h] = dxVec[i]
+                ws.dy_scratch[stencil_size_h] = dyVec[i]
+                ws.w_scratch[stencil_size_h] = wVec[i]
+                ws.df_scratch[stencil_size_h] = dfVec[i]
+            end
+        end
+    else # Right-sided
+        for i in 1:num_neighbors
+            if !leftWindow[i]
+                stencil_size_h += 1
+                ws.dx_scratch[stencil_size_h] = dxVec[i]
+                ws.dy_scratch[stencil_size_h] = dyVec[i]
+                ws.w_scratch[stencil_size_h] = wVec[i]
+                ws.df_scratch[stencil_size_h] = dfVec[i]
+            end
+        end
+    end
 
-    # --- Stencil Calculations (Corrected) ---
+    if stencil_size_h < weno.order; return 0.0; end
+    dx_stencil_h = @view ws.dx_scratch[1:stencil_size_h]
+    dy_stencil_h = @view ws.dy_scratch[1:stencil_size_h]
+    w_stencil_h  = @view ws.w_scratch[1:stencil_size_h]
+    df_stencil_h = @view ws.df_scratch[1:stencil_size_h]
     
-    # Horizontal Stencil
-    stencil_h = vel[1] > 0.0 ? leftWindow : .!leftWindow
-    if count(stencil_h) < weno.order; return 0.0; end
-    wVec_temp_buffer[stencil_h] .= @view wVec_pristine[stencil_h] # Copy weights
-    gradInterpolation!((@view dxVec[stencil_h]), (@view dyVec[stencil_h]), (@view wVec_temp_buffer[stencil_h]), (@view dfVec[stencil_h]), weno.res; order=weno.order)
-    resHx, resHy, resHxx, resHyy, resHxy = weno.res[1]/settings.interpRange, weno.res[2]/settings.interpRange, weno.res[3]/(settings.interpRange^2), weno.res[4]/(settings.interpRange^2), weno.res[5]/(settings.interpRange^2)
-    
-    # Vertical Stencil
-    stencil_v = vel[2] < 0.0 ? topWindow : .!topWindow
-    if count(stencil_v) < weno.order; return 0.0; end
-    wVec_temp_buffer[stencil_v] .= @view wVec_pristine[stencil_v] # Copy weights
-    gradInterpolation!((@view dxVec[stencil_v]), (@view dyVec[stencil_v]), (@view wVec_temp_buffer[stencil_v]), (@view dfVec[stencil_v]), weno.res; order=weno.order)
-    resVx, resVy, resVxx, resVyy, resVxy = weno.res[1]/settings.interpRange, weno.res[2]/settings.interpRange, weno.res[3]/(settings.interpRange^2), weno.res[4]/(settings.interpRange^2), weno.res[5]/(settings.interpRange^2)
+    resHx, resHy, resHxx, resHyy, resHxy = interp(dx_stencil_h, dy_stencil_h, w_stencil_h, df_stencil_h)
+    range = settings.interpRange
+    resHx /= range; resHy /= range; resHxx /= range^2; resHyy /= range^2; resHxy /= range^2
+    # --- Vertical Stencil (Using Scratch Buffers) ---
+    stencil_size_v = 0
+    if vel[2] < 0.0 # Top-sided
+        for i in 1:num_neighbors
+            if topWindow[i]
+                stencil_size_v += 1
+                ws.dx_scratch[stencil_size_v] = dxVec[i]
+                ws.dy_scratch[stencil_size_v] = dyVec[i]
+                ws.w_scratch[stencil_size_v] = wVec[i]
+                ws.df_scratch[stencil_size_v] = dfVec[i]
+            end
+        end
+    else # Bottom-sided
+        for i in 1:num_neighbors
+            if !topWindow[i]
+                stencil_size_v += 1
+                ws.dx_scratch[stencil_size_v] = dxVec[i]
+                ws.dy_scratch[stencil_size_v] = dyVec[i]
+                ws.w_scratch[stencil_size_v] = wVec[i]
+                ws.df_scratch[stencil_size_v] = dfVec[i]
+            end
+        end
+    end
 
-    # Central Stencil
-    wVec_temp_buffer .= wVec_pristine # Copy weights
-    gradInterpolation!(dxVec, dyVec, wVec_temp_buffer, dfVec, weno.res; order=weno.order)
-    resCx, resCy, resCxx, resCyy, resCxy = weno.res[1]/settings.interpRange, weno.res[2]/settings.interpRange, weno.res[3]/(settings.interpRange^2), weno.res[4]/(settings.interpRange^2), weno.res[5]/(settings.interpRange^2)
+    if stencil_size_v < weno.order; return 0.0; end
+    dx_stencil_v = @view ws.dx_scratch[1:stencil_size_v]
+    dy_stencil_v = @view ws.dy_scratch[1:stencil_size_v]
+    w_stencil_v  = @view ws.w_scratch[1:stencil_size_v]
+    df_stencil_v = @view ws.df_scratch[1:stencil_size_v]
+    interp(dx_stencil_v, dy_stencil_v, w_stencil_v, df_stencil_v)
+    resVx, resVy, resVxx, resVyy, resVxy = interp.res[1]/settings.interpRange, interp.res[2]/settings.interpRange, interp.res[3]/(settings.interpRange^2), interp.res[4]/(settings.interpRange^2), interp.res[5]/(settings.interpRange^2)
+
+    # --- Central Stencil (Uses the original, unmodified buffers) ---
+    interp(dxVec, dyVec, wVec, dfVec)
+    resCx, resCy, resCxx, resCyy, resCxy = interp.res[1]/settings.interpRange, interp.res[2]/settings.interpRange, interp.res[3]/(settings.interpRange^2), interp.res[4]/(settings.interpRange^2), interp.res[5]/(settings.interpRange^2)
 
     # --- Non-linear Weights (Logic is unchanged) ---
     e = 1e-12

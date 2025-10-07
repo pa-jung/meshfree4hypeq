@@ -26,6 +26,63 @@ export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!,
 abstract type ParticleGrid{D} end # Now parameterized by dimension
 const ParticleGridSystem{N, D} = NTuple{N, <:ParticleGrid{D}}
 
+using DelaunayTriangulation, StaticArrays
+
+# Store the triangulation object in a stateful struct
+mutable struct SimulationState{T}
+    triangulation::T
+    points::Vector{SVector{2, Float64}} # Store points for easy comparison
+end
+
+# --- In your main simulation setup code ---
+function setup_simulation(initial_points, xmin, xmax, ymin, ymax)
+    # Convert points to SVector for performance
+    svector_points = [SVector{2, Float64}(p) for p in initial_points]
+    
+    # Define the rectangular boundary
+    boundary_nodes = [
+        (xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)
+    ]
+    
+    # Create the triangulation object ONCE
+    tri = triangulate(svector_points; boundary_nodes)
+    
+    # Store it in your state object
+    return SimulationState(tri, svector_points)
+end
+
+function update_voronoi_volumes!(
+    sim_state::SimulationState, 
+    new_points_tuples::Vector{<:NTuple{2, Real}}, 
+    volumes::AbstractVector{Float64}
+)
+    tri = sim_state.triangulation
+    old_points = sim_state.points
+    num_particles = length(old_points)
+
+    # 1. Identify which points have moved and update the triangulation
+    for i in 1:num_particles
+        new_point_i = SVector{2, Float64}(new_points_tuples[i])
+        if old_points[i] != new_point_i
+            # These update operations are much faster than a full rebuild
+            delete_point!(tri, i)
+            add_point!(tri, new_point_i)
+            
+            # Update the stored point
+            old_points[i] = new_point_i
+        end
+    end
+
+    # 2. Compute the new Voronoi tessellation from the updated triangulation
+    vorn = voronoi(tri)
+
+    # 3. Calculate and store the new volumes in-place
+    for i in 1:num_particles
+        volumes[i] = get_area(vorn, i)
+    end
+    
+    return nothing
+end
 
 """
     calculate_voronoi_volumes_2d(points::Vector{<:NTuple{2, Real}}, xmin, xmax, ymin, ymax) -> Vector{Float64}
@@ -195,7 +252,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
     Nx_total::Int; Ny_total::Int; N::Int; N_ghost::Int
     dx::Float64; dy::Float64; regular::Bool; bc::Symbol
     interior_indices::Vector{Int}
-    voxel_map::Dict{Int, Vector{Int}}
+    voxel_map::Dict{Int, Vector{Int}}; voxel_buffer::Vector{Int}
     max_volume::Ref{Float64}
 
     function ParticleGrid2D(
@@ -250,7 +307,7 @@ struct ParticleGrid2D <: ParticleGrid{2}
             zeros(Int, N_total), falses(N_total), [Int[] for _ in 1:N_total],
             xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_total, N_ghost,
             dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices,
-            Dict{Int, Vector{Int}}(), Ref{0.})
+            Dict{Int, Vector{Int}}(), Vector{Int}(undef,9), Ref(0.))
     end
 end
 
@@ -292,15 +349,40 @@ getEuclideanDistance(pg::ParticleGrid2D, i, j) = norm(getDistance(pg, i, j))
 _grid_to_linear_index(hBox, vBox, nbBoxesX) = hBox + nbBoxesX * vBox
 _linear_index_to_grid(linearIndex, nbBoxesX) = (mod(linearIndex, nbBoxesX), div(linearIndex, nbBoxesX))
 
-function _find_neighbouring_voxels(particleGrid::ParticleGrid2D, linearIndex::Integer, nbBoxesX::Integer, nbBoxesY::Integer)
+"""
+Finds neighboring voxels and writes their linear indices into a pre-allocated
+`voxel_buffer` to avoid allocations. Returns the number of neighbors found.
+"""
+function _find_neighbouring_voxels!(
+    voxel_buffer::AbstractVector{Int},
+    bc::Symbol, 
+    linearIndex::Integer, 
+    nbBoxesX::Integer, 
+    nbBoxesY::Integer
+)
     xBox, yBox = _linear_index_to_grid(linearIndex, nbBoxesX)
     
-    if particleGrid.bc == :periodic
-        return [_grid_to_linear_index(mod(xBox + i, 0:(nbBoxesX-1)), mod(yBox + j, 0:(nbBoxesY-1)), nbBoxesX) for i in -1:1 for j in -1:1]
-    else
-        return [_grid_to_linear_index(xBox + i, yBox + j, nbBoxesX) for i in -1:1 for j in -1:1 
-                if 0 <= (xBox + i) < nbBoxesX && 0 <= (yBox + j) < nbBoxesY]
+    count = 0
+    if bc == :periodic
+        # This case always finds 9 neighbors
+        @inbounds for j in -1:1, i in -1:1
+            count += 1
+            x_new = mod(xBox + i, 0:(nbBoxesX-1))
+            y_new = mod(yBox + j, 0:(nbBoxesY-1))
+            voxel_buffer[count] = _grid_to_linear_index(x_new, y_new, nbBoxesX)
+        end
+    else # Non-periodic case
+        @inbounds for j in -1:1, i in -1:1
+            x_new = xBox + i
+            y_new = yBox + j
+            if 0 <= x_new < nbBoxesX && 0 <= y_new < nbBoxesY
+                count += 1
+                voxel_buffer[count] = _grid_to_linear_index(x_new, y_new, nbBoxesX)
+            end
+        end
     end
+    
+    return count
 end
 
 function _update_voxel_information!(particleGrid::ParticleGrid2D, maxDist::Real)
@@ -369,9 +451,9 @@ function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
     for p_idx in 1:particleGrid.N
         nb_list = particleGrid.neighbour_indices[p_idx]
         empty!(nb_list)
-        neighboring_voxels = _find_neighbouring_voxels(particleGrid, particleGrid.voxels[p_idx], nbBoxesX, nbBoxesY)
-        
-        for nbVoxel in neighboring_voxels
+        num_voxels = _find_neighbouring_voxels!(particleGrid.voxel_buffer, particleGrid.bc, particleGrid.voxels[p_idx], nbBoxesX, nbBoxesY)
+        valid_voxels = @view particleGrid.voxel_buffer[1:num_voxels]
+        for nbVoxel in valid_voxels
             if haskey(voxel_map, nbVoxel)
                 for nb_idx in voxel_map[nbVoxel]
                     if p_idx != nb_idx && getEuclideanDistance(particleGrid, p_idx, nb_idx) <= maxDist

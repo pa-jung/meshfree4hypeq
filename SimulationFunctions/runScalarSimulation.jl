@@ -176,7 +176,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
         MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
-                     elseif main_grad_name == "Upwind"; UpwindGradient(order; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
+                     elseif main_grad_name == "Upwind"; UpwindGradient(order, dimension; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                      elseif main_grad_name == "Central"; CentralGradient(order, dimension; weightFunction=weight_func)
                      elseif main_grad_name == "WENO"; WENO(order, dimension; weightFunction = weight_func)
                      elseif main_grad_name == "DumbserWENO"; @assert dimension == 2 "DumbserWENO can only be used for 2D, for 1D use WENO instead!"; DumbserWENO(order; weightFunction = weight_func)
@@ -184,7 +184,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                      end
 
         FallbackGrad = if isnothing(fallback_grad_name); NoFallbackGrad()
-                         elseif fallback_grad_name == "Upwind"; UpwindGradient(1; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
+                         elseif fallback_grad_name == "Upwind"; UpwindGradient(1, dimension; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
                          elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end
         
