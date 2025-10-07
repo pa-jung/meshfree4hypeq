@@ -67,8 +67,8 @@ function main()
         "fallback_flux" => "Rusanov",
         "order" =>2,
         "main_flux" => "Rusanov",
-        #"limiter" => "superbee",
-        "MOOD" => "U1", "delta_relax" => 0. # No MOOD for this run
+        "limiter" => "minmod",
+        #"MOOD" => "U1", "delta_relax" => 0. # No MOOD for this run
     )
 
     # --- How to use this for testing ---

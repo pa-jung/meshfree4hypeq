@@ -13,9 +13,14 @@ Returns true for a MOOD event.
 """
 abstract type MOODCriterion end
 
-function initMOOD!(mood::MOODCriterion, d::Ref{Float64})
+function initMOOD!(mood::MOODCriterion, d)
+    return
+end
+
+function initMOOD!(mood::Union{MOODu1,MOODu2,MOODLoubertU2}, d::Ref{Float64})
     mood.d = d[]
 end
+
 """
     MOODu1
 
