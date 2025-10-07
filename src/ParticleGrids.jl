@@ -26,63 +26,6 @@ export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!,
 abstract type ParticleGrid{D} end # Now parameterized by dimension
 const ParticleGridSystem{N, D} = NTuple{N, <:ParticleGrid{D}}
 
-using DelaunayTriangulation, StaticArrays
-
-# Store the triangulation object in a stateful struct
-mutable struct SimulationState{T}
-    triangulation::T
-    points::Vector{SVector{2, Float64}} # Store points for easy comparison
-end
-
-# --- In your main simulation setup code ---
-function setup_simulation(initial_points, xmin, xmax, ymin, ymax)
-    # Convert points to SVector for performance
-    svector_points = [SVector{2, Float64}(p) for p in initial_points]
-    
-    # Define the rectangular boundary
-    boundary_nodes = [
-        (xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)
-    ]
-    
-    # Create the triangulation object ONCE
-    tri = triangulate(svector_points; boundary_nodes)
-    
-    # Store it in your state object
-    return SimulationState(tri, svector_points)
-end
-
-function update_voronoi_volumes!(
-    sim_state::SimulationState, 
-    new_points_tuples::Vector{<:NTuple{2, Real}}, 
-    volumes::AbstractVector{Float64}
-)
-    tri = sim_state.triangulation
-    old_points = sim_state.points
-    num_particles = length(old_points)
-
-    # 1. Identify which points have moved and update the triangulation
-    for i in 1:num_particles
-        new_point_i = SVector{2, Float64}(new_points_tuples[i])
-        if old_points[i] != new_point_i
-            # These update operations are much faster than a full rebuild
-            delete_point!(tri, i)
-            add_point!(tri, new_point_i)
-            
-            # Update the stored point
-            old_points[i] = new_point_i
-        end
-    end
-
-    # 2. Compute the new Voronoi tessellation from the updated triangulation
-    vorn = voronoi(tri)
-
-    # 3. Calculate and store the new volumes in-place
-    for i in 1:num_particles
-        volumes[i] = get_area(vorn, i)
-    end
-    
-    return nothing
-end
 
 """
     calculate_voronoi_volumes_2d(points::Vector{<:NTuple{2, Real}}, xmin, xmax, ymin, ymax) -> Vector{Float64}
