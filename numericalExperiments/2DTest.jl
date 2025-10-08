@@ -16,9 +16,9 @@ function main()
         "snapshots" => 20,
         "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "gauss", # Using the unified struct
-        "init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
-        #"init_params" => (0.,1.,-2.,2.,-2.,2.),
+        "init_func" => "box", # Using the unified struct
+        #"init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
+        "init_params" => (0.,1.,-2.,2.,-2.,2.),
         "randomness_factor" => (0.2, 0.2), # (x_rand_factor, y_rand_factor)
         "SEED_value" => 42,
         "PDE" => "linear",
@@ -30,11 +30,11 @@ function main()
 
         # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
         "timestepper" => "RalstonRK2",
-        "main_gradient" => "Upwind",
+        "main_gradient" => "MUSCL",
         "order" => 2,
         "upwind_alg_2d" => "Tiwari",
         "main_flux" => "Rusanov",
-        #"mood" => "U2", "delta_relax" => 0. 
+        #"MOOD" => "U1", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
         #"mood" => "none", # No MOOD for this run
     )
 
@@ -49,9 +49,9 @@ function main()
     #     "snapshots" => 20,
     #     "interp_alpha" => 1.0,
     #     "interp_range" => 3.5,
-    #     "init_func" => "gauss", # Using the unified struct
-    #     "init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
-    #     #"init_params" => (0.,1.,-2.,2.),
+    #     "init_func" => "box", # Using the unified struct
+    #     #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
+    #     "init_params" => (0.,1.,-2.,2.),
     #     "randomness_factor" => 0.2, # (x_rand_factor, y_rand_factor)
     #     "SEED_value" => 42,
     #     "PDE" => "linear",
@@ -62,9 +62,9 @@ function main()
 
     #     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
     #     "timestepper" => "RalstonRK2",
-    #     "main_gradient" => "WENO",
-    #     #"fallback_gradient" => "Upwind",
-    #     #"fallback_flux" => "Rusanov",
+    #     "main_gradient" => "MUSCL",
+    #     "fallback_gradient" => "Upwind",
+    #     "fallback_flux" => "Rusanov",
     #     "order" =>2,
     #     "main_flux" => "Rusanov",
     #     #"limiter" => "minmod",
@@ -86,20 +86,18 @@ function main()
     test_config = SimulationConfig(
         params,
         MethodDict(
-            "TestMUSCL(superbee)" => ParamDict("limiter" => "superbee"),
-            "TestMUSCL(minmod)" => ParamDict("limiter" => "minmod"),
-            "TestMUSCL(VK)" => ParamDict("limiter" => "VK"),
+            "Test(MOOD)" => ParamDict("MOOD" => "U2", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",),
             "Test" => ParamDict(),
             "TestMUSCL(SmSw)" => ParamDict("timestepper" => "RalstonRK2SmoothSwitch", "switch_tol" => 5.),
             "TestMUSCLRelax" => ParamDict("timestepper" => "PRSSP3", "relax_velocities" => [-1.,1.], "save_relax" => false, "relax_epsilon" => 1e-6),
         ),
         #"all"
-        "Test"
+        ["Test","Test(MOOD)"]
 
     );
 #show1DSolutionFig(test_config)
 scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
-#show2DCutFig(test_config;scene_options = scene_options)
+show2DCutFig(test_config;scene_options = scene_options)
 end
 
 main()

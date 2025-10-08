@@ -167,8 +167,8 @@ end
 function (rs::RelaxationSourceTerm{MF,KI})(
     S_out_particle::AbstractVector{Float64},
     U_kinetic_particle::AbstractVector{Float64},
-    particle_pos::Tuple{Float64,Float64}, 
-    time::Float64             
+    particle_pos, 
+    time             
 ) where {MF <: Tuple, KI <: Tuple}
     if length(U_kinetic_particle) != rs.num_total_kinetic_components || length(S_out_particle) != rs.num_total_kinetic_components
         error("Dimension mismatch in RelaxationSourceTerm functor.")

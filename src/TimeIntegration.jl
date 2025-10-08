@@ -2,6 +2,7 @@ module TimeIntegration
 
 using LinearAlgebra
 using ProgressMeter
+using StaticArrays
 using ..ParticleGrids
 using ..SimSettings
 using ..HyperbolicPDEs
@@ -53,48 +54,68 @@ include("MeshfreeTimeSteppers.jl")
 include("FixedGridTimeSteppers.jl")
 include("MeshfreeSystemTimeSteppers.jl")
 
+using StaticArrays
+
+# --- Low-Level `appendData!` Helpers ---
+
+# Fallback method: For simple types (like a single vector or a number), just push it.
+appendData!(storage::Vector, data) = push!(storage, data)
 
 """
-Appends data from a SCALAR SoA ParticleGrid to storage vectors.
+Specialized method for `Vector{SVector}`.
+Converts SVectors to Tuples for plotting compatibility before pushing.
 """
-function appendData!(
-    xs_storage::Vector, 
-    us_storage::Vector{<:AbstractVector{Float64}},
-    ts_storage::Vector{Float64}, 
-    particle_grid::ParticleGrid, 
-    current_t::Real
-)
-    interior = particle_grid.interior_indices
-    # Directly copy the interior data from the SoA vectors, which is much
-    # more efficient than iterating through a vector of structs.
-    push!(xs_storage, particle_grid.positions[interior])
-    push!(us_storage, particle_grid.rhos[interior])
-    push!(ts_storage, current_t)
+function appendData!(storage::Vector, data::AbstractVector{<:SVector})
+    # Create a new vector of Tuples from the SVectors
+    data_as_tuples = [Tuple(p) for p in data]
+    push!(storage, data_as_tuples)
 end
 
 """
-Appends data from a SYSTEM of SoA particle grids (passed as a Tuple).
-The solution `u` for a single time step is stored as a single matrix (particles x components).
+Specialized method for the generator used in the system case.
+Collects the vectors into a matrix using `hcat`.
 """
-function appendData!(
-    xs_storage::Vector, 
-    us_storage::Vector{<:AbstractMatrix{Float64}},
-    ts_storage::Vector{Float64}, 
-    system_pgs::Tuple{Vararg{<:ParticleGrid}},
-    current_t::Real
-)
-    # Positions are taken from the first grid, assuming they are all identical
-    first_grid = system_pgs[1]
-    interior = first_grid.interior_indices
-    push!(xs_storage, first_grid.positions[interior])
+function appendData!(storage::Vector, data::Base.Generator)
+    # The `...` splats the generator contents into the hcat function
+    push!(storage, hcat(data...))
+end
 
-    # --- SIMPLIFIED: Build the matrix of `rho` values efficiently ---
-    # 1. Create a generator that yields the interior rho vector for each component grid.
-    rho_vectors = (view(pg.rhos, interior) for pg in system_pgs)
-    # 2. Use `hcat` to efficiently concatenate these column vectors into a single matrix.
-    push!(us_storage, hcat(rho_vectors...))
+# --- High-Level `appendData!` Wrappers ---
+
+"""
+Appends data from a SCALAR particle grid. Dispatches to the correct
+low-level helper for each data type.
+"""
+function appendData!(xs_storage, us_storage, ts_storage, particle_grid, current_t)
+    interior = particle_grid.interior_indices
     
-    push!(ts_storage, current_t)
+    # Extract the data (using views to avoid allocations)
+    pos_data = @view particle_grid.positions[interior]
+    rho_data = @view particle_grid.rhos[interior]
+    
+    # Let multiple dispatch choose the correct helper for each type
+    appendData!(xs_storage, pos_data)
+    appendData!(us_storage, rho_data)
+    appendData!(ts_storage, current_t)
+end
+
+"""
+Appends data from a SYSTEM of particle grids. Dispatches to the correct
+low-level helper for each data type.
+"""
+function appendData!(xs_storage, us_storage, ts_storage, system_pgs::Tuple, current_t)
+    interior = system_pgs[1].interior_indices
+    
+    # Extract the position data
+    pos_data = @view system_pgs[1].positions[interior]
+    
+    # Create the generator for the rho data
+    rho_generator = (view(pg.rhos, interior) for pg in system_pgs)
+    
+    # Let multiple dispatch choose the correct helper for each type
+    appendData!(xs_storage, pos_data)
+    appendData!(us_storage, rho_generator)
+    appendData!(ts_storage, current_t)
 end
 
 """
@@ -102,16 +123,16 @@ Optimized main time integrator for a SCALAR equation.
 """
 function mainTimeIntegrator!(
     timeStepper::TimeStepper, 
-    eq::ScalarHyperbolicPDE, 
+    eq::ScalarHyperbolicPDE{D}, 
     particleGrid::ParticleGrid, 
     settings::SimSetting
-)
+) where {D}
     # --- Initialization ---
     updateNeighbours!(particleGrid, settings.interpRange)
     initTimeStepper(timeStepper, particleGrid, settings)
     
     # Initialize storage with the correct types for a scalar simulation
-    pos_type = typeof(particleGrid.positions[1])
+    pos_type = D == 1 ? Float64 : Tuple{Float64,Float64}
     xs = Vector{Vector{pos_type}}()
     us = Vector{Vector{Float64}}()
     ts = Vector{Float64}()
@@ -159,7 +180,7 @@ function mainTimeIntegrator!(
     initTimeStepper(system_timestepper, system_pgs, settings)
 
     # Initialize storage with the correct types for a system simulation
-    pos_type = typeof(system_pgs[1].positions[1])
+    pos_type = D == 1 ? Float64 : Tuple{Float64,Float64}
     xs = Vector{Vector{pos_type}}()
     us_sys = Vector{Matrix{Float64}}() # Storing each time step as a Matrix
     ts = Vector{Float64}()

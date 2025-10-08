@@ -12,6 +12,8 @@ using LaTeXStrings
 using Statistics
 using LinearAlgebra
 using DelaunayTriangulation
+using CellListMap
+using StaticArrays
 using ..SimSettings
 using ..HyperbolicPDEs
 import Meshfree4ScalarEq
@@ -186,8 +188,8 @@ end
   2D PARTICLE GRID (Struct of Arrays Implementation)
 ==============================================================================#
 
-struct ParticleGrid2D <: ParticleGrid{2}
-    positions::Vector{NTuple{2, Float64}}; rhos::Vector{Float64}
+struct ParticleGrid2D{S} <: ParticleGrid{2}
+    positions::Vector{SVector{2, Float64}}; rhos::Vector{Float64}
     curvatures::Matrix{Float64}; is_boundary::BitVector; volumes::Vector{Float64}
     voxels::Vector{Int}; mood_events::BitVector
     neighbour_indices::Vector{Vector{Int}}
@@ -196,11 +198,12 @@ struct ParticleGrid2D <: ParticleGrid{2}
     dx::Float64; dy::Float64; regular::Bool; bc::Symbol
     interior_indices::Vector{Int}
     voxel_map::Dict{Int, Vector{Int}}; voxel_buffer::Vector{Int}
+    neighbor_system::S
     max_volume::Ref{Float64}
 
     function ParticleGrid2D(
         xmin::Real, xmax::Real, ymin::Real, ymax::Real, 
-        Nx_interior::Integer, Ny_interior::Integer, N_ghost::Integer, bc::Symbol; 
+        Nx_interior::Integer, Ny_interior::Integer, N_ghost::Integer, bc::Symbol, interp_range_factor::Real; 
         randomness::NTuple{2, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng
     )
         local Nx_total, Ny_total, interior_indices, dx_nominal, dy_nominal
@@ -220,9 +223,9 @@ struct ParticleGrid2D <: ParticleGrid{2}
         end
         N_total = Nx_total * Ny_total
 
-        positions = Vector{NTuple{2, Float64}}(undef, N_total)
+        positions = Vector{SVector{2, Float64}}(undef, N_total)
         is_boundary = falses(N_total)
-        
+        interp_range = interp_range_factor * max(dx_nominal, dy_nominal)  
         # --- Populate Particle Positions ---
         if bc == :periodic
             # CORRECTED: Use cell-centered positions for periodic case
@@ -230,8 +233,14 @@ struct ParticleGrid2D <: ParticleGrid{2}
                 index = (i - 1) * Ny_total + j
                 posX = xmin + dx_nominal*(i-0.5) + randomness[1]*(rand(rng, Float64)*2 - 1)
                 posY = ymin + dy_nominal*(j-0.5) + randomness[2]*(rand(rng, Float64)*2 - 1)
-                positions[index] = (posX, posY)
+                positions[index] = SVector(posX, posY)
             end
+            system = InPlaceNeighborList(
+                x=positions, 
+                cutoff=interp_range, 
+                unitcell=[xmax-xmin; ymax-ymin],
+                parallel=true # Enable parallelization
+            )
         else # Non-periodic logic
             for i in 1:Nx_total, j in 1:Ny_total
                 index = (i - 1) * Ny_total + j
@@ -240,17 +249,26 @@ struct ParticleGrid2D <: ParticleGrid{2}
                 posX = if i <= N_ghost; xmin - (N_ghost-i+1)*dx_nominal; elseif i > Nx_interior+N_ghost; xmax+(i-(Nx_interior+N_ghost))*dx_nominal; else xmin+(i-N_ghost-1)*dx_nominal + randomness[1]*(rand(rng,Float64)*2-1); end
                 posY = if j <= N_ghost; ymin - (N_ghost-j+1)*dy_nominal; elseif j > Ny_interior+N_ghost; ymax+(j-(Ny_interior+N_ghost))*dy_nominal; else ymin+(j-N_ghost-1)*dy_nominal + randomness[2]*(rand(rng,Float64)*2-1); end
                 
-                positions[index] = (posX, posY)
+                positions[index] = SVector(posX, posY)
                 is_boundary[index] = !is_interior
                 if is_interior; push!(interior_indices, index); end
             end
+            system = InPlaceNeighborList(
+                x=positions, 
+                cutoff=interp_range, 
+                parallel=true # Enable parallelization
+            )
         end
-        
-        new(positions, zeros(N_total), zeros(N_total, 2), is_boundary, zeros(N_total),
+
+
+        # 3. Create the stateful object
+
+
+        new{typeof(system)}(positions, zeros(N_total), zeros(N_total, 2), is_boundary, zeros(N_total),
             zeros(Int, N_total), falses(N_total), [Int[] for _ in 1:N_total],
             xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_total, N_ghost,
             dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices,
-            Dict{Int, Vector{Int}}(), Vector{Int}(undef,9), Ref(0.))
+            Dict{Int, Vector{Int}}(), Vector{Int}(undef,9), system, Ref(0.))
     end
 end
 
@@ -354,58 +372,113 @@ end
 
 # --- Main Public Functions ---
 
-function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
-    # --- 1. Voxel Grid Setup ---
-    domain_xmin, domain_xmax, domain_ymin, domain_ymax = if particleGrid.bc == :periodic
-        particleGrid.xmin, particleGrid.xmax, particleGrid.ymin, particleGrid.ymax
-    else
-        extrema(p[1] for p in particleGrid.positions)..., extrema(p[2] for p in particleGrid.positions)...
-    end
-    nbBoxesX = max(1, floor(Int, (domain_xmax - domain_xmin) / maxDist))
-    nbBoxesY = max(1, floor(Int, (domain_ymax - domain_ymin) / maxDist))
-    xBoxSize = (domain_xmax - domain_xmin) / nbBoxesX
-    yBoxSize = (domain_ymax - domain_ymin) / nbBoxesY
+# function updateNeighbours!(particleGrid::ParticleGrid2D, maxDist::Real)
+#     # --- 1. Voxel Grid Setup ---
+#     domain_xmin, domain_xmax, domain_ymin, domain_ymax = if particleGrid.bc == :periodic
+#         particleGrid.xmin, particleGrid.xmax, particleGrid.ymin, particleGrid.ymax
+#     else
+#         extrema(p[1] for p in particleGrid.positions)..., extrema(p[2] for p in particleGrid.positions)...
+#     end
+#     nbBoxesX = max(1, floor(Int, (domain_xmax - domain_xmin) / maxDist))
+#     nbBoxesY = max(1, floor(Int, (domain_ymax - domain_ymin) / maxDist))
+#     xBoxSize = (domain_xmax - domain_xmin) / nbBoxesX
+#     yBoxSize = (domain_ymax - domain_ymin) / nbBoxesY
     
-    # --- 2. Update Voxel Information for each particle (Corrected) ---
-    for i in 1:particleGrid.N
-        pos_x, pos_y = particleGrid.positions[i]
+#     # --- 2. Update Voxel Information for each particle (Corrected) ---
+#     for i in 1:particleGrid.N
+#         pos_x, pos_y = particleGrid.positions[i]
         
-        # CORRECTED LOGIC: Wrap the position into the domain for periodic BCs before calculating the voxel
-        if particleGrid.bc == :periodic
-            pos_x = mod(pos_x - domain_xmin, domain_xmax - domain_xmin) + domain_xmin
-            pos_y = mod(pos_y - domain_ymin, domain_ymax - domain_ymin) + domain_ymin
-        end
+#         # CORRECTED LOGIC: Wrap the position into the domain for periodic BCs before calculating the voxel
+#         if particleGrid.bc == :periodic
+#             pos_x = mod(pos_x - domain_xmin, domain_xmax - domain_xmin) + domain_xmin
+#             pos_y = mod(pos_y - domain_ymin, domain_ymax - domain_ymin) + domain_ymin
+#         end
 
-        hBox = min(floor(Int, (pos_x - domain_xmin) / xBoxSize), nbBoxesX - 1)
-        vBox = min(floor(Int, (pos_y - domain_ymin) / yBoxSize), nbBoxesY - 1)
-        particleGrid.voxels[i] = _grid_to_linear_index(hBox, vBox, nbBoxesX)
+#         hBox = min(floor(Int, (pos_x - domain_xmin) / xBoxSize), nbBoxesX - 1)
+#         vBox = min(floor(Int, (pos_y - domain_ymin) / yBoxSize), nbBoxesY - 1)
+#         particleGrid.voxels[i] = _grid_to_linear_index(hBox, vBox, nbBoxesX)
+#     end
+    
+#     # --- 3. Reuse and Refill Voxel Map ---
+#     voxel_map = particleGrid.voxel_map
+#     for key in keys(voxel_map); empty!(voxel_map[key]); end
+#     for i in 1:particleGrid.N
+#         voxel_idx = particleGrid.voxels[i]
+#         if !haskey(voxel_map, voxel_idx); voxel_map[voxel_idx] = Int[]; end
+#         push!(voxel_map[voxel_idx], i)
+#     end
+
+#     # --- 4. Find Neighbors using Voxel Map ---
+#     for p_idx in 1:particleGrid.N
+#         nb_list = particleGrid.neighbour_indices[p_idx]
+#         empty!(nb_list)
+#         num_voxels = _find_neighbouring_voxels!(particleGrid.voxel_buffer, particleGrid.bc, particleGrid.voxels[p_idx], nbBoxesX, nbBoxesY)
+#         valid_voxels = @view particleGrid.voxel_buffer[1:num_voxels]
+#         for nbVoxel in valid_voxels
+#             if haskey(voxel_map, nbVoxel)
+#                 for nb_idx in voxel_map[nbVoxel]
+#                     if p_idx != nb_idx && getEuclideanDistance(particleGrid, p_idx, nb_idx) <= maxDist
+#                         push!(nb_list, nb_idx)
+#                     end
+#                 end
+#             end
+#         end
+#     end
+# end
+function updateNeighbours!(particleGrid::ParticleGrid2D, inner_radius::Real)
+    # --- 1. Preparation ---
+    system = particleGrid.neighbor_system
+    #cutoff = system.cutoff # The outer radius is stored in the system
+    inner_radius = min(particleGrid.dx,particleGrid.dy)
+
+    # Clear your custom neighbor lists before filling them
+    for nb_list in particleGrid.neighbour_indices; empty!(nb_list); end
+
+    update!(system, particleGrid.positions)
+
+    # Compute the neighbor list (in-place)
+    list = neighborlist!(system)
+
+    # --- 3. Transform Data to Your Structure ---
+    # Loop through the flat list of pairs and populate your Vector{Vector{Int}}
+    for (i, j, d) in list
+        if inner_radius <= d #<= cutoff
+            push!(particleGrid.neighbour_indices[i], j)
+            push!(particleGrid.neighbour_indices[j], i)
+        end
     end
     
-    # --- 3. Reuse and Refill Voxel Map ---
-    voxel_map = particleGrid.voxel_map
-    for key in keys(voxel_map); empty!(voxel_map[key]); end
-    for i in 1:particleGrid.N
-        voxel_idx = particleGrid.voxels[i]
-        if !haskey(voxel_map, voxel_idx); voxel_map[voxel_idx] = Int[]; end
-        push!(voxel_map[voxel_idx], i)
-    end
+    return nothing
+end
 
-    # --- 4. Find Neighbors using Voxel Map ---
-    for p_idx in 1:particleGrid.N
-        nb_list = particleGrid.neighbour_indices[p_idx]
-        empty!(nb_list)
-        num_voxels = _find_neighbouring_voxels!(particleGrid.voxel_buffer, particleGrid.bc, particleGrid.voxels[p_idx], nbBoxesX, nbBoxesY)
-        valid_voxels = @view particleGrid.voxel_buffer[1:num_voxels]
-        for nbVoxel in valid_voxels
-            if haskey(voxel_map, nbVoxel)
-                for nb_idx in voxel_map[nbVoxel]
-                    if p_idx != nb_idx && getEuclideanDistance(particleGrid, p_idx, nb_idx) <= maxDist
-                        push!(nb_list, nb_idx)
-                    end
-                end
+function updateNeighbours!(particleGrid::ParticleGrid2D)#, inner_radius::Real)
+    cl = particleGrid.cell_list
+    box = cl.box
+    outer_radius = box.cutoff # Get the radius from the box
+    
+    inner_radius = min(particleGrid.dx, particleGrid.dy)
+    inner_radius_sq = inner_radius^2
+    outer_radius_sq = outer_radius^2
+
+    # Clear old neighbor lists
+    for nb_list in particleGrid.neighbour_indices; empty!(nb_list); end
+
+    # Update the cell list in-place with the current particle positions
+    update_cell_list!(cl, particleGrid.positions, box)
+
+    # Find neighbors (logic is the same)
+    map_pairwise!(
+        (i, j, d2, neighbor_lists) -> begin
+            if inner_radius_sq <= d2 <= outer_radius_sq
+                push!(neighbor_lists[i], j)
+                push!(neighbor_lists[j], i)
             end
-        end
-    end
+        end,
+        particleGrid.neighbour_indices,
+        box,
+        cl
+    )
+    return nothing
 end
 
 """

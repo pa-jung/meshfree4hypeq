@@ -95,7 +95,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         interp_range_factor = get(run_params, "interp_range", 1.5)
         randomness_factor = get(run_params, "randomness_factor", 0.0)
         mood_name = get(run_params, "MOOD", nothing)
-        delta_relax = get(run_params, "delta_relax", nothing)
+        delta_relax_factor = get(run_params, "delta_relax", 0)
         main_grad_name = get(run_params,"main_gradient",nothing)
         fallback_grad_name = get(run_params, "fallback_gradient", nothing)
         main_flux_name = get(run_params, "main_flux", nothing)
@@ -118,6 +118,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             randomness = randomness_factor * dx_nominal
             particleGrid = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc; rng=rng, randomness=randomness)
             interp_range = interp_range_factor * particleGrid.dx
+            delta_relax = particleGrid.dx * delta_relax_factor
             upwind_alg_2d = "Classic"
         else # dimension == 2
             Nx, Ny = run_params["Nx"], run_params["Ny"]
@@ -125,12 +126,13 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             dx_nominal = (xmax - xmin) / Nx
             dy_nominal = (ymax - ymin) / Ny
             randomness = (randomness_factor[1] * dx_nominal, randomness_factor[2] * dy_nominal)
-            particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc; rng=rng, randomness=randomness)
+            particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc, interp_range_factor; rng=rng, randomness=randomness)
             interp_range = interp_range_factor * max(particleGrid.dx, particleGrid.dy)
+            delta_relax = particleGrid.dx * particleGrid.dy * delta_relax_factor         
             upwind_alg_2d = main_grad_name == "Upwind" || fallback_grad_name == "Upwind" ? run_params["upwind_alg_2d"] : nothing
         end
         N_total_particles = particleGrid.N
-        determineVolumes!(particleGrid)
+        #determineVolumes!(particleGrid)
         setInitialConditions!(particleGrid, IC)
 
         # --- 6. Time Step and Settings ---

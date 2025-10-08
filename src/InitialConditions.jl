@@ -124,27 +124,25 @@ end
 (ic::Riemann{NTuple{2, Float64}, S})(x::Real, y::Real) where S = dot((x - ic.p0[1], y - ic.p0[2]), ic.n) < 0 ? ic.uL : ic.uR
 
 # --- NEW: Generalized Quadrant-based Riemann Problem ---
-struct QuadrantRiemann{T, S} <: ShockInitialCondition
-    u_states::Vector{S} # Vector of states for each quadrant
+struct QuadrantRiemann{D, M, T} <: ShockInitialCondition
+    u_states::NTuple{D,NTuple{M,Float64}} # Vector of states for each quadrant
     p0::T               # Center point of the quadrants
 
-    function QuadrantRiemann(u_states::Vector{S}, p0::T) where {S, T}
-        D = T isa Real ? 1 : length(p0)
-        num_expected_states = 2^D
-        if length(u_states) != num_expected_states
-            error("For a D-dimensional problem, expected $num_expected_states states, but got $(length(u_states)).")
+    function QuadrantRiemann(u_states::NTuple{D,NTuple{M,Float64}}, p0::T) where {D, M, T}
+        if D != 2^(length(p0))
+            error("For a D-dimensional problem!")
         end
-        new{T, S}(u_states, p0)
+        new{D, M, T}(u_states, p0)
     end
 end
 
 # 1D Functor (2 states: left, right)
-function (ic::QuadrantRiemann{Float64, S})(x::Real) where S
+function (ic::QuadrantRiemann{2, M, Float64})(x::Real) where M
     return x < ic.p0 ? ic.u_states[1] : ic.u_states[2]
 end
 
 # 2D Functor (4 states: BL, BR, TL, TR)
-function (ic::QuadrantRiemann{NTuple{2, Float64}, S})(x::Real, y::Real) where S
+function (ic::QuadrantRiemann{4, M, NTuple{2, Float64}})(x::Real, y::Real) where M
     x0, y0 = ic.p0
     if x < x0 && y < y0       # Bottom-Left
         return ic.u_states[1]

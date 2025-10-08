@@ -281,6 +281,13 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
     for k in 1:N
         system_pg[k].rhos[interior] .= @view U_np1[interior, k]
         system_pg[k].mood_events .= false
+            epsilon = 1e-8 # A small positive number
+        for i in 1:N_particles
+            if system_pg[k].rhos[i] < epsilon
+                system_pg[k].rhos[i] = epsilon
+            end
+            # You would do the same for pressure after converting from conserved variables
+        end
     end
 end
 

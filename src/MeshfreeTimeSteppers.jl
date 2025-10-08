@@ -55,7 +55,7 @@ end
 
 function (rk3::RK3)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
-    initMOOD!(rk3.mood,particleGrid.max_volume)
+    #initMOOD!(rk3.mood,particleGrid.max_volume)
     # --- Ensure buffers are correctly sized for the current grid ---
     if length(rk3.rho_n) != N
         resize!.((rk3.rho_n, rk3.rho_stage1, rk3.rho_stage2, rk3.div1, rk3.div2, rk3.div3), N)
@@ -154,7 +154,7 @@ end
 
 function (rk4::RK4)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
-    initMOOD!(rk4.mood,particleGrid.max_volume)
+    #initMOOD!(rk4.mood,particleGrid.max_volume)
     # --- Ensure buffers are correctly sized for the current grid ---
     if length(rk4.rho_n) != N
         resize!.((rk4.rho_n, rk4.rho_stage, rk4.k1, rk4.k2, rk4.k3, rk4.k4), N)
@@ -254,7 +254,7 @@ end
 
 function (ralston::RalstonRK2{G1, G2, M})(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {G1, G2, M}
     N = particleGrid.N
-    initMOOD!(ralston.mood,particleGrid.max_volume)
+    #initMOOD!(ralston.mood,particleGrid.max_volume)
     # --- Resize buffers only if necessary ---
     if length(ralston.rhoInit) != N
         resize!.((ralston.rhoInit, ralston.rhos, ralston.div1), N)
@@ -341,7 +341,7 @@ end
 
 function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
-    initMOOD!(ralston.mood,particleGrid.max_volume)
+    #initMOOD!(ralston.mood,particleGrid.max_volume)
     # --- Ensure buffers are correctly sized for the current grid ---
     if length(ralston.rho_n) != N
         resize!.((ralston.rho_n, ralston.rho_stage, ralston.rho_fallback, ralston.div1), N)

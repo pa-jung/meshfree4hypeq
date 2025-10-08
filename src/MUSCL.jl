@@ -155,70 +155,102 @@ function zero_workspace!(ws::MUSCLWorkspace1D)
     end
 end
 function ensure_capacity!(ws::MUSCLWorkspace1D, n::Int)
-    if n > ws.max_neighbors
-        ws.max_neighbors = n
-        resize!(ws.dx_buffer, n); resize!(ws.w_buffer, n)
-        ws.A_buffer = zeros(Float64, n, 4)
+    # Check if the required number of neighbors `n` exceeds the current buffer capacity.
+    if n > length(ws.dx_buffer)
+        # Calculate a new capacity with a 25% buffer to avoid frequent re-allocations.
+        new_capacity = n + n ÷ 4
+        
+        # Resize all vectors at once using broadcasting.
+        resize!.((ws.dx_buffer, ws.w_buffer), new_capacity)
+        
+        # Re-create the matrix buffer with the new size.
+        # Using `undef` is slightly faster than `zeros` if it's always overwritten.
+        ws.A_buffer = Matrix{Float64}(undef, new_capacity, 4)
     end
+    return nothing
 end
+
 function ensure_capacity!(ws::MUSCLWorkspace2D, n::Int)
-    if n > ws.max_neighbors
-        ws.max_neighbors = n
-        resize!(ws.dx_buffer, n); resize!(ws.w_buffer, n); resize!(ws.dy_buffer, n)
-        ws.A_buffer = zeros(n, size(ws.A_buffer, 2))
+    if n > length(ws.dx_buffer)
+        new_capacity = n + n ÷ 4
+        
+        resize!.((ws.dx_buffer, ws.w_buffer, ws.dy_buffer), new_capacity)
+        
+        # Preserve the number of columns from the old matrix
+        num_cols = size(ws.A_buffer, 2)
+        ws.A_buffer = Matrix{Float64}(undef, new_capacity, num_cols)
     end
+    return nothing
 end
-# NEW: Helper to efficiently resize the ragged coefficient arrays
-function _ensure_coeff_vectors_sized!(ws::MUSCLWorkspace1D, p_idx::Int, num_neighbors::Int)
-    # Only resize if the length has changed since the last step
-    if length(ws.alfaijs[p_idx]) != num_neighbors
-        resize!(ws.alfaijs[p_idx], num_neighbors)
-        resize!(ws.alfaij_bars[p_idx], num_neighbors)
-        resize!(ws.betaijs[p_idx], num_neighbors)
-        resize!(ws.gammaijs[p_idx], num_neighbors)
+function _ensure_coeff_vectors_sized!(ws::MUSCLWorkspace1D, p_idx::Int, n::Int)
+    # Check if the current buffer for this particle is too small
+    if length(ws.alfaijs[p_idx]) < n
+        # Calculate a new capacity with a 25% buffer
+        new_capacity = n #+ n ÷ 4
+        
+        # Resize all coefficient vectors for this particle at once
+        resize!.((
+            ws.alfaijs[p_idx], 
+            ws.alfaij_bars[p_idx], 
+            ws.betaijs[p_idx], 
+            ws.gammaijs[p_idx]
+        ), new_capacity)
     end
+    return nothing
 end
 
 function _ensure_coeff_vectors_sized!(ws::MUSCLWorkspace2D, p_idx::Int, n::Int)
-    if length(ws.alfaijs[p_idx]) < n; resize!(ws.alfaijs[p_idx], n); end
-    if length(ws.betaijs[p_idx]) < n; resize!(ws.betaijs[p_idx], n); end
-    if length(ws.alfaij_bars[p_idx]) < n; resize!(ws.alfaij_bars[p_idx], n); end
-    if length(ws.betaij_bars[p_idx]) < n; resize!(ws.betaij_bars[p_idx], n); end
-    if length(ws.gammaijs[p_idx]) < n; resize!(ws.gammaijs[p_idx], n); end
+    if length(ws.alfaijs[p_idx]) < n
+        new_capacity = n #+ n ÷ 4
+        
+        resize!.((
+            ws.alfaijs[p_idx], 
+            ws.alfaij_bars[p_idx], 
+            ws.betaijs[p_idx], 
+            ws.betaij_bars[p_idx], # 2D specific
+            ws.gammaijs[p_idx]
+        ), new_capacity)
+    end
+    return nothing
 end
 
 function ensure_particle_capacity!(ws::MUSCLWorkspace1D, N::Int)
     current_size = length(ws.alfaijs)
     if current_size < N
-        num_to_add = N - current_size
+        new_capacity = N #+ N ÷ 4
+        num_to_add = new_capacity - current_size
         
-        # Use `append!` with a comprehension that creates a NEW vector for each element
-        append!(ws.alfaijs, [Float64[] for _ in 1:num_to_add])
-        append!(ws.alfaij_bars, [Float64[] for _ in 1:num_to_add])
-        append!(ws.betaijs, [Float64[] for _ in 1:num_to_add])
-        append!(ws.gammaijs, [Float64[] for _ in 1:num_to_add])
+        # Grow the outer vector of vectors
+        for _ in 1:num_to_add
+            push!(ws.alfaijs, Float64[])
+            push!(ws.alfaij_bars, Float64[])
+            push!(ws.betaijs, Float64[])
+            push!(ws.gammaijs, Float64[])
+        end
         
-        # `resize!` is correct for the simple vector
-        resize!(ws.slopes, N)
+        # Resize the simple vector to the new capacity
+        resize!(ws.slopes, new_capacity)
     end
+    return nothing
 end
 
 function ensure_particle_capacity!(ws::MUSCLWorkspace2D, N::Int)
     current_size = length(ws.alfaijs)
     if current_size < N
-        num_to_add = N - current_size
+        new_capacity = N #+ N ÷ 4
+        num_to_add = new_capacity - current_size
         
-        # Use `append!` with a comprehension that creates a NEW vector for each element
-        append!(ws.alfaijs, [Float64[] for _ in 1:num_to_add])
-        append!(ws.alfaij_bars, [Float64[] for _ in 1:num_to_add])
-        append!(ws.betaijs, [Float64[] for _ in 1:num_to_add])
-        append!(ws.gammaijs, [Float64[] for _ in 1:num_to_add])
-        append!(ws.betaij_bars, [Float64[] for _ in 1:num_to_add])
-        
-        # `resize!` is correct for the simple vector
-        resize!(ws.slopes_x, N)
-        resize!(ws.slopes_y, N)
+        for _ in 1:num_to_add
+            push!(ws.alfaijs, Float64[])
+            push!(ws.alfaij_bars, Float64[])
+            push!(ws.betaijs, Float64[])
+            push!(ws.betaij_bars, Float64[]) # 2D specific
+            push!(ws.gammaijs, Float64[])
+        end
+        println(size(ws.alfaijs))
+        resize!.((ws.slopes_x, ws.slopes_y), new_capacity)
     end
+    return nothing
 end
 
 struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, WS<:MUSCLWorkspace} <: GradientInterpolator
@@ -597,11 +629,6 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D, interpAlpha::R
     ws = muscl.workspace # Assumes this is a MUSCLWorkspace2D
     N = particleGrid.N
     ensure_particle_capacity!(ws, N)
-    # Ensure workspace is correctly sized for the grid
-    if length(ws.alfaijs) != N
-        muscl.workspace = MUSCLWorkspace2D(N)
-        ws = muscl.workspace
-    end
 
     for p_idx in 1:N
         neighbors = particleGrid.neighbour_indices[p_idx]
@@ -657,7 +684,6 @@ function _compute_muscl_coeffs!(::MUSCLORDER1, dxVec, dyVec, wVec, A, alfaij, be
     A11 = A[1, 1]
     A22 = A[2, 2]
     A12 = A[1, 2]
-    
     alfaij .= (wVec .* (A22 .* dxVec .- A12 .* dyVec)) ./ D
     betaij .= (wVec .* (A11 .* dyVec .- A12 .* dxVec)) ./ D
 end

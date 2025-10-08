@@ -11,51 +11,77 @@ function duplicateTuple(a::Any, N::Int)
     return Tuple([a for _ = 1:N])
 end
 
-function implosionInit()
-    # State 1 (Bottom-Left: x < 0, y < 0)
-    rho1, p1, u1, v1 = 0.8, 1.0, 0.0, 0.0
-    mx1 = rho1 * u1; my1 = rho1 * v1; E1 = p1/(GAS_GAMMA_EULER-1.0) + 0.5*rho1*(u1^2+v1^2)
-    state_BL = (rho1, mx1, my1, E1)
 
-    # State 2 (Bottom-Right: x >= 0, y < 0)
-    rho2, p2, u2, v2 = 1.0, 1.0, 0.0, 0.7276
-    mx2 = rho2 * u2; my2 = rho2 * v2; E2 = p2/(GAS_GAMMA_EULER-1.0) + 0.5*rho2*(u2^2+v2^2)
-    state_BR = (rho2, mx2, my2, E2)
+clain_riemann_init = (
+                      (0.029, 0.138,  1.206, 1.206),
+                      (0.3,   0.5323, 0.,    1.206),
+                      (1.5,   1.5,    0.,    0.   ),
+                      (0.3,   0.5323, 1.206, 0.   )  
+)
 
-    # State 3 (Top-Left: x < 0, y >= 0)
-    rho3, p3, u3, v3 = 1.0, 1.0, 0.7276, 0.0
-    mx3 = rho3 * u3; my3 = rho3 * v3; E3 = p3/(GAS_GAMMA_EULER-1.0) + 0.5*rho3*(u3^2+v3^2)
-    state_TL = (rho3, mx3, my3, E3)
-
-    # State 4 (Top-Right: x >= 0, y >= 0)
-    rho4, p4, u4, v4 = 0.5313, 0.4, 0.0, 0.0
-    mx4 = rho4 * u4; my4 = rho4 * v4; E4 = p4/(GAS_GAMMA_EULER-1.0) + 0.5*rho4*(u4^2+v4^2)
-    state_TR = (rho4, mx4, my4, E4)
-
-    initial_states_vector = [state_BL, state_BR, state_TL, state_TR]
-    center_point = (0.0, 0.0)
-    return (initial_states_vector, center_point)
-end
+implosionInit = ((0.8, 1.0, 0.0, 0.0),
+                 (1.0, 1.0, 0.0, 0.7276),
+                 (1.0, 1.0, 0.7276, 0.0),
+                 (0.5313, 0.4, 0.0, 0.0))
 
 function main()
+    function convertQuadrantInit(
+        quadrant_data::NTuple{4, NTuple{4, T}}
+    ) where T <: AbstractFloat
+        
+        # Helper function to convert primitive to conservative state
+        function primToCons(rho, p, u, v)
+            # Momentum components
+            mx = rho * u
+            my = rho * v
+            
+            # Total Energy (E = Internal_Energy + Kinetic_Energy)
+            # Internal_Energy = p / (gamma - 1)
+            # Kinetic_Energy = 0.5 * rho * (u^2 + v^2)
+            E = p / (GAS_GAMMA_EULER - 1.0) + 0.5 * rho * (u^2 + v^2)
+            
+            return (rho, mx, my, E)
+        end
+
+        # Destructure the input tuple. 
+        # Order: (BL, BR, TL, TR) for consistency with your example.
+        (rho1, p1, u1, v1) = quadrant_data[1] # Bottom-Left (State 1)
+        (rho2, p2, u2, v2) = quadrant_data[2] # Bottom-Right (State 2)
+        (rho3, p3, u3, v3) = quadrant_data[3] # Top-Left (State 3)
+        (rho4, p4, u4, v4) = quadrant_data[4] # Top-Right (State 4)
+
+        # Convert each state to conservative variables
+        state_BL = primToCons(rho1, p1, u1, v1)
+        state_BR = primToCons(rho2, p2, u2, v2)
+        state_TL = primToCons(rho3, p3, u3, v3)
+        state_TR = primToCons(rho4, p4, u4, v4)
+
+        # Combine into the required output format
+        initial_states_vector = (state_BL, state_BR, state_TL, state_TR)
+        
+        return initial_states_vector
+    end
+
 # Example SimulationConfig for 2D Linear Advection
 sim_config_2d = SimulationConfig(
     ParamDict(
-        "tmax" => 1., "Nx" => 30, "Ny" => 30,
-        "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
-        "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
-        "interp_range" => 3.5,
-        "init_func" => "riemann", # Use the new 2D function name
+        "tmax" => .3, "Nx" => 100, "Ny" => 100,
+        "xmin" => 0., "xmax" => 1., "ymin" => 0., "ymax" => 1.,
+        #"xmin" => -0.5, "xmax" => .5, "ymin" => -0.5, "ymax" => .5,
+        "CFL" => 0.1, "snapshots" => 20, "interp_alpha" => 1.0,
+        "interp_range" => 1.5,
+        "init_func" => "q_riemann", # Use the new 2D function name
         #"init_params" => (0.,1.,(0.,0.),(1.,1.)),
         #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
-        "init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
-        #"init_params" => implosionInit(),
+        #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
+        "init_params" => (convertQuadrantInit(clain_riemann_init),(0.5,0.5)),
+        #"init_params" => (convertQuadrantInit(implosionInit),(0.,0.)),
         "bc" => :outflow,
-        "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
+        "randomness_factor" => (0., 0.), # (x_rand, y_rand)
         "SEED" => 42,
         "sim_function" => "runSystemSimulation", # Point to the 2D run function
         "PDE" => "euler2d",
-        "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
+        "relax_velocities" => _relax_velocities(40.,4), "relax_epsilon" => 1e-6,
         "save_relax" => false, "weight_function" => "exponential"
         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
     ),
@@ -106,46 +132,46 @@ sim_config_2d = SimulationConfig(
             "MOOD" => "U2","delta_relax" => 0.,
         ),            
     ),
-    "ARS222MUSCL2"
+    "ARS222MUSCL2MOOD(Tiwari)"
     #["ARS222MUSCL2"]#,"ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Praveen)","ARS222Upwind"]
 );
 
 # --- How to run this with your IPlotPDESols package ---
 # You would now pass `sim_config_2d` to your plotting functions.
 # For example:
-#show2DSolutionFig(sim_config_2d;)
+show2DSolutionFig(sim_config_2d;)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,0.)))
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
 
 ### Single ParamDict for testing
 
-params = ParamDict(
-        "tmax" => 1., "Nx" => 10, "Ny" => 10,
-        "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
-        "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
-        "save_relax" => false,
-        "interp_range" => 3.5,
-        "weight_function" => "exponential",
-        "init_func" => "q_riemann", # Use the new 2D function name
-        #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
-        #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
-        "init_params" => implosionInit(),
-        "bc" => :fixed_dirichlet,
-        "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
-        "SEED" => 42,
-        "sim_function" => "runSystemSimulation", # Point to the 2D run function
-        "PDE" => "euler2d",
-        "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
-        "timestepper" => "SimpleSplitting",
-        "main_gradient" => "MUSCL",
-        "order" => 2,
-        "main_flux" => "Rusanov",
-        "upwind_alg_2d" => "NonLinearPraveen",
-        "MOOD" => "none",
-        #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
-    )
-runSystemSimulation(params);
-@profview runSystemSimulation(params);
+# params = ParamDict(
+#         "tmax" => 1., "Nx" => 10, "Ny" => 10,
+#         "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
+#         "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
+#         "save_relax" => false,
+#         "interp_range" => 3.5,
+#         "weight_function" => "exponential",
+#         "init_func" => "q_riemann", # Use the new 2D function name
+#         #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
+#         #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
+#         "init_params" => implosionInit(),
+#         "bc" => :fixed_dirichlet,
+#         "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
+#         "SEED" => 42,
+#         "sim_function" => "runSystemSimulation", # Point to the 2D run function
+#         "PDE" => "euler2d",
+#         "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
+#         "timestepper" => "SimpleSplitting",
+#         "main_gradient" => "MUSCL",
+#         "order" => 2,
+#         "main_flux" => "Rusanov",
+#         "upwind_alg_2d" => "NonLinearPraveen",
+#         "MOOD" => "none",
+#         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
+#     )
+# runSystemSimulation(params);
+# @profview runSystemSimulation(params);
 
 end
 

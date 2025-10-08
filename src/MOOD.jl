@@ -28,8 +28,7 @@ particleGrid.grid[particleIndex].moodEvent is set to true if at least once durin
 """
 mutable struct MOODu1 <: MOODCriterion 
     count::Int64
-    const deltaRelax::Float64
-    d::Float64
+    const d::Float64
     function MOODu1(;deltaRelax::Real)
         new(0, convert(Float64, deltaRelax))
     end
@@ -57,7 +56,7 @@ function (mood::MOODu1)(
     
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
     # More efficient way to get max volume
-    δ = mood.deltaRelax * mood.d
+    δ = mood.d
 
     moodEvent = (newRho < minU - δ) || (newRho > maxU + δ)
     
@@ -87,8 +86,7 @@ Enhanced MOOD criterion. Checks relaxed DMP for rho. This criterion relaxes the 
 """
 mutable struct MOODLoubertU2 <: MOODCriterion
     count::Int64
-    const deltaRelax::Float64
-    d::Float64
+    const d::Float64
     function MOODLoubertU2(;deltaRelax::Real)
         new(0, convert(Float64, deltaRelax))
     end
@@ -97,7 +95,7 @@ end
 function (mood::MOODLoubertU2)(particleGrid::ParticleGrid1D, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
     # Prep
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
-    δ = mood.deltaRelax * mood.d
+    δ = mood.d
 
     # DMP criterion
     DMPFail = (newRho < minU) || (newRho > maxU)
@@ -127,8 +125,7 @@ Enhanced MOOD criterion. Checks relaxed DMP for rho. This criterion relaxes the 
 """
 mutable struct MOODu2 <: MOODCriterion 
     count::Int64
-    const deltaRelax::Float64
-    d::Float64
+    const d::Float64
     function MOODu2(;deltaRelax::Real)
         new(0, convert(Float64, deltaRelax))
     end
@@ -146,7 +143,7 @@ function (mood::MOODu2)(
     
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
 
-    delta = mood.deltaRelax * mood.d
+    delta = mood.d
 
     DMPFail = (newRho < minU - delta) || (newRho > maxU + delta)
     if abs(maxU - minU) < delta^3
@@ -183,7 +180,7 @@ function (mood::MOODu2)(
 )::Bool
     
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
-    delta = mood.deltaRelax * mood.d
+    delta = mood.d
 
     DMPFail = (newRho < minU - delta) || (newRho > maxU + delta)
     if abs(maxU - minU) < delta^3
@@ -215,10 +212,6 @@ function (mood::MOODu2)(
     return moodEvent
 end
 
-function initMOOD!(mood::Union{MOODu1,MOODu2,MOODLoubertU2}, d::Ref{Float64})
-    mood.d = d[]
-end
-
 """
     NoMOOD
 
@@ -231,6 +224,11 @@ struct NoMOOD <: MOODCriterion
     end
 end
 
+function (mood::NoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+    particleGrid.mood_events[particleIndex] = false
+    return false
+end
+
 """
 OnlyMOOD
 
@@ -241,13 +239,6 @@ struct OnlyMOOD <: MOODCriterion
     function OnlyMOOD()
         new(0)
     end
-end
-
-# --- REFACTORED NoMOOD/OnlyMOOD Functors ---
-# These are updated to write to the new `mood_events` SoA array.
-function (mood::NoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    particleGrid.mood_events[particleIndex] = false
-    return false
 end
 
 function (mood::OnlyMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
