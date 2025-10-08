@@ -24,6 +24,7 @@ struct UpwindWorkspace
     nyVec::Vector{Float64}
     # Add a buffer for neighbor values
     ujVec::Vector{Float64}
+    nb_buffer::Vector{Int}
 
     function UpwindWorkspace(max_neighbors::Int=30) # Preallocate with a reasonable capacity
         new(
@@ -40,6 +41,7 @@ struct UpwindWorkspace
             Vector{Float64}(undef, max_neighbors),
             Vector{Float64}(undef, max_neighbors),
             Vector{Float64}(undef, max_neighbors),
+            Vector{Int}(undef, max_neighbors),
         )
     end
 end
@@ -48,7 +50,7 @@ end
 function ensure_capacity!(ws::UpwindWorkspace, n::Int)
     if length(ws.dxVec) < n
         N = n + n ÷ 4
-        resize!.((ws.dxVec, ws.dyVec, ws.dfVec, ws.wVec, ws.xWindow, ws.yWindow, ws.coeff_x_Vec, ws.coeff_y_Vec, ws.aij_x_Vec, ws.aij_y_Vec, ws.nxVec, ws.nyVec, ws.ujVec), N)
+        resize!.((ws.dxVec, ws.dyVec, ws.dfVec, ws.wVec, ws.xWindow, ws.yWindow, ws.coeff_x_Vec, ws.coeff_y_Vec, ws.aij_x_Vec, ws.aij_y_Vec, ws.nxVec, ws.nyVec, ws.ujVec, ws.nb_buffer), N)
     end
 end
 
@@ -156,12 +158,12 @@ function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
         distance_vector = getDistance(particleGrid, particleIndex, nb)
         if dot(distance_vector, vel) < 0
             count += 1
-            ws.ujVec[count] = nb # Store the upwind neighbour index
+            ws.nb_buffer[count] = nb # Store the upwind neighbour index
         end
     end
 
     # The upwind indices are now the view of the filled part of the buffer
-    upwind_indices = view(ws.ujVec, 1:count)
+    upwind_indices = view(ws.nb_buffer, 1:count)
     num_upwind = length(upwind_indices)
 
 
@@ -181,12 +183,17 @@ function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
     end
 
-    weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
-    res1, res2, res3, res4 = interp(dxVec, dyVec, wVec, dfVec)
+    upwind.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+    local res1, res2
+    if upwind.order == 1
+        res1, res2 = interp(dxVec, dyVec, wVec, dfVec)
+    elseif upwind.order == 2
+        res1, res2, res3, res4 = interp(dxVec, dyVec, wVec, dfVec)
 
-    if setCurvature && upwind.order == 2
-        particleGrid.curvatures[particleIndex, 1] = res3 / (settings.interpRange^2)
-        particleGrid.curvatures[particleIndex, 2] = res4 / (settings.interpRange^2)
+        if setCurvature
+            particleGrid.curvatures[particleIndex, 1] = res3 / (settings.interpRange^2)
+            particleGrid.curvatures[particleIndex, 2] = res4 / (settings.interpRange^2)
+        end
     end
     
     return vel[1] * res1 / settings.interpRange, vel[2] * res2 / settings.interpRange

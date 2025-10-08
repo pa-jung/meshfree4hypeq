@@ -105,21 +105,37 @@ sim_config_2d = SimulationConfig(
             "MOOD" => "none",
 
         ),    
-        "ARS222Upwind" => ParamDict(
+        "ARS222WENO2" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_gradient" => "WENO",
+            "order" => 2,
+            "main_flux" => "Rusanov",
+            "MOOD" => "none",
+
+        ),    
+        "ARS222Upwind(Tiwari)" => ParamDict(
             "timestepper" => "ARS222",
             "main_gradient" => "Upwind",
             "order" => 1,
             "main_flux" => "Rusanov",
-            "upwind_alg_2d" => "Praveen",
+            "upwind_alg_2d" => "Tiwari",
             "MOOD" => "none",
         ),    
-        "ARS222MUSCL2MOOD(Praveen)" => ParamDict(
+        "ARS222Upwind(Classic)" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_gradient" => "Upwind",
+            "order" => 1,
+            "main_flux" => "Rusanov",
+            "upwind_alg_2d" => "Classic",
+            "MOOD" => "none",
+        ),    
+        "ARS222MUSCL2MOOD(Classic)" => ParamDict(
             "timestepper" => "ARS222",
             "main_gradient" => "MUSCL",
             "order" => 2,
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
-            "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Praveen",
+            "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Classic",
             "MOOD" => "U2", "delta_relax" => 0.,
         ), 
         "ARS222MUSCL2MOOD(Tiwari)" => ParamDict(
@@ -132,8 +148,9 @@ sim_config_2d = SimulationConfig(
             "MOOD" => "U2","delta_relax" => 0.,
         ),            
     ),
-    "ARS222MUSCL2MOOD(Tiwari)"
-    #["ARS222MUSCL2"]#,"ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Praveen)","ARS222Upwind"]
+    #"ARS222MUSCL2MOOD(Tiwari)"
+    #"ARS222Upwind(Classic)"
+    ["ARS222WENO2","ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Classic)","ARS222Upwind(Classic)","ARS222Upwind(Tiwari)"]
 );
 
 # --- How to run this with your IPlotPDESols package ---

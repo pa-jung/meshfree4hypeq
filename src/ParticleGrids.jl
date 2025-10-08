@@ -198,7 +198,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
     dx::Float64; dy::Float64; regular::Bool; bc::Symbol
     interior_indices::Vector{Int}
     voxel_map::Dict{Int, Vector{Int}}; voxel_buffer::Vector{Int}
-    neighbor_system::S
+    neighbor_system::S;
     max_volume::Ref{Float64}
 
     function ParticleGrid2D(
@@ -239,7 +239,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
                 x=positions, 
                 cutoff=interp_range, 
                 unitcell=[xmax-xmin; ymax-ymin],
-                parallel=true # Enable parallelization
+                parallel=false # Enable parallelization
             )
         else # Non-periodic logic
             for i in 1:Nx_total, j in 1:Ny_total
@@ -256,7 +256,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
             system = InPlaceNeighborList(
                 x=positions, 
                 cutoff=interp_range, 
-                parallel=true # Enable parallelization
+                parallel=false # Enable parallelization
             )
         end
 
@@ -430,23 +430,27 @@ function updateNeighbours!(particleGrid::ParticleGrid2D, inner_radius::Real)
     system = particleGrid.neighbor_system
     #cutoff = system.cutoff # The outer radius is stored in the system
     inner_radius = min(particleGrid.dx,particleGrid.dy)
+    box = system.box
 
     # Clear your custom neighbor lists before filling them
     for nb_list in particleGrid.neighbour_indices; empty!(nb_list); end
 
     update!(system, particleGrid.positions)
 
-    # Compute the neighbor list (in-place)
-    list = neighborlist!(system)
-
-    # --- 3. Transform Data to Your Structure ---
-    # Loop through the flat list of pairs and populate your Vector{Vector{Int}}
-    for (i, j, d) in list
-        if inner_radius <= d #<= cutoff
-            push!(particleGrid.neighbour_indices[i], j)
-            push!(particleGrid.neighbour_indices[j], i)
-        end
-    end
+    map_pairwise!(
+        (_,_,i, j, d2, null) -> begin
+            # This inner function is called for each pair found.
+            # `d2` is the squared distance.
+            if inner_radius^2 <= d2 # The outer radius is already handled by the search
+                push!(particleGrid.neighbour_indices[i], j)
+                push!(particleGrid.neighbour_indices[j], i)
+            end
+            null
+        end,
+        0, # Pass your lists as the output to be modified
+        box,
+        system.cl # Pass the cell list from the system
+    )
     
     return nothing
 end
