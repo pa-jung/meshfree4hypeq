@@ -21,27 +21,27 @@ sim_config_euler1d_system = SimulationConfig(
         "tmax" => 0.2, "N" => 200, "bc" => :outflow,
         "xmin" => -0.5, "xmax" => .5, 
         "CFL" => 0.2, "snapshots" => 11, 
-        "interp_alpha" => 1.0, "interp_range" => 1.5, # Factor for dx
+        "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
         "init_func" => "eulerShockTube",
         "PDE" => "euler1d", "sim_function" => "runSystemSimulation",
         #"init_params" => euler_smooth_params, 
         "init_params" => sod_euler_params, 
-        "randomness_factor" => 0., 
+        "randomness_factor" => 0.2, 
         "SEED" => SEED_value, "save_relax" => false, "weight_function" => "exponential",
         "relax_velocities" => [ [2.0, -2.0], [3.0, -3.0], [4.0, -4.0] ], # Pairs for rho, m, E kinetic components
     ),
     MethodDict( 
-        "ARS222MUSCL2(superbee)" => ParamDict(
+        "ARS222MUSCL2(minmod)" => ParamDict(
             "timestepper" => "ARS222",
             "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
-            "main_flux" => "Rusanov", "limiter" => "superbee",
+            "main_flux" => "Rusanov", "limiter" => "minmod",
             "MOOD" => "none",
             "relax_epsilon" => 1e-6
         ),
-        "SSMUSCL2(superbee)" => ParamDict(
+        "SSMUSCL2(minmod)" => ParamDict(
             "timestepper" => "SimpleSplitting",
             "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
-            "main_flux" => "Rusanov", "limiter" => "superbee",
+            "main_flux" => "Rusanov", "limiter" => "minmod",
             "MOOD" => "none",
             "relax_epsilon" => 1e-6
         ),
@@ -129,8 +129,8 @@ sim_config_euler1d_system = SimulationConfig(
             "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
         )
     ),
-    "ARS222MUSCL2MOOD"
-    #["Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(superbee)", "ARS222MUSCL2MOOD", "SSMUSCL2(superbee)", "ARS222WENO2"]
+    #"ARS222MUSCL2MOOD"
+    ["ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD", "SSMUSCL2(minmod)"]
     #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
 )
 # To run:

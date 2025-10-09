@@ -12,6 +12,7 @@ struct WENOWorkspace1D <: WENOWorkspace
     dx_scratch::Vector{Float64}
     df_scratch::Vector{Float64}
     w_scratch::Vector{Float64}
+    
 
     function WENOWorkspace1D(max_neighbors::Int=30)
         new(

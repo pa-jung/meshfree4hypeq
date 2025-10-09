@@ -75,7 +75,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             else # dimension == 2
                 Nx, Ny = run_params["Nx"], run_params["Ny"]
                 ymin, ymax = run_params["ymin"], run_params["ymax"]
-                grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc != :periodic , bc)
+                grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc != :periodic , bc, 0.)
                 xs = grid_analytic.positions
                 us = [[IC(p[1], p[2], t, eq, grid_analytic) for p in pos_coords] for (pos_coords, t) in zip(xs, ts)]
 

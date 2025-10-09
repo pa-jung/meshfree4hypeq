@@ -6,8 +6,8 @@ function main()
     params = ParamDict(
         # --- Shared Parameters ---
         "tmax" => 1.0,
-        "Nx" => 100,
-        "Ny" => 100,
+        "Nx" => 400,
+        "Ny" => 400,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "ymin" => -5.0,
@@ -32,7 +32,7 @@ function main()
         "timestepper" => "RalstonRK2",
         "main_gradient" => "Upwind",
         "order" => 1,
-        "upwind_alg_2d" => "Tiwari",
+        "upwind_alg_2d" => "Classic",
         "main_flux" => "Rusanov",
         #"MOOD" => "U1", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
         #"mood" => "none", # No MOOD for this run

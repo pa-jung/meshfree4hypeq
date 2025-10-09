@@ -24,13 +24,20 @@ implosionInit = ((0.8, 1.0, 0.0, 0.0),
                  (1.0, 1.0, 0.7276, 0.0),
                  (0.5313, 0.4, 0.0, 0.0))
 
+# Reorder each inner tuple from (rho, p, u, v) to (rho, u, v, p)
+# The new order of indices is (0, 2, 3, 1)
+implosionNewOrder = tuple(
+    (item[0], item[2], item[3], item[1])
+    for item in implosionInit
+)
+
 function main()
     function convertQuadrantInit(
         quadrant_data::NTuple{4, NTuple{4, T}}
     ) where T <: AbstractFloat
         
         # Helper function to convert primitive to conservative state
-        function primToCons(rho, p, u, v)
+        function primToCons(rho, u, v, p)
             # Momentum components
             mx = rho * u
             my = rho * v
@@ -45,10 +52,10 @@ function main()
 
         # Destructure the input tuple. 
         # Order: (BL, BR, TL, TR) for consistency with your example.
-        (rho1, p1, u1, v1) = quadrant_data[1] # Bottom-Left (State 1)
-        (rho2, p2, u2, v2) = quadrant_data[2] # Bottom-Right (State 2)
-        (rho3, p3, u3, v3) = quadrant_data[3] # Top-Left (State 3)
-        (rho4, p4, u4, v4) = quadrant_data[4] # Top-Right (State 4)
+        (rho1, u1, v1, p1) = quadrant_data[1] # Bottom-Left (State 1)
+        (rho2, u2, v2, p2) = quadrant_data[2] # Bottom-Right (State 2)
+        (rho3, u3, v3, p3) = quadrant_data[3] # Top-Left (State 3)
+        (rho4, u4, v4, p4) = quadrant_data[4] # Top-Right (State 4)
 
         # Convert each state to conservative variables
         state_BL = primToCons(rho1, p1, u1, v1)
@@ -81,7 +88,7 @@ sim_config_2d = SimulationConfig(
         "SEED" => 42,
         "sim_function" => "runSystemSimulation", # Point to the 2D run function
         "PDE" => "euler2d",
-        "relax_velocities" => _relax_velocities(40.,4), "relax_epsilon" => 1e-6,
+        "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
         "save_relax" => false, "weight_function" => "exponential"
         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
     ),
@@ -150,45 +157,47 @@ sim_config_2d = SimulationConfig(
     ),
     #"ARS222MUSCL2MOOD(Tiwari)"
     #"ARS222Upwind(Classic)"
-    ["ARS222WENO2","ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Classic)","ARS222Upwind(Classic)","ARS222Upwind(Tiwari)"]
+    ["ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Classic)","ARS222Upwind(Classic)","ARS222Upwind(Tiwari)"]
 );
 
 # --- How to run this with your IPlotPDESols package ---
 # You would now pass `sim_config_2d` to your plotting functions.
 # For example:
-show2DSolutionFig(sim_config_2d;)
+#show2DSolutionFig(sim_config_2d;)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,0.)))
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
 
 ### Single ParamDict for testing
 
-# params = ParamDict(
-#         "tmax" => 1., "Nx" => 10, "Ny" => 10,
-#         "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
-#         "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
-#         "save_relax" => false,
-#         "interp_range" => 3.5,
-#         "weight_function" => "exponential",
-#         "init_func" => "q_riemann", # Use the new 2D function name
-#         #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
-#         #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
-#         "init_params" => implosionInit(),
-#         "bc" => :fixed_dirichlet,
-#         "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
-#         "SEED" => 42,
-#         "sim_function" => "runSystemSimulation", # Point to the 2D run function
-#         "PDE" => "euler2d",
-#         "relax_velocities" => _relax_velocities(4.,4), "relax_epsilon" => 1e-6,
-#         "timestepper" => "SimpleSplitting",
-#         "main_gradient" => "MUSCL",
-#         "order" => 2,
-#         "main_flux" => "Rusanov",
-#         "upwind_alg_2d" => "NonLinearPraveen",
-#         "MOOD" => "none",
-#         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
-#     )
-# runSystemSimulation(params);
-# @profview runSystemSimulation(params);
+params = ParamDict(
+        "tmax" => .3, "Nx" => 100, "Ny" => 100,
+        "xmin" => -0.5, "xmax" => 0.5, "ymin" => -0.5, "ymax" => 0.5,
+        #"xmin" => 0., "xmax" => 1., "ymin" => 0., "ymax" => 1.,
+        "CFL" => 0.1, "snapshots" => 20, "interp_alpha" => 1.0,
+        "save_relax" => false,
+        "interp_range" => 3.5,
+        "weight_function" => "exponential",
+        "init_func" => "q_riemann", # Use the new 2D function name
+        #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
+        #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
+        #"init_params" => (convertQuadrantInit(implosionNewOrder),(0.,0.)),
+        "init_params" => (convertQuadrantInit(clain_riemann_init),(0.5,0.5)),
+        "bc" => :outflow,
+        "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
+        "SEED" => 42,
+        "sim_function" => "runSystemSimulation", # Point to the 2D run function
+        "PDE" => "euler2d",
+        "relax_velocities" => _relax_velocities(40.,4), "relax_epsilon" => 1e-6,
+        "timestepper" => "ARS222",
+        "main_gradient" => "MUSCL",
+        "order" => 2,
+        "main_flux" => "Rusanov",
+        "upwind_alg_2d" => "Tiwari",
+        "MOOD" => "U2", "delta_relax" => 0.
+        #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
+    )
+#runSystemSimulation(params);
+#@profview runSystemSimulation(params);
 
 end
 

@@ -273,21 +273,21 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
     # --- Final Update ---
     U_np1 = imex_ts.U_n_sys # Reuse this buffer for the final result
     for i in 1:s
-        if abs(bt.bt[i]) > 1e-14; @. U_np1[interior, :] += dt * bt.bt[i] * imex_ts.K_E_stages_sys[i][interior, :]; end
-        if abs(bt.b[i]) > 1e-14;  @. U_np1[interior, :] += dt * bt.b[i] * imex_ts.K_I_stages_sys[i][interior, :]; end
+        if abs(bt.bt[i]) > 1e-14; U_np1[interior, :] += dt * bt.bt[i] .* @view(imex_ts.K_E_stages_sys[i][interior, :]); end
+        if abs(bt.b[i]) > 1e-14;  U_np1[interior, :] += dt * bt.b[i] .* @view(imex_ts.K_I_stages_sys[i][interior, :]); end
     end
 
     # --- Update physical particle grids ---
     for k in 1:N
         system_pg[k].rhos[interior] .= @view U_np1[interior, k]
         system_pg[k].mood_events .= false
-            epsilon = 1e-8 # A small positive number
-        for i in 1:N_particles
-            if system_pg[k].rhos[i] < epsilon
-                system_pg[k].rhos[i] = epsilon
-            end
-            # You would do the same for pressure after converting from conserved variables
-        end
+        #     epsilon = 1e-8 # A small positive number
+        # for i in 1:N_particles
+        #     if system_pg[k].rhos[i] < epsilon
+        #         system_pg[k].rhos[i] = epsilon
+        #     end
+        #     # You would do the same for pressure after converting from conserved variables
+        # end
     end
 end
 

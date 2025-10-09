@@ -48,11 +48,44 @@ struct inverseWeightFunction <: MLSWeightFunction end
 # --- In-place Exponential Weight Functions ---
 
 """
+A fast, 4th-order polynomial approximation of `exp(x)` for `x <= 0`.
+This is much faster than `Base.exp()` but less precise.
+"""
+@inline function fast_exp(x::Float64)
+    # 4th order Taylor series for e^x evaluated with Horner's method:
+    # 1 + x + x^2/2 + x^3/6 + x^4/24  = 1 + x*(1 + x*(0.5 + x*(1/6 + x*(1/24))))
+    return 1.0 + x * (1.0 + x * (0.5 + x * (1. / 6. + x / 24.)))
+end
+"""
+A fast and stable approximation of `exp(x)` for `x <= 0` using a
+Padé approximant. It is guaranteed to be positive and decay to zero.
+"""
+@inline function fast_exp_stable(x::Float64)
+    # This is the (1,1) Padé approximant: (1 + x/2) / (1 - x/2).
+    # It is much more stable than a Taylor series for large negative x.
+    return (1.0 + 0.5*x) / (1.0 - 0.5*x)
+end
+"""
+A fast, high-accuracy, and stable approximation of `exp(x)` for `x <= 0`.
+It uses a 4th-order Taylor polynomial in the denominator of `1 / exp(-x)`,
+which preserves positivity and monotonic decay.
+"""
+@inline function fast_exp_accurate(x::Float64)
+    # Let y = -x. Since x <= 0, y >= 0.
+    y = -x
+    
+    # Calculate the denominator using a 4th-order Taylor series for exp(y)
+    # evaluated with Horner's method for efficiency.
+    denominator = 1.0 + y * (1.0 + y * (0.5 + y * (0.16666666666666666 + y * 0.041666666666666664)))
+    
+    return 1.0 / denominator
+end
+"""
 1D in-place exponential weight function.
 """
 @inline function (w::exponentialWeightFunction)(wVec::AbstractVector, dxVec; param::Real, normalisation::Real)
     # The ".=" operator performs the fused broadcast and stores the result in wVec
-    wVec .= exp.(-param .* ((dxVec ./ normalisation).^2))
+    wVec .= fast_exp_accurate.(-param .* ((dxVec ./ normalisation).^2))
     return nothing
 end
 
@@ -60,7 +93,7 @@ end
 2D in-place exponential weight function.
 """
 @inline function (w::exponentialWeightFunction)(wVec::AbstractVector, dxVec, dyVec; param::Real, normalisation::Real)
-    wVec .= exp.(-param .* ((dxVec.^2 .+ dyVec.^2) ./ (normalisation^2)))
+    wVec .= fast_exp_accurate.(-param .* ((dxVec.^2 .+ dyVec.^2) ./ (normalisation^2)))
     return nothing
 end
 
@@ -91,6 +124,7 @@ mutable struct Interpolator{D, IO, DO}
     A::Matrix{Float64}
     b::Vector{Float64}
     res::Vector{Float64}
+    w_buffer::Vector{Float64}
 
     function Interpolator{D, IO, DO}(max_points::Int=30) where {D, IO, DO}
         # Determine number of coefficients from orders and dimension
@@ -100,6 +134,7 @@ mutable struct Interpolator{D, IO, DO}
         new{D, IO, DO}(
             Matrix{Float64}(undef, max_points, num_coeffs),
             Vector{Float64}(undef, max_points),
+            Vector{Float64}(undef, num_coeffs),
             Vector{Float64}(undef, num_coeffs),
         )
     end
@@ -111,10 +146,11 @@ function ensure_capacity!(interp::Interpolator, n::Int)
         num_coeffs = size(interp.A, 2)
         
         # Re-create the matricx with the new capacity
-        interp.A = Matrix{Float64}(undef, new_capacity, num_coeffs)
+        interp.A = Matrix{Float64}(undef, new_capacity, num_coeffs,)
         
         # Resize the vectors
         resize!(interp.b, new_capacity)
+        resize!(interp.w_buffer, new_capacity)
     end
     return nothing
 end
@@ -148,13 +184,14 @@ function (interp::Interpolator{1, 1, 0})(
     wVec::AbstractVector{<:Real},
     fVec::AbstractVector{<:Real}
 )
+    w_buffer = interp.w_buffer
     b1 = dot(fVec, wVec)
     A11 = sum(wVec)
-    wVec .*= dxVec  # w_temp = dx .* w
-    b2 = dot(fVec, wVec)
-    A12 = sum(wVec)
-    wVec .*= dxVec  # w_temp = dx.^2 .* w
-    A22 = sum(wVec)
+    w_buffer .= wVec .* dxVec # w_temp = dx .* w
+    b2 = dot(fVec, w_buffer)
+    A12 = sum(w_buffer)
+    w_buffer .*= dxVec  # w_temp = dx.^2 .* w
+    A22 = sum(w_buffer)
 
     # Direct migration of your original 2x2 solver logic
     # res[1] is c₀, res[2] is c₁
@@ -170,19 +207,20 @@ function (interp::Interpolator{1, 2, 0})(
     wVec::AbstractVector{<:Real},
     fVec::AbstractVector{<:Real}
 )
+    w_buffer = interp.w_buffer
     # Generate normal equations
     b1 = dot(wVec, fVec)
     A11 = sum(wVec)
-    wVec .*= dxVec  # w_temp = dx .* w
-    A12 = sum(wVec)
-    b2 = dot(wVec, fVec)
-    wVec .*= dxVec  # w_temp = dx.^2 .* w
-    A22 = sum(wVec)
+    w_buffer .= wVec .* dxVec  # w_temp = dx .* w
+    A12 = sum(w_buffer)
+    b2 = dot(w_buffer, fVec)
+    w_buffer .*= dxVec  # w_temp = dx.^2 .* w
+    A22 = sum(w_buffer)
     A13 = A22 / 2
-    b3 = dot(wVec, fVec) / 2
-    wVec .*= dxVec  # w_temp = dx.^3 .* w
-    A23 = sum(wVec) / 2
-    A33 = dot(wVec, dxVec) / 4
+    b3 = dot(w_buffer, fVec) / 2
+    w_buffer .*= dxVec  # w_temp = dx.^3 .* w
+    A23 = sum(w_buffer) / 2
+    A33 = dot(w_buffer, dxVec) / 4
 
     # Hardcoded solve of 3x3 LU method
     L21 = A12 / A11
@@ -209,9 +247,10 @@ function (interp::Interpolator{1, 1, 1})(
     wVec::AbstractVector{<:Real},
     dfVec::AbstractVector{<:Real}
 )
-    wVec .*= dxVec  # w_temp = dx .* w
-    b1 = dot(dfVec, wVec)
-    A11 = dot(wVec, dxVec)
+    w_buffer = interp.w_buffer
+    w_buffer .= wVec .* dxVec 
+    b1 = dot(dfVec, w_buffer)
+    A11 = dot(w_buffer, dxVec)
     
     if abs(A11) < 1e-14
         return 0.0
@@ -258,14 +297,15 @@ function (interp::Interpolator{1, 2, 1})(
     dfVec::AbstractVector{<:Real}
 )
     # Generate normal equations
-    wVec .*= dxVec
-    b2 = dot(wVec, dfVec)
-    wVec .*= dxVec
-    A11 = sum(wVec)
-    b3 = dot(wVec, dfVec) / 2
-    wVec .*= dxVec
-    A12 = sum(wVec) / 2
-    A22 = dot(wVec, dxVec) / 4
+    w_buffer = interp.w_buffer
+    w_buffer .= wVec .* dxVec
+    b2 = dot(w_buffer, dfVec)
+    w_buffer .*= dxVec
+    A11 = sum(w_buffer)
+    b3 = dot(w_buffer, dfVec) / 2
+    w_buffer .*= dxVec
+    A12 = sum(w_buffer) / 2
+    A22 = dot(w_buffer, dxVec) / 4
 
     # Explicit solve of 2x2 linear system
     D = (A12^2) - A22 * A11
@@ -320,16 +360,11 @@ function (interp::Interpolator{2, 2, 1})(
     wVec::AbstractVector{<:Real},
     dfVec::AbstractVector{<:Real}
 )
-    num_points = length(dxVec)
-    
-    # Reuse the A buffer for the small 5x5 Normal Matrix (N = AᵀWA)
-    N_matrix = @view interp.A[1:5, 1:5]
-    # Reuse the b buffer for the 5-element Right-Hand Side (rhs = AᵀWb)
-    rhs_vec = @view interp.b[1:5]
-    
-    fill!(N_matrix, 0.0)
-    fill!(rhs_vec, 0.0)
-
+    # --- Directly construct the 5x5 Normal Matrix and RHS (Unchanged) ---
+    N = @view interp.A[1:5, 1:5]
+    b = @view interp.b[1:5]
+    fill!(N, 0.0)
+    fill!(b, 0.0)
     # --- Directly construct the 5x5 Normal Matrix and RHS in a single loop ---
     # The basis vector for each point is [x, y, x²/2, y²/2, xy]
     @inbounds for i in 1:num_points
@@ -361,27 +396,55 @@ function (interp::Interpolator{2, 2, 1})(
         end
     end
 
-    # --- Solve the small 5x5 system using Cholesky decomposition ---
-    # This is extremely fast for a small, symmetric positive-definite matrix.
-    try
-        # 1. Factorize N_matrix in-place. This is faster than det() and
-        #    will throw a PosDefException if the matrix is singular.
-        C = cholesky!(N_matrix)
+    # --- Fully Hardcoded 5x5 Cholesky Solver ---
+    # We use local variables for clarity and to help the compiler.
+    # This block has zero allocations and no function call overhead.
+    
+    # 1. Cholesky Decomposition (N = LLᵀ), calculating L
+    l11 = sqrt(N[1,1])
+    if l11 < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    inv_l11 = 1.0 / l11
+    l21 = N[2,1] * inv_l11
+    l31 = N[3,1] * inv_l11
+    l41 = N[4,1] * inv_l11
+    l51 = N[5,1] * inv_l11
 
-        # 2. Solve the system, writing the result into the pre-allocated `res` buffer.
-        ldiv!(interp.res, C, rhs_vec)
+    l22 = sqrt(N[2,2] - l21*l21)
+    if l22 < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    inv_l22 = 1.0 / l22
+    l32 = (N[3,2] - l31*l21) * inv_l22
+    l42 = (N[4,2] - l41*l21) * inv_l22
+    l52 = (N[5,2] - l51*l21) * inv_l22
 
-        # 3. Return a stack-allocated tuple from the buffer's contents.
-        return (interp.res[1], interp.res[2], interp.res[3], interp.res[4], interp.res[5])
+    l33 = sqrt(N[3,3] - l31*l31 - l32*l32)
+    if l33 < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    inv_l33 = 1.0 / l33
+    l43 = (N[4,3] - l41*l31 - l42*l32) * inv_l33
+    l53 = (N[5,3] - l51*l31 - l52*l32) * inv_l33
 
-    catch e
-        if e isa PosDefException
-            # This handles the singular matrix case, replacing `if abs(det(...))`
-            return (0.0, 0.0, 0.0, 0.0, 0.0)
-        else
-            rethrow() # Re-throw any other unexpected errors
-        end
-    end
+    l44 = sqrt(N[4,4] - l41*l41 - l42*l42 - l43*l43)
+    if l44 < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    inv_l44 = 1.0 / l44
+    l54 = (N[5,4] - l51*l41 - l52*l42 - l53*l43) * inv_l44
+
+    l55 = sqrt(N[5,5] - l51*l51 - l52*l52 - l53*l53 - l54*l54)
+    if l55 < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    
+    # 2. Forward Substitution (solves Ly = b for y)
+    y1 = b[1] * inv_l11
+    y2 = (b[2] - l21*y1) * inv_l22
+    y3 = (b[3] - l31*y1 - l32*y2) * inv_l33
+    y4 = (b[4] - l41*y1 - l42*y2 - l43*y3) * inv_l44
+    y5 = (b[5] - l51*y1 - l52*y2 - l53*y3 - l54*y4) / l55
+
+    # 3. Backward Substitution (solves Lᵀx = y for x)
+    res5 = y5 / l55
+    res4 = (y4 - l54*res5) / l44
+    res3 = (y3 - l43*res4 - l53*res5) / l33
+    res2 = (y2 - l32*res3 - l42*res4 - l52*res5) / l22
+    res1 = (y1 - l21*res2 - l31*res3 - l41*res4 - l51*res5) / l11
+
+    return (res1, res2, res3, res4, res5)
 end
 
 """

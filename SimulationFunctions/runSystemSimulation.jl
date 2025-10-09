@@ -244,7 +244,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             upwind_alg_2d = "nothing"
         end
         MainGrad = if main_grad_name == "MUSCL"
-                    isnothing(lim) ? MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter) : MUSCLlimited(1; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
+                    MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
                     elseif main_grad_name == "WENO"
                         WENO(order, dimension; weightFunction = weight_func)
                 elseif main_grad_name == "Upwind"

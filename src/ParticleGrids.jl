@@ -192,7 +192,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
     positions::Vector{SVector{2, Float64}}; rhos::Vector{Float64}
     curvatures::Matrix{Float64}; is_boundary::BitVector; volumes::Vector{Float64}
     voxels::Vector{Int}; mood_events::BitVector
-    neighbour_indices::Vector{Vector{Int}}
+    neighbour_indices::Vector{Vector{Int}}; neighbor_xdistance::Vector{Vector{Float64}};neighbor_ydistance::Vector{Vector{Float64}}
     xmin::Float64; xmax::Float64; ymin::Float64; ymax::Float64
     Nx_total::Int; Ny_total::Int; N::Int; N_ghost::Int
     dx::Float64; dy::Float64; regular::Bool; bc::Symbol
@@ -265,7 +265,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
 
 
         new{typeof(system)}(positions, zeros(N_total), zeros(N_total, 2), is_boundary, zeros(N_total),
-            zeros(Int, N_total), falses(N_total), [Int[] for _ in 1:N_total],
+            zeros(Int, N_total), falses(N_total), [Int[] for _ in 1:N_total], [Float64[] for _ in 1:N_total], [Float64[] for _ in 1:N_total],
             xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_total, N_ghost,
             dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices,
             Dict{Int, Vector{Int}}(), Vector{Int}(undef,9), system, Ref(0.))
@@ -290,9 +290,24 @@ function getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)
     end
 end
 
+# function getDistance(pg::ParticleGrid2D, i::Integer, j::Integer)
+#     return (pg.neighbor_xdistance[i][j], pg.neighbor_ydistance[i][j])
+# end
 function getDistance(pg::ParticleGrid2D, i::Integer, j::Integer)
     dist_x = pg.positions[j][1] - pg.positions[i][1]
     dist_y = pg.positions[j][2] - pg.positions[i][2]
+    if pg.bc == :periodic
+        domainSizeX = pg.xmax - pg.xmin
+        domainSizeY = pg.ymax - pg.ymin
+        dist_x -= round(dist_x / domainSizeX) * domainSizeX
+        dist_y -= round(dist_y / domainSizeY) * domainSizeY
+    end
+    return (dist_x, dist_y)
+end
+
+function getDistance(pg::ParticleGrid2D, x::SVector, y::SVector)
+    dist_x = y[1] - x[1]
+    dist_y = y[2] - x[2]
     if pg.bc == :periodic
         domainSizeX = pg.xmax - pg.xmin
         domainSizeY = pg.ymax - pg.ymin
@@ -425,25 +440,38 @@ end
 #         end
 #     end
 # end
-function updateNeighbours!(particleGrid::ParticleGrid2D, inner_radius::Real)
+function updateNeighbours!(pg::ParticleGrid2D, inner_radius::Real)
     # --- 1. Preparation ---
-    system = particleGrid.neighbor_system
+    system = pg.neighbor_system
     #cutoff = system.cutoff # The outer radius is stored in the system
-    inner_radius = min(particleGrid.dx,particleGrid.dy)
+    inner_radius = min(pg.dx,pg.dy)
     box = system.box
 
     # Clear your custom neighbor lists before filling them
-    for nb_list in particleGrid.neighbour_indices; empty!(nb_list); end
+    for nb_list in pg.neighbour_indices; empty!(nb_list); end
+    #for nd_list in pg.neighbor_distance; empty!(nd_list); end
 
-    update!(system, particleGrid.positions)
+    update!(system, pg.positions)
 
     map_pairwise!(
-        (_,_,i, j, d2, null) -> begin
+        (xi,xj,i, j, d2, null) -> begin
             # This inner function is called for each pair found.
             # `d2` is the squared distance.
             if inner_radius^2 <= d2 # The outer radius is already handled by the search
-                push!(particleGrid.neighbour_indices[i], j)
-                push!(particleGrid.neighbour_indices[j], i)
+                push!(pg.neighbour_indices[i], j)
+                push!(pg.neighbour_indices[j], i)
+                # dist_x = xj[1] - xi[1]
+                # dist_y = xj[2] - xi[2]
+                # if pg.bc == :periodic
+                #     domainSizeX = pg.xmax - pg.xmin
+                #     domainSizeY = pg.ymax - pg.ymin
+                #     dist_x -= round(dist_x / domainSizeX) * domainSizeX
+                #     dist_y -= round(dist_y / domainSizeY) * domainSizeY
+                # end
+                # push!(pg.neighbor_xdistance[i], dist_x)
+                # push!(pg.neighbor_xdistance[j], -dist_x)
+                # push!(pg.neighbor_ydistance[i], dist_y)
+                # push!(pg.neighbor_ydistance[j], -dist_y)
             end
             null
         end,
@@ -482,6 +510,7 @@ function updateNeighbours!(particleGrid::ParticleGrid2D)#, inner_radius::Real)
         box,
         cl
     )
+    
     return nothing
 end
 

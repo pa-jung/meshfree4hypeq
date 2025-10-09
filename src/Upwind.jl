@@ -140,22 +140,24 @@ end
 
 # --- REFACTORED 2D Upwind Functor (Classic Algorithm) ---
 function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
-    particleGrid::ParticleGrid2D,
-    particleIndex::Integer,
+    particleGrid::ParticleGrid2D{S},
+    particleIndex::Int,
     fVec::AbstractVector{<:Real},
     eq::LinearAdvection{2},
     settings::SimSetting;
     setCurvature::Bool=true
-)::Real where {WS <: UpwindWorkspace, I <: Interpolator}
+)::Real where {S,WS <: UpwindWorkspace, I <: Interpolator}
     
     vel = velocity(eq, 0.0)
     ws = upwind.workspace
     interp = upwind.interpolator
+    pos = particleGrid.positions
 
     count = 0
     neighbours = particleGrid.neighbour_indices[particleIndex]
     for nb in neighbours
-        distance_vector = getDistance(particleGrid, particleIndex, nb)
+        #distance_vector = getDistance(particleGrid, particleIndex, nb)
+        distance_vector = getDistance(particleGrid, pos[particleIndex], pos[nb])
         if dot(distance_vector, vel) < 0
             count += 1
             ws.nb_buffer[count] = nb # Store the upwind neighbour index
@@ -177,7 +179,8 @@ function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
     wVec = @view ws.wVec[1:num_upwind]
 
     for (i, nbIndex) in enumerate(upwind_indices)
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
+        #deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
+        deltaX, deltaY = getDistance(particleGrid, pos[particleIndex], pos[nbIndex])
         dxVec[i] = deltaX / settings.interpRange
         dyVec[i] = deltaY / settings.interpRange
         dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
@@ -196,7 +199,7 @@ function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
         end
     end
     
-    return vel[1] * res1 / settings.interpRange, vel[2] * res2 / settings.interpRange
+    return (vel[1] * res1  + vel[2] * res2) / settings.interpRange
 end
 
 function (upwind::UpwindGradient{2,WS ,I ,TiwariAlgorithm})(
