@@ -128,7 +128,7 @@ function mainTimeIntegrator!(
     settings::SimSetting
 ) where {D}
     # --- Initialization ---
-    updateNeighbours!(particleGrid, settings.interpRange)
+    updateNeighbors!(particleGrid, settings.interpRange)
     initTimeStepper(timeStepper, particleGrid, settings)
     
     # Initialize storage with the correct types for a scalar simulation
@@ -175,7 +175,7 @@ function mainTimeIntegrator!(
 ) where {N,D}
     # --- Initialization ---
     for pg in system_pgs
-        updateNeighbours!(pg, settings.interpRange)
+        updateNeighbors!(pg, settings.interpRange)
     end
     initTimeStepper(system_timestepper, system_pgs, settings)
 
