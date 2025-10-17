@@ -15,6 +15,7 @@ using CellListMap
 using StaticArrays
 using ..SimSettings
 using ..HyperbolicPDEs
+using ..MLSWeightFunctions
 import Meshfree4ScalarEq
 
 # --- Export new types and functions ---
@@ -135,6 +136,8 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
     num_neighbors::Vector{Int}
     neighbor_xdistance::Vector{Float64}
     neighbor_ydistance::Vector{Float64}
+    neighbor_df::Vector{Float64}      # NEW: For pre-calculated differences
+    neighbor_weights::Vector{Float64} # NEW: For pre-calculated weights
     xmin::Float64
     xmax::Float64
     ymin::Float64
@@ -148,10 +151,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
     regular::Bool
     bc::Symbol
     interior_indices::Vector{Int}
-    voxel_map::Dict{Int, Vector{Int}}
-    voxel_buffer::Vector{Int}
     neighbor_system::S;
-    max_volume::Ref{Float64}
 
     function ParticleGrid2D(
         xmin::Real, xmax::Real, ymin::Real, ymax::Real, 
@@ -216,10 +216,9 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
         # 3. Create the stateful object
 
         new{typeof(system)}(positions, zeros(N_total), zeros(N_total, 2), is_boundary, zeros(N_total),
-        zeros(Int, N_total), falses(N_total), Int[], zeros(Int,N_total+1), zeros(Int,N_total), Float64[], Float64[],
+        zeros(Int, N_total), falses(N_total), Int[], zeros(Int,N_total+1), zeros(Int,N_total), Float64[], Float64[], Float64[], Float64[],
         xmin, xmax, ymin, ymax, Nx_total, Ny_total, N_total, N_ghost,
-        dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices,
-        Dict{Int, Vector{Int}}(), Vector{Int}(undef,9), system, Ref(0.))
+        dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, interior_indices, system)
 
     end
 end
@@ -277,52 +276,60 @@ getEuclideanDistance(pg::ParticleGrid2D, i, j) = norm(getDistance(pg, i, j))
 _grid_to_linear_index(hBox, vBox, nbBoxesX) = hBox + nbBoxesX * vBox
 _linear_index_to_grid(linearIndex, nbBoxesX) = (mod(linearIndex, nbBoxesX), div(linearIndex, nbBoxesX))
 
-function updateNeighbors!(pg::ParticleGrid2D, nul)
+"""
+    updateNeighbors!(pg, weightFunc, interpAlpha, interpRange)
+
+Builds the flattened neighbor lists for the particle grid. This function uses a
+two-pass algorithm to avoid allocations in the hot loop.
+
+In the second pass, it computes and stores:
+- Neighbor indices
+- x and y distances
+- The solution difference `f[neighbor] - f[particle]`
+- The MLS weight for the interaction
+"""
+function updateNeighbors!(pg::ParticleGrid2D, weightFunc::MLSWeightFunction)
 
     system = pg.neighbor_system
+    fVec = pg.rhos # Get a handle to the solution vector
+    
+    # --- PASS 1: COUNT NEIGHBORS (unchanged) ---
     pg.num_neighbors .= 0
-    # --- PASS 1: COUNT NEIGHBORS ---    
-    # Run map_pairwise! just to populate the counts.
-    # The lambda function is very lightweight!
     map_pairwise!(
         (xi, xj, i, j, d2, null) -> begin
             pg.num_neighbors[i] += 1
             pg.num_neighbors[j] += 1
             null
         end,
-        0, # Pass the counts array as the output
-        system.box,
-        system.cl
+        0, system.box, system.cl
     )
 
     # --- PREPARE FOR PASS 2 ---
-    
-    # 1. Calculate the total number of interactions.
     total_neighbors = sum(pg.num_neighbors)
     
-    # 2. Resize the final flat arrays ONCE.
+    # Resize all flat arrays, including the new ones
     resize!(pg.neighbor_indices, total_neighbors)
     resize!(pg.neighbor_xdistance, total_neighbors)
     resize!(pg.neighbor_ydistance, total_neighbors)
+    resize!(pg.neighbor_df, total_neighbors)
+    resize!(pg.neighbor_weights, total_neighbors)
     
-    # 3. Build the pointer array from the counts.
-    # This uses a cumulative sum to find the starting index for each particle.
+    # Build the pointer array (unchanged)
     pg.neighbor_pointers[1] = 1
     for i in 1:pg.N
         pg.neighbor_pointers[i+1] = pg.neighbor_pointers[i] + pg.num_neighbors[i]
     end
 
-    # 4. Create a temporary array to track the current fill position for each particle.
-    # This is the key to handling the unordered nature of map_pairwise!
-    #current_offsets = copy(pg.neighbor_pointers)
+    # Reset num_neighbors to use as a fill counter
     pg.num_neighbors .= 0
-
-    # --- PASS 2: FILL THE DATA ---
     
-    # Run map_pairwise! again. This time, we fill the data.
+    # Pre-calculate for the weight function to avoid division in the loop
+    inv_norm_sq = 1.0 / (interpRange^2)
+
+    # --- PASS 2: FILL ALL DATA ---
     map_pairwise!(
         (xi, xj, i, j, d2, null) -> begin
-            # Calculate distances (same as before)
+            # --- 1. Calculate Distances ---
             dist_x = xj[1] - xi[1]
             dist_y = xj[2] - xi[2]
             if pg.bc == :periodic
@@ -332,28 +339,66 @@ function updateNeighbors!(pg::ParticleGrid2D, nul)
                 dist_y -= round(dist_y / domainSizeY) * domainSizeY
             end
 
-            # --- Fill data for pair (i, j) ---
-            # Get the write position for particle i
+            # --- 2. Calculate Weight and Δf (scalar operations) ---
+            # Replicate the scalar logic of the weight function using the squared distance `d2`
+            weight = weightFunc(d2)
+            delta_f_ij = fVec[j] - fVec[i]
+
+            # --- 3. Fill data for pair (i, j) ---
             write_idx_i = pg.neighbor_pointers[i] + pg.num_neighbors[i]
             pg.neighbor_indices[write_idx_i] = j
             pg.neighbor_xdistance[write_idx_i] = dist_x
             pg.neighbor_ydistance[write_idx_i] = dist_y
-            pg.num_neighbors[i] += 1 # Increment for the next neighbor of i
+            pg.neighbor_weights[write_idx_i] = weight
+            pg.neighbor_df[write_idx_i] = delta_f_ij
+            pg.num_neighbors[i] += 1
 
-            # --- Fill data for pair (j, i) ---
-            # Get the write position for particle j
+            # --- 4. Fill data for pair (j, i) ---
             write_idx_j = pg.neighbor_pointers[j] + pg.num_neighbors[j]
             pg.neighbor_indices[write_idx_j] = i
             pg.neighbor_xdistance[write_idx_j] = -dist_x
             pg.neighbor_ydistance[write_idx_j] = -dist_y
-            pg.num_neighbors[j] += 1 # Increment for the next neighbor of j
+            pg.neighbor_weights[write_idx_j] = weight # Weight is symmetric
+            pg.neighbor_df[write_idx_j] = -delta_f_ij   # Δf is anti-symmetric
+            pg.num_neighbors[j] += 1
             
-            null # Return the output object
+            null
         end,
-        0, # Pass the whole grid struct (or a tuple of the arrays)
-        system.box,
-        system.cl
+        0, system.box, system.cl
     )
+    return nothing
+end
+
+"""
+    set_df!(pg::ParticleGrid2D)
+
+Pre-calculates the difference `f[neighbor] - f[particle]` for every neighbor
+interaction and stores it in the `pg.neighbor_df` flat array. This moves
+slow, scattered memory reads out of hot loops.
+"""
+function set_df!(pg::ParticleGrid2D)
+    fVec = pg.rhos
+    # Loop over each particle in the grid
+    for i in 1:pg.N
+        num_nb = pg.num_neighbors[i]
+        if num_nb == 0; continue; end
+
+        # Get the starting index and value for the current particle
+        start_idx = pg.neighbor_pointers[i]
+        f_i = fVec[i]
+
+        # Loop through this particle's neighbors
+        @inbounds for k in 1:num_nb
+            global_idx = start_idx + k - 1
+            nb_idx = pg.neighbor_indices[global_idx]
+            
+            # Perform the scattered read here, ONCE.
+            f_nb = fVec[nb_idx]
+            
+            # Store the result in the contiguous flat array.
+            pg.neighbor_df[global_idx] = f_nb - f_i
+        end
+    end
     return nothing
 end
 

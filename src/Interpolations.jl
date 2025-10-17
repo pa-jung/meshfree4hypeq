@@ -7,7 +7,7 @@ using ..Meshfree4ScalarEq.SimSettings
 using ..Meshfree4ScalarEq.HyperbolicPDEs
 using ..Meshfree4ScalarEq.FluxFunctions
 
-export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, MLSWeightFunction, inverseWeightFunction, exponentialWeightFunction, getStencil, LaxFriedrichsGradient, MUSCLlimited,
+export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, getStencil, LaxFriedrichsGradient, MUSCLlimited,
        AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad, Interpolator
 
 """
@@ -39,84 +39,6 @@ function sortFlux(flux_ij::Float64, flux_ji::Float64, deltaX::Float64, deltaY::F
         return (flux_ji, flux_ij, flux_ji, flux_ij)
     end
 end
-
-# Weightfunction logic
-abstract type MLSWeightFunction end
-struct exponentialWeightFunction <: MLSWeightFunction end
-struct inverseWeightFunction <: MLSWeightFunction end
-
-# --- In-place Exponential Weight Functions ---
-
-"""
-A fast, 4th-order polynomial approximation of `exp(x)` for `x <= 0`.
-This is much faster than `Base.exp()` but less precise.
-"""
-@inline function fast_exp(x::Float64)
-    # 4th order Taylor series for e^x evaluated with Horner's method:
-    # 1 + x + x^2/2 + x^3/6 + x^4/24  = 1 + x*(1 + x*(0.5 + x*(1/6 + x*(1/24))))
-    return 1.0 + x * (1.0 + x * (0.5 + x * (1. / 6. + x / 24.)))
-end
-"""
-A fast and stable approximation of `exp(x)` for `x <= 0` using a
-Padé approximant. It is guaranteed to be positive and decay to zero.
-"""
-@inline function fast_exp_stable(x::Float64)
-    # This is the (1,1) Padé approximant: (1 + x/2) / (1 - x/2).
-    # It is much more stable than a Taylor series for large negative x.
-    return (1.0 + 0.5*x) / (1.0 - 0.5*x)
-end
-"""
-A fast, high-accuracy, and stable approximation of `exp(x)` for `x <= 0`.
-It uses a 4th-order Taylor polynomial in the denominator of `1 / exp(-x)`,
-which preserves positivity and monotonic decay.
-"""
-@inline function fast_exp_accurate(x::Float64)
-    # Let y = -x. Since x <= 0, y >= 0.
-    y = -x
-    
-    # Calculate the denominator using a 4th-order Taylor series for exp(y)
-    # evaluated with Horner's method for efficiency.
-    denominator = 1.0 + y * (1.0 + y * (0.5 + y * (0.16666666666666666 + y * 0.041666666666666664)))
-    
-    return 1.0 / denominator
-end
-"""
-1D in-place exponential weight function.
-"""
-@inline function (w::exponentialWeightFunction)(wVec::AbstractVector, dxVec; param::Real, normalisation::Real)
-    # The ".=" operator performs the fused broadcast and stores the result in wVec
-    wVec .= fast_exp_accurate.(-param .* ((dxVec ./ normalisation).^2))
-    return nothing
-end
-
-"""
-2D in-place exponential weight function.
-"""
-@inline function (w::exponentialWeightFunction)(wVec::AbstractVector, dxVec, dyVec; param::Real, normalisation::Real)
-    wVec .= fast_exp_accurate.(-param .* ((dxVec.^2 .+ dyVec.^2) ./ (normalisation^2)))
-    return nothing
-end
-
-
-# --- In-place Inverse Weight Functions ---
-
-"""
-1D in-place inverse weight function.
-"""
-@inline function (w::inverseWeightFunction)(wVec::AbstractVector, dxVec; param::Real, normalisation::Real)
-    # Full dot syntax ensures this is a single, non-allocating operation
-    wVec .= 1 ./ (dxVec.^2)
-    return nothing
-end
-
-"""
-2D in-place inverse weight function.
-"""
-@inline function (w::inverseWeightFunction)(wVec::AbstractVector, dxVec, dyVec; param::Real, normalisation::Real)
-    wVec .= 1 ./ (dxVec.^2 .+ dyVec.^2)
-    return nothing
-end
-
 using LinearAlgebra # For dot, pinv
 
 mutable struct Interpolator{D, IO, DO}

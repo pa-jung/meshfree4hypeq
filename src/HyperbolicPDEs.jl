@@ -38,7 +38,7 @@ LinearAdvection(vel::Tuple{<:Real, <:Real}) = LinearAdvection{2}(Float64.(vel))
 @inline velocity(eq::LinearAdvection{2}, u::Float64) = eq.vel
 
 # Use broadcasting (`.*`) to create one `flux` method for any dimension D
-@inline flux(eq::LinearAdvection{D}, u::Float64) where {D} = eq.vel .* u
+@inline flux(eq::LinearAdvection{2}, u::Float64) = (eq.vel[1] * u, eq.vel[2] * u)
 @inline flux(eq::LinearAdvection{1}, u::Float64) = eq.vel[1] * u
 
 
