@@ -242,7 +242,7 @@ end
 """
 Ensures the flat coefficient arrays can hold data for every neighbor interaction.
 """
-function ensure_coefficients_capacity!(ws::MUSCLWorkspace2D, grid::ParticleGrid2D)
+function ensure_coefficients_capacity!(ws::MUSCLWorkspace2D, grid::ParticleGrid2D{S}) where S
     required_len = length(grid.neighbor_indices)
     if length(ws.alfaijs) < required_len
         # Resize all flat coefficient arrays at once
@@ -275,7 +275,6 @@ struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, WF <: MLSWeightFuncti
     weightFunction::WF
     numericalFlux::NFF
     workspace::WS
-    
 end
 function MUSCL(
     order::Int, 
@@ -402,7 +401,7 @@ end
 # end
 
 # 2D geometric limiter (in-place)
-function limit_slopes!(strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter}, ws::MUSCLWorkspace2D, grid::ParticleGrid2D, fVec)
+function limit_slopes!(strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter}, ws::MUSCLWorkspace2D, grid::ParticleGrid2D{S}, fVec) where S
     for i in 1:grid.N
         ui = fVec[i]
         num_nb = grid.num_neighbors[i]
@@ -497,73 +496,39 @@ end
 #     limit_slopes!(limiter, ws, grid, fVec)
 # end
 
-function calculate_slopes!(::MUSCLORDER1, limiter::AbstractSlopeLimiter, ws::MUSCLWorkspace2D, grid::ParticleGrid2D)
-    fVec = grid.rhos
+function calculate_slopes!(::MUSCLORDER1, limiter::AbstractSlopeLimiter, ws::MUSCLWorkspace2D, grid::ParticleGrid2D{S}) where S
     for i in 1:grid.N
         num_nb = grid.num_neighbors[i]
+        if num_nb == 0; ws.slopes_x[i] = 0.0; ws.slopes_y[i] = 0.0; continue; end
+
+        neighbor_slice = grid.neighbor_pointers[i]:(grid.neighbor_pointers[i] + num_nb - 1)
         
-        # Initialize accumulators
-        slope_x = 0.0
-        slope_y = 0.0
-
-        if num_nb > 0
-            # Get the starting index for this particle's data
-            start_idx = grid.neighbor_pointers[i]
-            f_i = fVec[i]
-
-            @inbounds for k in 1:num_nb
-                # Direct indexing into the flat arrays
-                global_idx = start_idx + k - 1
-                nb_idx = grid.neighbor_indices[global_idx]
-                
-                delta_f_k = fVec[nb_idx] - f_i
-                
-                slope_x += ws.alfaijs[global_idx] * delta_f_k
-                slope_y += ws.betaijs[global_idx] * delta_f_k
-            end
-        end
-
-        ws.slopes_x[i] = slope_x
-        ws.slopes_y[i] = slope_y
+        # This is now a dot product of two pre-calculated, contiguous flat arrays.
+        ws.slopes_x[i] = dot((@view ws.alfaijs[neighbor_slice]), (@view grid.neighbor_df[neighbor_slice]))
+        ws.slopes_y[i] = dot((@view ws.betaijs[neighbor_slice]), (@view grid.neighbor_df[neighbor_slice]))
     end
-    limit_slopes!(limiter, ws, grid, fVec)
+    limit_slopes!(limiter, ws, grid, grid.rhos)
 end
 
-# --- Version with explicit loops for Order 2 ---
-function calculate_slopes!(::MUSCLORDER2, limiter::AbstractSlopeLimiter, ws::MUSCLWorkspace2D, grid::ParticleGrid2D)
-    fVec = grid.rhos
+function calculate_slopes!(::MUSCLORDER2, limiter::AbstractSlopeLimiter, ws::MUSCLWorkspace2D, grid::ParticleGrid2D{S}) where S
+    # The pre-calculation of df has already been done in initTimeStep
     for i in 1:grid.N
         num_nb = grid.num_neighbors[i]
-
-        # Initialize all five derivative accumulators
-        slope_x = 0.0; slope_y = 0.0
-        curve_xx = 0.0; curve_yy = 0.0; curve_xy = 0.0
-
-        if num_nb > 0
-            start_idx = grid.neighbor_pointers[i]
-            f_i = fVec[i]
-
-            @inbounds for k in 1:num_nb
-                global_idx = start_idx + k - 1
-                nb_idx = grid.neighbor_indices[global_idx]
-
-                # Calculate the difference once per neighbor
-                delta_f_k = fVec[nb_idx] - f_i
-                
-                # Accumulate all five derivatives
-                slope_x  += ws.alfaijs[global_idx]      * delta_f_k
-                slope_y  += ws.betaijs[global_idx]      * delta_f_k
-                curve_xx += ws.alfaij_bars[global_idx]  * delta_f_k
-                curve_yy += ws.betaij_bars[global_idx]  * delta_f_k
-                curve_xy += ws.gammaijs[global_idx]     * delta_f_k
-            end
+        if num_nb == 0
+            ws.slopes_x[i] = 0.0; ws.slopes_y[i] = 0.0
+            ws.curves_xx[i] = 0.0; ws.curves_yy[i] = 0.0; ws.curves_xy[i] = 0.0
+            continue
         end
 
-        ws.slopes_x[i] = slope_x
-        ws.slopes_y[i] = slope_y
-        ws.curves_xx[i] = curve_xx
-        ws.curves_yy[i] = curve_yy
-        ws.curves_xy[i] = curve_xy
+        neighbor_slice = grid.neighbor_pointers[i]:(grid.neighbor_pointers[i] + num_nb - 1)
+        df_view = @view grid.neighbor_df[neighbor_slice] # Get a view to the differences
+
+        # Calculate all derivatives via dot products with the same df_view
+        ws.slopes_x[i]  = dot((@view ws.alfaijs[neighbor_slice]),      df_view)
+        ws.slopes_y[i]  = dot((@view ws.betaijs[neighbor_slice]),      df_view)
+        ws.curves_xx[i] = dot((@view ws.alfaij_bars[neighbor_slice]),  df_view)
+        ws.curves_yy[i] = dot((@view ws.betaij_bars[neighbor_slice]),  df_view)
+        ws.curves_xy[i] = dot((@view ws.gammaijs[neighbor_slice]),     df_view)
     end
 end
 
@@ -753,42 +718,30 @@ end
 
 # --- 2. Refactored `initTimeStep` for 2D MUSCL ---
 
-function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D, interpAlpha::Real, interpRange::Real)
+function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D{S}) where S
     ws = muscl.workspace
     N = particleGrid.N
     
-    # Ensure all workspace arrays are sized correctly before the main loop
+    # Ensure all workspace arrays are correctly sized
     ensure_particle_capacity!(ws, N)
     ensure_coefficients_capacity!(ws, particleGrid)
 
+    # --- 1. Perform all expensive pre-calculations upfront ---
+    set_df!(particleGrid) 
+
+    # --- 2. Loop over particles to compute coefficients ---
     for p_idx in 1:N
         num_neighbors = particleGrid.num_neighbors[p_idx]
         if num_neighbors == 0; continue; end
 
-        # Get the slice for this particle's data in the flat arrays
-        neighbor_slice = particleGrid.neighbor_pointers[p_idx]:(particleGrid.neighbor_pointers[p_idx] + num_neighbors - 1)
-
-        # Ensure temporary buffers are large enough
-        ensure_capacity!(ws, num_neighbors)
-
-        # Create views into temporary buffers
-        #A     = @view ws.A_buffer[1:num_neighbors, :]
-        
-        # Populate temp buffers directly from grid's flat arrays
         start_idx = particleGrid.neighbor_pointers[p_idx]
-        @inbounds for k in 1:num_neighbors
-            global_idx = start_idx + k - 1
-            ws.dx_buffer[k] = particleGrid.neighbor_xdistance[global_idx]
-            ws.dy_buffer[k] = particleGrid.neighbor_ydistance[global_idx]
-        end
-        
-        muscl.weightFunction(ws.w_buffer, ws.dx_buffer, ws.dy_buffer, num_neighbors; param=interpAlpha, normalisation=interpRange)
 
-        # Compute coefficients and write them directly into slices of the final flat arrays
+        # Compute coefficients using direct indexing into the global grid buffers
+# ... inside initTimeStep loop ...
+
+        # The call is now identical for MUSCLORDER1 and MUSCLORDER2
         _compute_muscl_coeffs!(
-            muscl.order, ws.dx_buffer, ws.dy_buffer, ws.w_buffer, 0,
-            ws.alfaijs, ws.betaijs, 
-            ws.alfaij_bars, ws.betaij_bars, ws.gammaijs,
+            muscl.order, particleGrid, ws,
             start_idx, num_neighbors
         )
     end
@@ -797,43 +750,45 @@ end
 
 function _compute_muscl_coeffs!(
     ::MUSCLORDER1,
-    dx_buffer::AbstractVector, dy_buffer::AbstractVector, w_buffer::AbstractVector,_, # Full temp buffers
-    alfaijs_full::AbstractVector, betaijs_full::AbstractVector,
-    # (Other coefficient arrays for higher orders)
-    _, _, _,
+    grid::ParticleGrid2D{S},
+    ws::MUSCLWorkspace2D,
     start_idx::Int, num_neighbors::Int
-)
-    global_range = start_idx:(start_idx+num_neighbors-1)
-    # --- 1. Calculate the 2x2 matrix A using direct indexing on the temp buffers ---
+) where S
+    # Get the destination arrays from the workspace
+    alfaijs_full = ws.alfaijs
+    betaijs_full = ws.betaijs
+
+    # --- 1. Calculate A-matrix by looping over the global grid buffers ---
     A11 = 0.0; A22 = 0.0; A12 = 0.0
-    @inbounds for i in 1:num_neighbors
-        w = w_buffer[i]
-        dx = dx_buffer[i]
-        dy = dy_buffer[i]
+    @inbounds for k in 1:num_neighbors
+        global_idx = start_idx + k - 1
+        w  = grid.neighbor_weights[global_idx]
+        dx = grid.neighbor_xdistance[global_idx]
+        dy = grid.neighbor_ydistance[global_idx]
         A11 += w * dx * dx
         A22 += w * dy * dy
         A12 += w * dx * dy
     end
     D = A11 * A22 - A12^2
 
-#    if abs(D) < 1e-14
-        # Fill the correct slice of the final arrays with zeros
-        @inbounds for global_idx in global_range
+    # --- Correctly handle singular matrix case ---
+    if abs(D) < 1e-14
+        @inbounds for k in 0:(num_neighbors-1)
+            global_idx = start_idx + k
             alfaijs_full[global_idx] = 0.0
             betaijs_full[global_idx] = 0.0
         end
-#        return
-#    end
+        return # <-- The return is crucial to prevent division by zero
+    end
 
     # --- 2. Loop with direct indexing for both reads and writes ---
-    @inbounds for (k,global_idx) in enumerate(global_range)
+    @inbounds for k in 1:num_neighbors
+        global_idx = start_idx + k - 1
         
-        # Read from temporary local buffers using the local index 'k'
-        w = w_buffer[k]
-        dx = dx_buffer[k]
-        dy = dy_buffer[k]
+        w  = grid.neighbor_weights[global_idx]
+        dx = grid.neighbor_xdistance[global_idx]
+        dy = grid.neighbor_ydistance[global_idx]
 
-        # Calculate and write directly to the parent array. Zero overhead.
         num_a = w * (A22 * dx - A12 * dy)
         alfaijs_full[global_idx] = num_a / D
 
@@ -842,38 +797,64 @@ function _compute_muscl_coeffs!(
     end
 end
 
-function _compute_muscl_coeffs!(::MUSCLORDER2, dxVec, dyVec, wVec, A, alfaij, betaij, alfaijBar, betaijBar, gammaij)
-    A_view = @view A[:, 1:5]
-    @. A_view[:, 1] = dxVec * wVec
-    @. A_view[:, 2] = dyVec * wVec
-    @. A_view[:, 3] = (dxVec^2) * wVec / 2
-    @. A_view[:, 4] = (dyVec^2) * wVec / 2
-    @. A_view[:, 5] = dxVec * dyVec * wVec
+function _compute_muscl_coeffs!(
+    ::MUSCLORDER2,
+    grid::ParticleGrid2D{S},       # Pass the grid to access global buffers
+    ws::MUSCLWorkspace2D,         # Pass the workspace for the temp A matrix
+    start_idx::Int, num_neighbors::Int
+) where S
+    # --- 1. Populate the temporary A matrix using an explicit loop ---
+    # We create a view here for convenience, as pinv expects a matrix.
+    # The expensive work is done in the allocation-free loop that follows.
+    A_view = @view ws.A_buffer[1:num_neighbors, 1:5]
 
-    # The critical fix you found for numerical stability
-    coeff = pinv(A_view, rtol=sqrt(eps(real(float(oneunit(eltype(A)))))))
+    @inbounds for k in 1:num_neighbors
+        global_idx = start_idx + k - 1
+        
+        # Read directly from the pre-calculated global grid buffers
+        dx = grid.neighbor_xdistance[global_idx]
+        dy = grid.neighbor_ydistance[global_idx]
+        w  = grid.neighbor_weights[global_idx]
+
+        # Populate the temporary matrix row by row
+        A_view[k, 1] = dx * w
+        A_view[k, 2] = dy * w
+        A_view[k, 3] = (dx^2) * w * 0.5
+        A_view[k, 4] = (dy^2) * w * 0.5
+        A_view[k, 5] = dx * dy * w
+    end
+
+    # --- 2. Perform the pseudo-inverse (this is a necessary allocation) ---
+    coeff = pinv(A_view, rtol=sqrt(eps(real(float(oneunit(eltype(A_view)))))))
     
-    @. alfaij = coeff[1, :] * wVec
-    @. betaij = coeff[2, :] * wVec
-    @. alfaijBar = coeff[3, :] * wVec
-    @. betaijBar = coeff[4, :] * wVec
-    @. gammaij = coeff[5, :] * wVec
+    # --- 3. Write final coefficients using an explicit loop (zero allocations) ---
+    @inbounds for k in 1:num_neighbors
+        global_idx = start_idx + k - 1
+        w = grid.neighbor_weights[global_idx]
+
+        # Calculate and write each coefficient directly
+        ws.alfaijs[global_idx]     = coeff[1, k] * w
+        ws.betaijs[global_idx]     = coeff[2, k] * w
+        ws.alfaij_bars[global_idx] = coeff[3, k] * w
+        ws.betaij_bars[global_idx] = coeff[4, k] * w
+        ws.gammaijs[global_idx]    = coeff[5, k] * w
+    end
 end
 
 
 # --- Reconstruction Helpers for fij and fji (2D) ---
 # Order 1 is already good, no changes needed. It uses pre-calculated slopes.
-function reconstruct_interface_states(::MUSCLORDER1, particleGrid::ParticleGrid2D, fVec, ws, p_idx, nb_idx, deltaX, deltaY)
+function reconstruct_interface_states(::MUSCLORDER1, particleGrid::ParticleGrid2D{S}, ws, fi, fj, p_idx, nb_idx, deltaX, deltaY) where S
     # Your NaN checks are good for debugging, can be kept or removed for production
-    fij = fVec[p_idx]  + 0.5 * (deltaX * ws.slopes_x[p_idx]  + deltaY * ws.slopes_y[p_idx])
-    fji = fVec[nb_idx] - 0.5 * (deltaX * ws.slopes_x[nb_idx] + deltaY * ws.slopes_y[nb_idx])
+    fij = fi  + 0.5 * (deltaX * ws.slopes_x[p_idx]  + deltaY * ws.slopes_y[p_idx])
+    fji = fj - 0.5 * (deltaX * ws.slopes_x[nb_idx] + deltaY * ws.slopes_y[nb_idx])
     return fij, fji
 end
 
+
 # --- REFACTORED: Order 2 now just fetches pre-calculated values ---
-function reconstruct_interface_states(::MUSCLORDER2, particleGrid::ParticleGrid2D, fVec, ws, p_idx, nb_idx, deltaX, deltaY)
+function reconstruct_interface_states(::MUSCLORDER2, particleGrid::ParticleGrid2D{S}, ws, f_i, f_j, p_idx, nb_idx, deltaX, deltaY) where S
     # Fetch derivatives for particle i
-    f_i        = fVec[p_idx]
     slope_ix   = ws.slopes_x[p_idx]
     slope_iy   = ws.slopes_y[p_idx]
     curve_xx_i = ws.curves_xx[p_idx]
@@ -881,7 +862,6 @@ function reconstruct_interface_states(::MUSCLORDER2, particleGrid::ParticleGrid2
     curve_xy_i = ws.curves_xy[p_idx]
 
     # Fetch derivatives for neighbor j
-    f_j        = fVec[nb_idx]
     slope_jx   = ws.slopes_x[nb_idx]
     slope_jy   = ws.slopes_y[nb_idx]
     curve_xx_j = ws.curves_xx[nb_idx]
@@ -942,13 +922,13 @@ end
 
 
 function (muscl::MUSCL{2, ORDER})(
-    particleGrid::ParticleGrid2D, 
+    particleGrid::ParticleGrid2D{S}, 
     particleIndex::Integer, 
     fVec::AbstractVector, 
     eq::ScalarHyperbolicPDE, 
     settings::SimSetting;
     setCurvature::Bool=true
-)::Real where {ORDER<:MUSCLORDER}
+)::Real where {ORDER<:MUSCLORDER, S}
     
     div = 0.0
     ws = muscl.workspace
@@ -962,20 +942,20 @@ function (muscl::MUSCL{2, ORDER})(
 
     # Create views into the data for this particle's neighborhood
     neighbor_indices_view = @view particleGrid.neighbor_indices[neighbor_slice]
+    fVec = @view particleGrid.rhos[neighbor_indices_view]
     dx_view = @view particleGrid.neighbor_xdistance[neighbor_slice]
     dy_view = @view particleGrid.neighbor_ydistance[neighbor_slice]
     alfaij_view = @view ws.alfaijs[neighbor_slice]
     betaij_view = @view ws.betaijs[neighbor_slice]
-
-    fx, fy = flux(eq, fVec[particleIndex])
-
+    fi = particleGrid.rhos[particleIndex]
+    fx, fy = flux(eq, fi)
     @inbounds for k in 1:num_nb
         nbIndex = neighbor_indices_view[k]
         deltaX = dx_view[k]
         deltaY = dy_view[k]
-        
+        fj = fVec[k]
         # This call is now extremely fast
-        fij, fji = reconstruct_interface_states(muscl.order, particleGrid, fVec, ws, particleIndex, nbIndex, deltaX, deltaY)
+        fij, fji = reconstruct_interface_states(muscl.order, particleGrid, ws, fi, fj, particleIndex, nbIndex, deltaX, deltaY)
 
         fmx, fpx, fmy, fpy = sortFlux(fij, fji, deltaX, deltaY)
         
@@ -993,7 +973,7 @@ function (muscl::MUSCL{2, ORDER})(
 end
 
 # Refactor the curvature helper to simply copy the pre-computed value
-function _set_curvature!(::MUSCLORDER2, grid::ParticleGrid2D, fVec, ws, p_idx)
+function _set_curvature!(::MUSCLORDER2, grid::ParticleGrid2D{S}, fVec, ws, p_idx) where S
     grid.curvatures[p_idx, 1] = ws.curves_xx[p_idx]
     grid.curvatures[p_idx, 2] = ws.curves_yy[p_idx]
 end
@@ -1004,17 +984,17 @@ function _set_curvature!(::MUSCLORDER1, grid, fVec, ws, p_idx)
     grid.curvatures[p_idx, :] .= 0.0
 end
 
-function _set_curvature!(::MUSCLORDER2, grid::ParticleGrid2D, fVec, ws, p_idx)
-    neighbors = grid.neighbour_indices[p_idx]
-    f_i = fVec[p_idx]
+# function _set_curvature!(::MUSCLORDER2, grid::ParticleGrid2D, fVec, ws, p_idx)
+#     neighbors = grid.neighbour_indices[p_idx]
+#     f_i = fVec[p_idx]
     
-    # Retrieve pre-computed coefficients from the workspace
-    alfaijBar_i = ws.alfaij_bars[p_idx]
-    betaijBar_i = ws.betaij_bars[p_idx]
+#     # Retrieve pre-computed coefficients from the workspace
+#     alfaijBar_i = ws.alfaij_bars[p_idx]
+#     betaijBar_i = ws.betaij_bars[p_idx]
     
-    c_xx = sum(alfaijBar_i[k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors))
-    c_yy = sum(betaijBar_i[k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors))
+#     c_xx = sum(alfaijBar_i[k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors))
+#     c_yy = sum(betaijBar_i[k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors))
     
-    grid.curvatures[p_idx, 1] = c_xx
-    grid.curvatures[p_idx, 2] = c_yy
-end
+#     grid.curvatures[p_idx, 1] = c_xx
+#     grid.curvatures[p_idx, 2] = c_yy
+# end

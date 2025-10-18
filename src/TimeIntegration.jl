@@ -10,6 +10,7 @@ using ..Interpolations
 using ..SourceTerms
 using ..ImplicitSolvers
 using ..MOOD
+using ..MLSWeightFunctions
 
 export mainTimeIntegrator!, mainTimeIntegratorNew!
 
@@ -128,7 +129,7 @@ function mainTimeIntegrator!(
     settings::SimSetting
 ) where {D}
     # --- Initialization ---
-    updateNeighbors!(particleGrid, settings.interpRange)
+    #updateNeighbors!(particleGrid, settings.interpRange)
     initTimeStepper(timeStepper, particleGrid, settings)
     
     # Initialize storage with the correct types for a scalar simulation
@@ -175,7 +176,7 @@ function mainTimeIntegrator!(
 ) where {N,D}
     # --- Initialization ---
     for pg in system_pgs
-        updateNeighbors!(pg, settings.interpRange)
+        #updateNeighbors!(pg, settings.interpRange)
     end
     initTimeStepper(system_timestepper, system_pgs, settings)
 

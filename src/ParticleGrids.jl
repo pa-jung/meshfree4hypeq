@@ -3,7 +3,7 @@ module ParticleGrids
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGrid, plotDensity, 
        animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
        findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, 
-       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem
+       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!
 
 using FileIO, JLD2
 using Plots
@@ -18,11 +18,11 @@ using ..HyperbolicPDEs
 using ..MLSWeightFunctions
 import Meshfree4ScalarEq
 
-# --- Export new types and functions ---
-export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, 
-       getDistance, saveGrid, plotDensity, animateDensity, getTimeStep, 
-       findLocalExtrema!, updateNeighbors!, determineVolumes!, 
-       apply_boundary_conditions!, ParticleGridSystem
+# # --- Export new types and functions ---
+# export ParticleGrid, ParticleGrid1D, ParticleGrid2D, setInitialConditions!, 
+#        getDistance, saveGrid, plotDensity, animateDensity, getTimeStep, 
+#        findLocalExtrema!, updateNeighbors!, determineVolumes!, 
+#        apply_boundary_conditions!, ParticleGridSystem
 
 # --- Core Abstract Type and System Alias ---
 abstract type ParticleGrid{D} end # Now parameterized by dimension
@@ -241,7 +241,7 @@ function getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)
     end
 end
 
-function getDistance(pg::ParticleGrid2D, i::Integer, j::Integer)
+function getDistance(pg::ParticleGrid2D{S}, i::Integer, j::Integer) where S
     return (pg.neighbor_xdistance[i][j], pg.neighbor_ydistance[i][j])
 end
 # function getDistance(pg::ParticleGrid2D, i::Integer, j::Integer)
@@ -256,7 +256,7 @@ end
 #     return (dist_x, dist_y)
 # end
 
-function getDistance(pg::ParticleGrid2D, x::SVector, y::SVector)
+function getDistance(pg::ParticleGrid2D{S}, x::SVector, y::SVector) where S
     dist_x = y[1] - x[1]
     dist_y = y[2] - x[2]
     if pg.bc == :periodic
@@ -269,7 +269,7 @@ function getDistance(pg::ParticleGrid2D, x::SVector, y::SVector)
 end
 
 getEuclideanDistance(pg::ParticleGrid1D, i, j) = abs(getDistance(pg, i, j))
-getEuclideanDistance(pg::ParticleGrid2D, i, j) = norm(getDistance(pg, i, j)) 
+getEuclideanDistance(pg::ParticleGrid2D{S}, i, j) where S = norm(getDistance(pg, i, j)) 
 
 
 # --- Voxel and Neighbor Search Helpers (Internal) ---
@@ -277,23 +277,25 @@ _grid_to_linear_index(hBox, vBox, nbBoxesX) = hBox + nbBoxesX * vBox
 _linear_index_to_grid(linearIndex, nbBoxesX) = (mod(linearIndex, nbBoxesX), div(linearIndex, nbBoxesX))
 
 """
-    updateNeighbors!(pg, weightFunc, interpAlpha, interpRange)
+    updateNeighbors!(pg::ParticleGrid2D, weightFunc::MLSWeightFunction)
 
-Builds the flattened neighbor lists for the particle grid. This function uses a
-two-pass algorithm to avoid allocations in the hot loop.
+Builds and populates all flattened neighbor-list buffers in the particle grid.
+This is the core function for consolidating slow, scattered memory reads into
+a single, upfront, and efficient process.
 
-In the second pass, it computes and stores:
-- Neighbor indices
-- x and y distances
-- The solution difference `f[neighbor] - f[particle]`
-- The MLS weight for the interaction
+It uses a two-pass algorithm to avoid allocations in the hot loop. In the
+second pass, it computes and stores:
+- Neighbor indices (`neighbor_indices`)
+- x and y distances (`neighbor_xdistance`, `neighbor_ydistance`)
+- The raw solution value of each neighbor (`neighbor_rhos`)
+- The MLS weight for the interaction (`neighbor_weights`)
 """
-function updateNeighbors!(pg::ParticleGrid2D, weightFunc::MLSWeightFunction)
-
+function updateNeighbors!(pg::ParticleGrid2D{S}, weightFunc::MLSWeightFunction) where S
     system = pg.neighbor_system
     fVec = pg.rhos # Get a handle to the solution vector
-    
-    # --- PASS 1: COUNT NEIGHBORS (unchanged) ---
+
+    # --- PASS 1: COUNT NEIGHBORS ---
+    # This pass is very fast as it only does additions.
     pg.num_neighbors .= 0
     map_pairwise!(
         (xi, xj, i, j, d2, null) -> begin
@@ -307,29 +309,40 @@ function updateNeighbors!(pg::ParticleGrid2D, weightFunc::MLSWeightFunction)
     # --- PREPARE FOR PASS 2 ---
     total_neighbors = sum(pg.num_neighbors)
     
-    # Resize all flat arrays, including the new ones
+    # Resize all flat arrays ONCE to the exact required size.
     resize!(pg.neighbor_indices, total_neighbors)
     resize!(pg.neighbor_xdistance, total_neighbors)
     resize!(pg.neighbor_ydistance, total_neighbors)
-    resize!(pg.neighbor_df, total_neighbors)
     resize!(pg.neighbor_weights, total_neighbors)
+    resize!(pg.neighbor_df, total_neighbors)
+    # Note: neighbor_df is NOT resized here, as it's calculated later.
     
-    # Build the pointer array (unchanged)
+    # Build the pointer array for fast indexing.
     pg.neighbor_pointers[1] = 1
-    for i in 1:pg.N
+    @inbounds for i in 1:pg.N
         pg.neighbor_pointers[i+1] = pg.neighbor_pointers[i] + pg.num_neighbors[i]
     end
 
-    # Reset num_neighbors to use as a fill counter
+    # Reset num_neighbors to be used as a per-particle offset counter in Pass 2.
     pg.num_neighbors .= 0
     
-    # Pre-calculate for the weight function to avoid division in the loop
-    inv_norm_sq = 1.0 / (interpRange^2)
-
     # --- PASS 2: FILL ALL DATA ---
+    # This pass performs all the necessary calculations and scattered reads.
     map_pairwise!(
         (xi, xj, i, j, d2, null) -> begin
-            # --- 1. Calculate Distances ---
+            # --- 1. Perform scattered reads for solution values ---
+            f_i = fVec[i]
+            offset_i = pg.num_neighbors[i]
+            write_idx_i = pg.neighbor_pointers[i] + offset_i
+            pg.num_neighbors[i] += 1
+
+            f_j = fVec[j]
+            offset_j = pg.num_neighbors[j]
+            write_idx_j = pg.neighbor_pointers[j] + offset_j
+            pg.num_neighbors[j] += 1
+            
+
+            # --- 2. Calculate distances and weight ---
             dist_x = xj[1] - xi[1]
             dist_y = xj[2] - xi[2]
             if pg.bc == :periodic
@@ -338,29 +351,28 @@ function updateNeighbors!(pg::ParticleGrid2D, weightFunc::MLSWeightFunction)
                 dist_x -= round(dist_x / domainSizeX) * domainSizeX
                 dist_y -= round(dist_y / domainSizeY) * domainSizeY
             end
-
-            # --- 2. Calculate Weight and Δf (scalar operations) ---
-            # Replicate the scalar logic of the weight function using the squared distance `d2`
             weight = weightFunc(d2)
-            delta_f_ij = fVec[j] - fVec[i]
 
             # --- 3. Fill data for pair (i, j) ---
-            write_idx_i = pg.neighbor_pointers[i] + pg.num_neighbors[i]
-            pg.neighbor_indices[write_idx_i] = j
+            # This uses the "base + offset" pattern which is ideal for the CPU prefetcher.
+            diff = f_j - f_i
+            
+            pg.neighbor_indices[write_idx_i]   = j
             pg.neighbor_xdistance[write_idx_i] = dist_x
             pg.neighbor_ydistance[write_idx_i] = dist_y
-            pg.neighbor_weights[write_idx_i] = weight
-            pg.neighbor_df[write_idx_i] = delta_f_ij
-            pg.num_neighbors[i] += 1
+            pg.neighbor_df[write_idx_i]        = diff
+            pg.neighbor_weights[write_idx_i]   = weight
+            
 
-            # --- 4. Fill data for pair (j, i) ---
-            write_idx_j = pg.neighbor_pointers[j] + pg.num_neighbors[j]
-            pg.neighbor_indices[write_idx_j] = i
+            # --- 4. Fill data for symmetric pair (j, i) ---
+
+
+            pg.neighbor_indices[write_idx_j]   = i
             pg.neighbor_xdistance[write_idx_j] = -dist_x
             pg.neighbor_ydistance[write_idx_j] = -dist_y
-            pg.neighbor_weights[write_idx_j] = weight # Weight is symmetric
-            pg.neighbor_df[write_idx_j] = -delta_f_ij   # Δf is anti-symmetric
-            pg.num_neighbors[j] += 1
+            pg.neighbor_df[write_idx_j]        = -diff
+            pg.neighbor_weights[write_idx_j]   = weight
+            
             
             null
         end,
@@ -369,6 +381,7 @@ function updateNeighbors!(pg::ParticleGrid2D, weightFunc::MLSWeightFunction)
     return nothing
 end
 
+
 """
     set_df!(pg::ParticleGrid2D)
 
@@ -376,7 +389,7 @@ Pre-calculates the difference `f[neighbor] - f[particle]` for every neighbor
 interaction and stores it in the `pg.neighbor_df` flat array. This moves
 slow, scattered memory reads out of hot loops.
 """
-function set_df!(pg::ParticleGrid2D)
+function set_df!(pg::ParticleGrid2D{S}) where S
     fVec = pg.rhos
     # Loop over each particle in the grid
     for i in 1:pg.N
@@ -402,7 +415,7 @@ function set_df!(pg::ParticleGrid2D)
     return nothing
 end
 
-function updateNeighbors!(particleGrid::ParticleGrid2D)#, inner_radius::Real)
+function updateNeighbors!(particleGrid::ParticleGrid2D{S}) where S #, inner_radius::Real)
     system = particleGrid.neighbor_system
     box = cl.box
     outer_radius = box.cutoff # Get the radius from the box
@@ -543,7 +556,7 @@ end
 """
 Updates the values in the ghost cells based on the grid's `bc` type for a 2D grid.
 """
-function apply_boundary_conditions!(particleGrid::ParticleGrid2D)
+function apply_boundary_conditions!(particleGrid::ParticleGrid2D{S}) where S
     if particleGrid.bc != :outflow; return; end
     Nx = particleGrid.Nx_total
     Ny = particleGrid.Ny_total
@@ -616,67 +629,49 @@ function getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection{1}, inter
     end
     return dtMax
 end
-
-"""
-    getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection{2}, interpAlpha::Real, interpRange::Real)
-
-Return the maximum time step for which Praveen's upwind method is a positive scheme for the 2D linear advection equation.
-"""
-function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection{2}, interpAlpha::Real, interpRange::Real)
+function getTimeStep(particleGrid::ParticleGrid2D{S}, eq::LinearAdvection{2}) where S
     dtMax = Inf
-    updateNeighbors!(particleGrid, interpRange) # Assumes this now populates the flat arrays
+    # Note: It's assumed that `updateNeighbors!` has already been called
+    # and has populated all the neighbor_* buffers, including neighbor_weights.
 
-    vel = velocity(eq, 0.0)
+    vel = eq.vel
 
     for particleIndex in particleGrid.interior_indices
-        # --- 1. Get the slice for this particle's neighbors ---
-        # This is the core change: we get a direct range of indices into the flat arrays.
-        start_idx = particleGrid.neighbor_pointers[particleIndex]
         num_nb = particleGrid.num_neighbors[particleIndex]
+        if num_nb == 0; continue; end
         
-        # Continue if the particle has no neighbors
-        if num_nb == 0
-            continue
-        end
-        
-        neighbor_slice = start_idx:(start_idx + num_nb - 1)
+        start_idx = particleGrid.neighbor_pointers[particleIndex]
 
-        # --- Temporary storage for neighbor-specific values ---
-        # This avoids recomputing values between the two conceptual "passes".
-        # It's a small allocation, but worth it for clarity and avoiding re-computation.
-        weights = Vector{Float64}(undef, num_nb)
-        deltaXs = Vector{Float64}(undef, num_nb)
-        deltaYs = Vector{Float64}(undef, num_nb)
-
-        # --- 2. First pass: Calculate the least-squares matrix A and store weights ---
-        A11 = A12 = A22 = 0.0
-        for (local_idx, global_idx) in enumerate(neighbor_slice)
-            # Directly access pre-calculated distances. This is extremely fast.
+        # --- 1. First Pass: Calculate the least-squares matrix A ---
+        # This loop reads directly from the global grid buffers. No allocations.
+        A11 = 0.0; A12 = 0.0; A22 = 0.0
+        @inbounds for k in 1:num_nb
+            global_idx = start_idx + k - 1
+            
+            # Read pre-calculated values directly from the grid
             dx = particleGrid.neighbor_xdistance[global_idx]
             dy = particleGrid.neighbor_ydistance[global_idx]
-
-            # Store distances and calculate weight
-            deltaXs[local_idx] = dx
-            deltaYs[local_idx] = dy
-            w = exp(-interpAlpha * (dx^2 + dy^2) / (interpRange^2))
-            weights[local_idx] = w
+            w  = particleGrid.neighbor_weights[global_idx]
 
             # Accumulate for the A matrix
-            A11 += w * (dx^2)
+            A11 += w * dx * dx
             A12 += w * dx * dy
-            A22 += w * (dy^2)
+            A22 += w * dy * dy
         end
 
         D = A11 * A22 - (A12^2)
-        if abs(D) < 1e-14; continue; end # Avoid division by zero
+        if abs(D) < 1e-14; continue; end
 
-        # --- 3. Second pass: Use stored values to calculate sumCij ---
+        # --- 2. Second Pass: Calculate sumCij using the A matrix ---
+        # This loop also reads directly from the global grid buffers. No allocations.
         sumCij = 0.0
-        for i in 1:num_nb
-            # Retrieve stored values. No re-computation needed!
-            deltaX = deltaXs[i]
-            deltaY = deltaYs[i]
-            w = weights[i]
+        @inbounds for k in 1:num_nb
+            global_idx = start_idx + k - 1
+
+            # Read pre-calculated values again
+            deltaX = particleGrid.neighbor_xdistance[global_idx]
+            deltaY = particleGrid.neighbor_ydistance[global_idx]
+            w      = particleGrid.neighbor_weights[global_idx]
             
             # Solve 2x2 LS system for coefficients
             coeff_x = (A22 * w * deltaX - A12 * w * deltaY) / D
@@ -685,7 +680,7 @@ function getTimeStep(particleGrid::ParticleGrid2D, eq::LinearAdvection{2}, inter
             # Compute adapted coefficients for positivity
             angle = atan(deltaY, deltaX)
             n_x, n_y = cos(angle), sin(angle)
-            s_x, s_y = -n_y, n_x # Rotated vector
+            s_x, s_y = -n_y, n_x
             
             alfaBar = n_x * coeff_x + n_y * coeff_y
             betaBar = s_x * coeff_x + s_y * coeff_y
@@ -739,10 +734,10 @@ Finds the local min/max and absolute min/max in the neighborhood of a particle
 for a 2D matrix of data `fMatrix` (e.g., curvatures). Optimized for SoA grids.
 """
 function findLocalExtremaAbs!(
-    particleGrid::ParticleGrid2D, 
+    particleGrid::ParticleGrid2D{S}, 
     particleIndex::Integer, 
     fMatrix::AbstractMatrix{Float64}
-)::NTuple{8, Float64}
+)::NTuple{8, Float64} where S
     
     @assert size(fMatrix, 2) == 2 "Input matrix must have 2 columns for 2D extrema."
 

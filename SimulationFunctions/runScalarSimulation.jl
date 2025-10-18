@@ -8,6 +8,7 @@ using Meshfree4ScalarEq.FluxFunctions
 using Meshfree4ScalarEq.SourceTerms 
 using Meshfree4ScalarEq.ImplicitSolvers 
 using Meshfree4ScalarEq.InitialConditions
+using Meshfree4ScalarEq.MLSWeightFunctions
 using Meshfree4ScalarEq.MOOD
 using Random
 using IPlotPDESols
@@ -135,11 +136,14 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         #determineVolumes!(particleGrid)
         setInitialConditions!(particleGrid, IC)
 
+        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction(interp_alpha, interp_range)
+                      elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
+        updateNeighbors!(particleGrid, weight_func)
         # --- 6. Time Step and Settings ---
         if !isnothing(cfl)
             # For non-linear, use a dummy linear equation with max characteristic speed
             eq_for_dt = eq isa LinearAdvection ? eq : (dimension == 1 ? LinearAdvection(1.0) : LinearAdvection((1.,1.))) # Adjust max speed for Burgers if needed
-            dt = cfl * getTimeStep(particleGrid, eq_for_dt, interp_alpha, interp_range)
+            dt = cfl * getTimeStep(particleGrid, eq_for_dt)
         elseif isnothing(dt)
             error("Either 'dt' or 'CFL' must be provided.")
         end
@@ -172,9 +176,6 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                          elseif fallback_flux_name == "Upwind"; UpwindFlux()
                          elseif !isnothing(fallback_flux_name); error("Fallback Flux '$fallback_flux_name' not implemented.")
                          end
-                    
-        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction()
-                      elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
         MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)

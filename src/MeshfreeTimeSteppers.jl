@@ -251,6 +251,13 @@ function RalstonRK2(gradientInterpolator::G1; fallbackInterpolator::G2 = NoFallb
     RalstonRK2(gradientInterpolator, fallbackInterpolator, mood)
 end
 
+function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid, settings::SimSetting)
+    initTimeStep(ralston.gradientInterpolator, particleGrid)
+    updateNeighbors!(particleGrid, ralston.gradientInterpolator.weightFunction)
+    if !(ralston.fallbackInterpolator isa NoFallbackGrad)
+        initTimeStep(ralston.fallbackInterpolator, particleGrid)
+    end
+end
 
 function (ralston::RalstonRK2{G1, G2, M})(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {G1, G2, M}
     N = particleGrid.N
@@ -263,9 +270,9 @@ function (ralston::RalstonRK2{G1, G2, M})(eq::ScalarHyperbolicPDE, particleGrid:
     interior = particleGrid.interior_indices
     apply_boundary_conditions!(particleGrid)
     # First stage
-    initTimeStep(ralston.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+    initTimeStep(ralston.gradientInterpolator, particleGrid)
     if !(ralston.fallbackInterpolator isa NoFallbackGrad)
-        initTimeStep(ralston.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+        initTimeStep(ralston.fallbackInterpolator, particleGrid)
     end
     
     ralston.rhoInit .= particleGrid.rhos # Use the SoA rhos array
@@ -286,7 +293,7 @@ function (ralston::RalstonRK2{G1, G2, M})(eq::ScalarHyperbolicPDE, particleGrid:
     apply_boundary_conditions!(particleGrid)
     ralston.rhos .= particleGrid.rhos
     # Final stage
-    initTimeStep(ralston.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+    initTimeStep(ralston.gradientInterpolator, particleGrid)
     
     for p_idx in interior
         div2 = ralston.gradientInterpolator(particleGrid, p_idx, ralston.rhos, eq, settings)

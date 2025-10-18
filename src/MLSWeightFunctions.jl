@@ -19,7 +19,7 @@ struct exponentialWeightFunction <: MLSWeightFunction
     range::Float64
     inv_range_sq::Float64
     function exponentialWeightFunction(alpha::Float64, range::Float64)
-        inv_range_sq = 1.0 / (w.range^2)
+        inv_range_sq = 1.0 / (range^2)
         new(alpha,range,inv_range_sq)
     end
 end

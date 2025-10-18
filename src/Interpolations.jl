@@ -6,6 +6,7 @@ using ..Meshfree4ScalarEq.ParticleGrids
 using ..Meshfree4ScalarEq.SimSettings
 using ..Meshfree4ScalarEq.HyperbolicPDEs
 using ..Meshfree4ScalarEq.FluxFunctions
+using ..Meshfree4ScalarEq.MLSWeightFunctions
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, getStencil, LaxFriedrichsGradient, MUSCLlimited,
        AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad, Interpolator
@@ -77,12 +78,6 @@ function ensure_capacity!(interp::Interpolator, n::Int)
     return nothing
 end
 
-# Function Interpolators
-"""
-1D Function Interpolation (D=1, IO=0, DO=0)
-- Interpolation Order: 0 (Constant: c₀)
-- Differential Order: 0 (Function value)
-"""
 function (interp::Interpolator{1, 0, 0})(
     wVec::AbstractVector{<:Real},
     fVec::AbstractVector{<:Real}
@@ -96,11 +91,7 @@ function (interp::Interpolator{1, 0, 0})(
     end
     return
 end
-"""
-1D Function Interpolation (D=1, IO=1, DO=0)
-- Interpolation Order: 1 (Linear: c₀ + c₁x)
-- Differential Order: 0 (Function value)
-"""
+
 function (interp::Interpolator{1, 1, 0})(
     dxVec::AbstractVector{<:Real},
     wVec::AbstractVector{<:Real},
@@ -159,11 +150,6 @@ function (interp::Interpolator{1, 2, 0})(
 end
 
 # Gradient Interpolators
-"""
-1D Gradient Interpolation (D=1, IO=1, DO=1)
-- Interpolation Order: 1 (Linear: c₀ + c₁x)
-- Differential Order: 1 (Gradient: c₁)
-"""
 function (interp::Interpolator{1, 1, 1})(
     dxVec::AbstractVector{<:Real},
     wVec::AbstractVector{<:Real},
