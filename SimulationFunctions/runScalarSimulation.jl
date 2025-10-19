@@ -206,7 +206,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             save_relax = false
             # --- 8. Run Simulation ---
-            elapsed_time, xs, us, ts = mainTimeIntegrator!(method, eq, particleGrid, settings)
+            elapsed_time, xs, us, ts = mainTimeIntegrator!(method, eq, particleGrid, settings; snapshots = snapshots)
         else
             relax_eps = run_params["relax_epsilon"]
             save_relax = run_params["save_relax"]

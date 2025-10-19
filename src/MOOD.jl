@@ -47,7 +47,8 @@ end
 # --- REFACTORED Functor for MOODu1 ---
 # This method now works for any grid type thanks to the SoA design.
 function (mood::MOODu1)(
-    particleGrid::ParticleGrid{D}, 
+    particleGrid::ParticleGrid{D},
+    ws,
     particleIndex::Int, 
     rhoVec::AbstractVector{Float64}, 
     newRho::Float64; 
@@ -65,15 +66,7 @@ function (mood::MOODu1)(
         moodEvent = false
     end
 
-    # Log the event to the grid's SoA boolean array
-    if firstStage
-        particleGrid.mood_events[particleIndex] = moodEvent
-        if moodEvent
-            mood.count += 1
-        end
-    else
-        particleGrid.mood_events[particleIndex] = particleGrid.mood_events[particleIndex] || moodEvent
-    end
+    if moodEvent; mood.count += 1 end
     
     return moodEvent
 end
@@ -92,7 +85,7 @@ mutable struct MOODLoubertU2 <: MOODCriterion
     end
 end
 
-function (mood::MOODLoubertU2)(particleGrid::ParticleGrid1D, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+function (mood::MOODLoubertU2)(particleGrid::ParticleGrid1D, ws, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
     # Prep
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
     δ = mood.d
@@ -107,14 +100,7 @@ function (mood::MOODLoubertU2)(particleGrid::ParticleGrid1D, particleIndex::Inte
 
     # If DMP criterion failed, check u2 criterion
     moodEvent = DMPFail ? !u2 : false
-    if firstStage
-        particleGrid.mood_events[particleIndex] = moodEvent
-        if moodEvent
-            mood.count += 1
-        end
-    else
-        particleGrid.mood_events[particleIndex] = particleGrid.mood_events[particleIndex] || moodEvent
-    end
+    if moodEvent; mood.count += 1 end
     return moodEvent
 end
 
@@ -159,14 +145,7 @@ function (mood::MOODu2)(
     
     moodEvent = DMPFail ? !u2_satisfied : false
 
-    if firstStage
-        particleGrid.mood_events[particleIndex] = moodEvent
-        if moodEvent
-            mood.count += 1
-        end
-    else
-        particleGrid.mood_events[particleIndex] = particleGrid.mood_events[particleIndex] || moodEvent
-    end
+    if moodEvent; mood.count += 1 end
     
     return moodEvent
 end
@@ -200,14 +179,7 @@ function (mood::MOODu2)(
     
     moodEvent = DMPFail ? !u2_satisfied : false
 
-    if firstStage
-        particleGrid.mood_events[particleIndex] = moodEvent
-        if moodEvent
-            mood.count += 1
-        end
-    else
-        particleGrid.mood_events[particleIndex] = particleGrid.mood_events[particleIndex] || moodEvent
-    end
+    if moodEvent; mood.count += 1 end
     
     return moodEvent
 end
@@ -225,7 +197,6 @@ struct NoMOOD <: MOODCriterion
 end
 
 function (mood::NoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    particleGrid.mood_events[particleIndex] = false
     return false
 end
 
@@ -242,7 +213,6 @@ struct OnlyMOOD <: MOODCriterion
 end
 
 function (mood::OnlyMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    particleGrid.mood_events[particleIndex] = true
     return true
 end
 
@@ -258,7 +228,6 @@ struct FirstStageNoMOOD <: MOODCriterion
     end
 end
 function (mood::FirstStageNoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    particleGrid.grid[particleIndex].moodEvent = !firstStage
     return !firstStage
 end
 

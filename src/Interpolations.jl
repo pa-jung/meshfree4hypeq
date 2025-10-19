@@ -368,7 +368,7 @@ abstract type GradientInterpolator end
 # Fallback Gradient interpolator for no fallback
 struct NoFallbackGrad <: GradientInterpolator end
 
-function initTimeStep(g::GradientInterpolator, particleGrid::ParticleGrid, interpAlpha::Real, interpRange::Real) end  # Function called at the start of a time step (order RK-stage)
+function initTimeStep(g::GradientInterpolator, particleGrid::ParticleGrid) end  # Function called at the start of a time step (order RK-stage)
 
 # # ------------------------------- Dumbser WENO -------------------------------
 

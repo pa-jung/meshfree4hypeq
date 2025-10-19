@@ -3,22 +3,29 @@ export EulerUpwind, Upwind, RalstonRK2, RK3, RK4, RalstonRK2Limiter, RalstonRK2S
 # A simple example for EulerUpwind
 struct EulerUpwind{G <: GradientInterpolator} <: MeshfreeTimeStepper
     gradientInterpolator::G
+    rho_buffer::Vector{Float64}
+
+    function EulerUpwind(gradientInterpolator::G) where {G <: GradientInterpolator}
+        new{G}(gradientInterpolator, Float64[])
+    end
 end
 
 function (eu::EulerUpwind)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
-    rho_n = copy(particleGrid.rhos) # Store initial state for the step
-    interior = particleGrid.interior_indices
+    N = particleGrid.N
+    if N > length(eu.rho_buffer); resize!(eu.rho_buffer, N) end
+    eu.rho_buffer[1:N] .= particleGrid.rhos # Store initial state for the step
     
-    initTimeStep(eu.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+    initTimeStep(eu.gradientInterpolator, particleGrid)
 
-    for p_idx in interior
-        div = eu.gradientInterpolator(particleGrid, p_idx, rho_n, eq, settings)
-        particleGrid.rhos[p_idx] = rho_n[p_idx] - dt * div
+    for p_idx in 1:N
+        if particleGrid.is_boundary[p_idx]; return; end
+        div = eu.gradientInterpolator(particleGrid, p_idx, eu.rho_buffer, eq, settings)
+        particleGrid.rhos[p_idx] = eu.rho_buffer[p_idx] - dt * div
     end
 end
 
 function initTimeStepper(euler::EulerUpwind, particleGrid::ParticleGrid, settings::SimSetting)
-    initTimeStep(euler.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
+    initTimeStep(euler.gradientInterpolator, particleGrid)
 end
 
 struct RK3{G1 <: GradientInterpolator, G2 <: GradientInterpolator, MOOD <: MOODCriterion} <: MeshfreeTimeStepper
@@ -259,25 +266,26 @@ function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid, settin
     end
 end
 
-function (ralston::RalstonRK2{G1, G2, M})(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real) where {G1, G2, M}
+function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
-    #initMOOD!(ralston.mood,particleGrid.max_volume)
-    # --- Resize buffers only if necessary ---
+    
+    # --- Resize buffers only if necessary, using N ---
     if length(ralston.rhoInit) != N
         resize!.((ralston.rhoInit, ralston.rhos, ralston.div1), N)
     end
 
-    interior = particleGrid.interior_indices
-    apply_boundary_conditions!(particleGrid)
-    # First stage
+    # --- First RK Stage ---
+    # 1. Start with the current, correct state of the grid
+    ralston.rhoInit .= particleGrid.rhos
+    apply_boundary_conditions!(particleGrid, ralston.rhoInit) # Apply BCs to the initial buffer
+
     initTimeStep(ralston.gradientInterpolator, particleGrid)
-    if !(ralston.fallbackInterpolator isa NoFallbackGrad)
-        initTimeStep(ralston.fallbackInterpolator, particleGrid)
-    end
+    if !(ralston.fallbackInterpolator isa NoFallbackGrad); initTimeStep(ralston.fallbackInterpolator, particleGrid) end
     
-    ralston.rhoInit .= particleGrid.rhos # Use the SoA rhos array
-    
-    for p_idx in interior
+    # 3. Calculate divergence for interior particles
+    @inbounds for p_idx in 1:N
+        if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
+
         ralston.div1[p_idx] = ralston.gradientInterpolator(particleGrid, p_idx, ralston.rhoInit, eq, settings)
         
         rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
@@ -286,26 +294,35 @@ function (ralston::RalstonRK2{G1, G2, M})(eq::ScalarHyperbolicPDE, particleGrid:
             ralston.div1[p_idx] = ralston.fallbackInterpolator(particleGrid, p_idx, ralston.rhoInit, eq, settings; setCurvature=false)
             rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
         end
-        ralston.rhos[p_idx] = rho_candidate # Store intermediate result in rhos buffer
+        ralston.rhos[p_idx] = rho_candidate # Store intermediate result in the 'rhos' buffer
     end
-    # Update physical grid with intermediate stage (only for interior)
-    particleGrid.rhos[interior] .= @view ralston.rhos[interior]
-    apply_boundary_conditions!(particleGrid)
-    ralston.rhos .= particleGrid.rhos
-    # Final stage
-    initTimeStep(ralston.gradientInterpolator, particleGrid)
     
-    for p_idx in interior
+    # 4. Apply boundary conditions to the intermediate result stored in the buffer
+    apply_boundary_conditions!(particleGrid, ralston.rhos)
+
+    initTimeStep(ralston.gradientInterpolator, particleGrid)
+    if !(ralston.fallbackInterpolator isa NoFallbackGrad); initTimeStep(ralston.fallbackInterpolator, particleGrid) end
+    
+    # 2. Calculate final divergence for interior particles
+    @inbounds for p_idx in 1:N
+        if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
+        
+        # Pass the intermediate state (ralston.rhos) to the gradient calculation
         div2 = ralston.gradientInterpolator(particleGrid, p_idx, ralston.rhos, eq, settings)
         
         rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
         if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhos, rho_final)
+            initTimeStep(ralston.fallbackInterpolator, particleGrid) # Re-init fallback for the new state
             div2 = ralston.fallbackInterpolator(particleGrid, p_idx, ralston.rhos, eq, settings; setCurvature=false)
             rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
         end
-        particleGrid.rhos[p_idx] = rho_final # Write final result to the grid
+        # Directly write the final result for this particle into the grid
+        particleGrid.rhos[p_idx] = rho_final
     end
+    # Final boundary condition application after the full step is complete
+    apply_boundary_conditions!(particleGrid, particleGrid.rhos)
 end
+
 
 struct RalstonRK2SmoothSwitch{G1, G2, MOOD} <: MeshfreeTimeStepper
     gradientInterpolator::G1

@@ -97,6 +97,8 @@ mutable struct MUSCLWorkspace1D <: MUSCLWorkspace
 
     # Slopes Buffer
     slopes::Vector{Float64}
+    curves_xx::Vector{Float64}
+    curves_yy::Vector{Float64}
 
     # --- Temporary buffers for neighbor-specific calculations ---
     dx_buffer::Vector{Float64}
@@ -109,7 +111,7 @@ mutable struct MUSCLWorkspace1D <: MUSCLWorkspace
         new(
             [Float64[] for _ in 1:N_particles], [Float64[] for _ in 1:N_particles],
             [Float64[] for _ in 1:N_particles], [Float64[] for _ in 1:N_particles],
-            Vector{Float64}(undef,N_particles),
+            Vector{Float64}(undef,N_particles), zeros(N_particles), zeros(N_particles),
             zeros(Float64, initial_capacity), zeros(Float64, initial_capacity),
             zeros(Float64, initial_capacity, 4), initial_capacity
         )
@@ -139,9 +141,9 @@ mutable struct MUSCLWorkspace2D <: MUSCLWorkspace
     A_buffer::Matrix{Float64}
 
     function MUSCLWorkspace2D(
-        initial_particle_cap::Int = 160, 
-        initial_neighbor_cap::Int = 40,
-        initial_flat_cap::Int = 16000 # Capacity for total interactions
+        initial_particle_cap::Int = 100, 
+        initial_neighbor_cap::Int = 20,
+        initial_flat_cap::Int = 1000 # Capacity for total interactions
     )
     new(
             zeros(initial_flat_cap), zeros(initial_flat_cap),
@@ -221,6 +223,8 @@ function ensure_particle_capacity!(ws::MUSCLWorkspace1D, N::Int)
         
         # Resize the simple vector to the new capacity
         resize!(ws.slopes, new_capacity)
+        resize!(ws.curves_xx, new_capacity)
+        resize!(ws.curves_yy, new_capacity)
     end
     return nothing
 end
@@ -718,7 +722,7 @@ end
 
 # --- 2. Refactored `initTimeStep` for 2D MUSCL ---
 
-function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D{S}) where S
+function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D)
     ws = muscl.workspace
     N = particleGrid.N
     
@@ -728,6 +732,7 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D{S}) where S
 
     # --- 1. Perform all expensive pre-calculations upfront ---
     set_df!(particleGrid) 
+    #updateNeighbors!(particleGrid, muscl.weightFunction)
 
     # --- 2. Loop over particles to compute coefficients ---
     for p_idx in 1:N
@@ -757,11 +762,11 @@ function _compute_muscl_coeffs!(
     # Get the destination arrays from the workspace
     alfaijs_full = ws.alfaijs
     betaijs_full = ws.betaijs
+    neighbor_slice = start_idx:(start_idx + num_neighbors - 1)
 
     # --- 1. Calculate A-matrix by looping over the global grid buffers ---
     A11 = 0.0; A22 = 0.0; A12 = 0.0
-    @inbounds for k in 1:num_neighbors
-        global_idx = start_idx + k - 1
+    @inbounds for global_idx in neighbor_slice
         w  = grid.neighbor_weights[global_idx]
         dx = grid.neighbor_xdistance[global_idx]
         dy = grid.neighbor_ydistance[global_idx]
@@ -773,8 +778,7 @@ function _compute_muscl_coeffs!(
 
     # --- Correctly handle singular matrix case ---
     if abs(D) < 1e-14
-        @inbounds for k in 0:(num_neighbors-1)
-            global_idx = start_idx + k
+        @inbounds for global_idx in neighbor_slice
             alfaijs_full[global_idx] = 0.0
             betaijs_full[global_idx] = 0.0
         end
@@ -782,9 +786,7 @@ function _compute_muscl_coeffs!(
     end
 
     # --- 2. Loop with direct indexing for both reads and writes ---
-    @inbounds for k in 1:num_neighbors
-        global_idx = start_idx + k - 1
-        
+    @inbounds for global_idx in neighbor_slice      
         w  = grid.neighbor_weights[global_idx]
         dx = grid.neighbor_xdistance[global_idx]
         dy = grid.neighbor_ydistance[global_idx]
@@ -963,38 +965,7 @@ function (muscl::MUSCL{2, ORDER})(
         div += alfaij_view[k] * (nFlux(fmx, fpx, eq, 1) - fx) + 
                betaij_view[k] * (nFlux(fmy, fpy, eq, 2) - fy)
     end
-
-    if setCurvature
-        # The curvature helper is now just a copy from the workspace
-        _set_curvature!(muscl.order, particleGrid, fVec, ws, particleIndex)
-    end
     
     return 2 * div
 end
 
-# Refactor the curvature helper to simply copy the pre-computed value
-function _set_curvature!(::MUSCLORDER2, grid::ParticleGrid2D{S}, fVec, ws, p_idx) where S
-    grid.curvatures[p_idx, 1] = ws.curves_xx[p_idx]
-    grid.curvatures[p_idx, 2] = ws.curves_yy[p_idx]
-end
-
-
-# --- Curvature Helper for 2D ---
-function _set_curvature!(::MUSCLORDER1, grid, fVec, ws, p_idx)
-    grid.curvatures[p_idx, :] .= 0.0
-end
-
-# function _set_curvature!(::MUSCLORDER2, grid::ParticleGrid2D, fVec, ws, p_idx)
-#     neighbors = grid.neighbour_indices[p_idx]
-#     f_i = fVec[p_idx]
-    
-#     # Retrieve pre-computed coefficients from the workspace
-#     alfaijBar_i = ws.alfaij_bars[p_idx]
-#     betaijBar_i = ws.betaij_bars[p_idx]
-    
-#     c_xx = sum(alfaijBar_i[k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors))
-#     c_yy = sum(betaijBar_i[k] * (fVec[nb_k] - f_i) for (k, nb_k) in enumerate(neighbors))
-    
-#     grid.curvatures[p_idx, 1] = c_xx
-#     grid.curvatures[p_idx, 2] = c_yy
-# end

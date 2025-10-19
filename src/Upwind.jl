@@ -79,7 +79,7 @@ function populate_buffers!(dxVec, dyVec, dfVec, neighbors, xdist, ydist, fVec, v
     # --- STEP 3: Gather Data Using the Filtered Indices ---
     # This loop is much shorter and contains no 'if' statement.
     count = length(passing_indices)
-    @inbounds for i in 1:count
+    for i in 1:count
         # The index into the original neighbor arrays
         original_idx = passing_indices[i]
         
@@ -182,6 +182,9 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
     end
 end
 
+function initTimeStep(pg::ParticleGrid, weightFunc::MLSWeightFunction)
+    updateNeighbors!(pg, weightFunc)
+end
 # ... (keep all other content in Interpolations.jl) ...
 
 #==============================================================================
@@ -250,26 +253,27 @@ function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
     neighbor_slice = start_idx:(start_idx + num_neighbors - 1)
     
     # Create views into the large, persistent particle grid data. No copies here.
-    all_neighbors = @view pg.neighbor_indices[neighbor_slice]
+    #all_neighbors = @view pg.neighbor_indices[neighbor_slice]
     all_dx = @view pg.neighbor_xdistance[neighbor_slice]
     all_dy = @view pg.neighbor_ydistance[neighbor_slice]
+    all_df = @view pg.neighbor_df[neighbor_slice]
+    all_w  = @view pg.neighbor_weights[neighbor_slice]
+
 
     # --- 2. The Filter & Compact Loop (Zero Allocations) ---
     # This loop reads from the grid and writes only the "upwind" data
     # sequentially into the start of the workspace buffers.
     count = 0
-    f_particle = fVec_inp[particleIndex]
     
-    @inbounds for i in 1:num_neighbors
+    for i in 1:num_neighbors
         # Condition check is simple and cheap
         tmp = all_dx[i] * vel[1]
         if tmp + all_dy[i] * vel[2] < 0
             count += 1
             ws.dxVec[count] = all_dx[i]
             ws.dyVec[count] = all_dy[i]
-            
-            nbIndex = all_neighbors[i]
-            ws.dfVec[count] = fVec_inp[nbIndex] - f_particle
+            ws.dfVec[count] = all_df[i]
+            ws.wVec[count]  = all_w[i]
         end
     end
 
@@ -284,8 +288,6 @@ function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
     dyVec_upwind = @view ws.dyVec[1:num_upwind]
     dfVec_upwind = @view ws.dfVec[1:num_upwind]
     wVec_upwind  = @view ws.wVec[1:num_upwind]
-
-    upwind.weightFunction(wVec_upwind, dxVec_upwind, dyVec_upwind; param=settings.interpAlpha, normalisation=1.0)
     
     local res1, res2
     if upwind.order == 1
