@@ -10,7 +10,7 @@ function __init__()
     # It sets the logger for the entire application.
     min_level_to_show = Logging.Info
     global_logger(ConsoleLogger(stderr, min_level_to_show))
-    println("IPlotPDESols logger initialized to show warnings and errors only.")
+    println("IPlotPDESols logger initialized to show ",min_level_to_show,"-Level.")
 end
 # ---------------------------------------------------------
 

@@ -3,6 +3,7 @@ module TimeIntegration
 using LinearAlgebra
 using ProgressMeter
 using StaticArrays
+using Base.Threads
 using ..ParticleGrids
 using ..SimSettings
 using ..HyperbolicPDEs
@@ -28,6 +29,59 @@ abstract type MeshfreeSystemTimeStepper <: MeshfreeTimeStepper end
 
 function (method::TimeStepper)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     error("Each `TimeStepper' must override the ()-operator.")
+end
+
+"""
+    initTSBuffer!(ts, pg, fVec)
+
+Fills the timestepper's flattened neighbor buffers (`neighbor_fs` and `neighbor_dfs`)
+with values derived from the solution vector `fVec`. 
+
+This function is designed to be called *after* a geometric neighbor search 
+(like `updateNeighbors!`) has already populated the particle grid's neighbor structure
+(`pg.neighbor_indices`, `pg.neighbor_pointers`, etc.).
+
+This operation is thread-safe and is parallelized over the particles.
+"""
+function initTSBuffer!(ts, pg::ParticleGrid, fVec::AbstractVector{<:Real})
+    
+    # 1. Ensure buffers on the timestepper are correctly sized. This part is serial.
+    #    The total number of interactions is the start of the "last" particle's block minus 1.
+    total_interactions = pg.neighbor_pointers[end] - 1
+    if length(ts.neighbor_fs) < total_interactions
+        new_cap = total_interactions + total_interactions ÷ 4
+        resize!(ts.neighbor_fs, new_cap)
+        resize!(ts.neighbor_dfs, new_cap)
+    end
+
+    # 2. Parallel loop over each central particle `i`.
+    @threads for i in 1:pg.N
+        # Get the function value for the central particle `i`.
+        f_i = fVec[i]
+        
+        # Get the slice defining the neighbors of `i` in the flattened arrays.
+        num_neighbors = pg.num_neighbors[i]
+        if num_neighbors == 0; continue; end # Skip isolated particles
+        
+        start_idx = pg.neighbor_pointers[i]
+        neighbor_slice = start_idx : (start_idx + num_neighbors - 1)
+
+        # Loop over the neighbors within the slice.
+        for global_idx in neighbor_slice
+            # Get the index `j` of the neighbor particle.
+            j = pg.neighbor_indices[global_idx]
+            
+            # Get the function value for the neighbor particle `j`.
+            f_j = fVec[j]
+            
+            # Calculate the difference and fill the timestepper's buffers.
+            # Each thread writes to a unique `global_idx`, so this is thread-safe.
+            ts.neighbor_dfs[global_idx] = f_j - f_i
+            ts.neighbor_fs[global_idx]  = f_j
+        end
+    end
+    
+    return nothing
 end
 
 # Function called once before time integration loop to pre-calculate all relevant coefficients fot interpolation.

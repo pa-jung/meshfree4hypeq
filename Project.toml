@@ -7,7 +7,6 @@ authors = ["Klaas Willems <klaas.willems@math.rptu.de>"]
 Arpack = "7d9fca2a-8960-54d3-9f78-7d1dccf2cb97"
 CellListMap = "69e1c6dd-3888-40e6-b3c8-31ac5f578864"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-DelaunayTriangulation = "927a84f5-c5f4-47a5-9785-b46e178433df"
 Dierckx = "39dd38d3-220a-591b-8e3c-4c3a8c710a94"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
@@ -34,7 +33,6 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
 CellListMap = "0.9.12"
-DelaunayTriangulation = "1.6.4"
 Dierckx = "0.5.4"
 InteractiveUtils = "1.11.0"
 Interpolations = "0.15.1"

@@ -315,6 +315,11 @@ function limit_slopes!(::NoLimiter, ws::MUSCLWorkspace, grid::ParticleGrid, fVec
     return
 end
 
+# Method for NoLimiter (just copies the slopes)
+function limit_slopes!(::NoLimiter, ws::MUSCLWorkspace, grid::ParticleGrid, fVec, f)
+    return
+end
+
 # Method for classical, ratio-based limiters
 function limit_slopes!(strategy::Union{SuperbeeLimiter, MinmodLimiter}, ws::MUSCLWorkspace1D, grid::ParticleGrid1D, fVec)
     for i in 1:grid.N
@@ -487,7 +492,6 @@ function calculate_slopes!(::MUSCLORDER1, limiter::AbstractSlopeLimiter, ws::MUS
     for i in 1:grid.N
         ws.slopes[i] = sum(ws.alfaijs[i][k] * (fVec[nb_idx] - fVec[i]) for (k, nb_idx) in enumerate(grid.neighbour_indices[i]))
     end
-    limit_slopes!(limiter, ws, grid, fVec)   
 end
 
 # # 2D Slope Calculation
@@ -511,7 +515,6 @@ function calculate_slopes!(::MUSCLORDER1, limiter::AbstractSlopeLimiter, ws::MUS
         ws.slopes_x[i] = dot((@view ws.alfaijs[neighbor_slice]), (@view grid.neighbor_df[neighbor_slice]))
         ws.slopes_y[i] = dot((@view ws.betaijs[neighbor_slice]), (@view grid.neighbor_df[neighbor_slice]))
     end
-    limit_slopes!(limiter, ws, grid, grid.rhos)
 end
 
 function calculate_slopes!(::MUSCLORDER2, limiter::AbstractSlopeLimiter, ws::MUSCLWorkspace2D, grid::ParticleGrid2D{S}) where S
@@ -722,7 +725,7 @@ end
 
 # --- 2. Refactored `initTimeStep` for 2D MUSCL ---
 
-function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D)
+function initGIPos!(muscl::MUSCL, particleGrid::ParticleGrid2D)
     ws = muscl.workspace
     N = particleGrid.N
     
@@ -730,12 +733,8 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D)
     ensure_particle_capacity!(ws, N)
     ensure_coefficients_capacity!(ws, particleGrid)
 
-    # --- 1. Perform all expensive pre-calculations upfront ---
-    set_df!(particleGrid) 
-    #updateNeighbors!(particleGrid, muscl.weightFunction)
-
     # --- 2. Loop over particles to compute coefficients ---
-    for p_idx in 1:N
+    @threads for p_idx in 1:N
         num_neighbors = particleGrid.num_neighbors[p_idx]
         if num_neighbors == 0; continue; end
 
@@ -750,7 +749,93 @@ function initTimeStep(muscl::MUSCL, particleGrid::ParticleGrid2D)
             start_idx, num_neighbors
         )
     end
-    calculate_slopes!(muscl.order, muscl.limiter, ws, particleGrid)
+end
+
+"""
+    calculate_slopes!(...)
+
+Calculates the unlimited slopes for MUSCL reconstruction by performing a dot product
+between pre-calculated geometric coefficients (alfaijs, betaijs) and the value differences (neighbor_dfs).
+This version is parallelized and does not use views.
+"""
+function calculate_slopes!(::MUSCLORDER1, limiter::AbstractSlopeLimiter, ws::MUSCLWorkspace2D, grid::ParticleGrid2D, neighbor_dfs::AbstractVector{<:Real})
+    @threads for i in 1:grid.N
+        num_nb = grid.num_neighbors[i]
+        if num_nb == 0
+            ws.slopes_x[i] = 0.0
+            ws.slopes_y[i] = 0.0
+            continue
+        end
+
+        start_idx = grid.neighbor_pointers[i]
+        
+        # Manual dot product to avoid views
+        slope_x = 0.0
+        slope_y = 0.0
+        for k in 0:(num_nb - 1)
+            global_idx = start_idx + k
+            slope_x += ws.alfaijs[global_idx] * neighbor_dfs[global_idx]
+            slope_y += ws.betaijs[global_idx] * neighbor_dfs[global_idx]
+        end
+        ws.slopes_x[i] = slope_x
+        ws.slopes_y[i] = slope_y
+    end
+end
+
+"""
+    limit_slopes!(...)
+
+Applies a geometric slope limiter (Barth-Jespersen or Venkatakrishnan) to the calculated slopes.
+This version uses the pre-calculated neighbor function values (`neighbor_fs`) and is parallelized.
+"""
+function limit_slopes!(strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter}, ws::MUSCLWorkspace2D, grid::ParticleGrid2D, fVec::AbstractVector{<:Real}, neighbor_fs::AbstractVector{<:Real})
+    @threads for i in 1:grid.N
+        ui = fVec[i]
+        num_nb = grid.num_neighbors[i]
+        sigma_i_unlimited = (ws.slopes_x[i], ws.slopes_y[i])
+
+        if num_nb == 0 || norm(sigma_i_unlimited) < 1e-12
+            ws.slopes_x[i] = 0.0
+            ws.slopes_y[i] = 0.0
+            continue
+        end
+
+        start_idx = grid.neighbor_pointers[i]
+        
+        # Find min/max among neighbors using the pre-calculated buffer
+        u_max = ui
+        u_min = ui
+        for k in 0:(num_nb - 1)
+            f_neighbor = neighbor_fs[start_idx + k]
+            u_max = max(u_max, f_neighbor)
+            u_min = min(u_min, f_neighbor)
+        end
+
+        phi_i = 1.0
+        
+        for k in 0:(num_nb - 1)
+            global_idx = start_idx + k
+            dx_ij = (grid.neighbor_xdistance[global_idx], grid.neighbor_ydistance[global_idx])
+            delta_recon = dot(sigma_i_unlimited, dx_ij)
+            
+            if abs(delta_recon) < 1e-12; continue; end
+            
+            r = delta_recon > 0.0 ? (u_max - ui) / delta_recon : (u_min - ui) / delta_recon
+            phi_j = strategy isa BarthJespersenLimiter ? min(1.0, r) : venkatakrishnan_psi(r)
+            phi_i = min(phi_i, phi_j)
+        end
+
+        phi_i = clamp(phi_i, 0.0, 1.0)
+        ws.slopes_x[i] *= phi_i
+        ws.slopes_y[i] *= phi_i
+        
+        if isnan(ws.slopes_y[i]) || isnan(ws.slopes_x[i]); error("Found NaN while Limiting!"); end
+    end
+end
+
+function initGIRho!(muscl::MUSCL, pg::ParticleGrid2D, rhos::AbstractVector{<:Real}, neighbor_fs::AbstractVector{<:Real}, neighbor_dfs::AbstractVector{<:Real})
+    calculate_slopes!(muscl.order, muscl.limiter, muscl.workspace, pg, neighbor_dfs)
+    limit_slopes!(muscl.limiter, muscl.workspace, pg, rhos, neighbor_fs)
 end
 
 function _compute_muscl_coeffs!(
@@ -926,7 +1011,8 @@ end
 function (muscl::MUSCL{2, ORDER})(
     particleGrid::ParticleGrid2D{S}, 
     particleIndex::Integer, 
-    fVec::AbstractVector, 
+    fVec::AbstractVector,
+    neighbor_fs::AbstractVector, 
     eq::ScalarHyperbolicPDE, 
     settings::SimSetting;
     setCurvature::Bool=true
@@ -942,28 +1028,23 @@ function (muscl::MUSCL{2, ORDER})(
     # Get the slice for this particle's data in all flat arrays
     neighbor_slice = particleGrid.neighbor_pointers[particleIndex]:(particleGrid.neighbor_pointers[particleIndex] + num_nb - 1)
 
-    # Create views into the data for this particle's neighborhood
-    neighbor_indices_view = @view particleGrid.neighbor_indices[neighbor_slice]
-    fVec = @view particleGrid.rhos[neighbor_indices_view]
-    dx_view = @view particleGrid.neighbor_xdistance[neighbor_slice]
-    dy_view = @view particleGrid.neighbor_ydistance[neighbor_slice]
-    alfaij_view = @view ws.alfaijs[neighbor_slice]
-    betaij_view = @view ws.betaijs[neighbor_slice]
-    fi = particleGrid.rhos[particleIndex]
+    fi = fVec[particleIndex]
     fx, fy = flux(eq, fi)
-    @inbounds for k in 1:num_nb
-        nbIndex = neighbor_indices_view[k]
-        deltaX = dx_view[k]
-        deltaY = dy_view[k]
-        fj = fVec[k]
+    for k in neighbor_slice
+        nbIndex = particleGrid.neighbor_indices[k]
+        deltaX = particleGrid.neighbor_xdistance[k]
+        deltaY = particleGrid.neighbor_ydistance[k]
+        fj = neighbor_fs[k]
+        alfaij = ws.alfaijs[k]
+        betaij = ws.betaijs[k]
         # This call is now extremely fast
         fij, fji = reconstruct_interface_states(muscl.order, particleGrid, ws, fi, fj, particleIndex, nbIndex, deltaX, deltaY)
 
         fmx, fpx, fmy, fpy = sortFlux(fij, fji, deltaX, deltaY)
         
         # The divergence sum uses the local index `k`
-        div += alfaij_view[k] * (nFlux(fmx, fpx, eq, 1) - fx) + 
-               betaij_view[k] * (nFlux(fmy, fpy, eq, 2) - fy)
+        div += alfaij * (nFlux(fmx, fpx, eq, 1) - fx) + 
+               betaij * (nFlux(fmy, fpy, eq, 2) - fy)
     end
     
     return 2 * div

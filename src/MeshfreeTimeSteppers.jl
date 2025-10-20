@@ -1,5 +1,107 @@
 export EulerUpwind, Upwind, RalstonRK2, RK3, RK4, RalstonRK2Limiter, RalstonRK2SmoothSwitch, RalstonRK2SmoothSwitch2
 
+using Base.Threads
+# This assumes your ParticleGrid abstract type is accessible, e.g., via:
+# using ..ParticleGrids 
+
+# This function assumes that any timestepper `ts` you pass to it will have 
+# mutable fields `neighbor_fs::Vector{Float64}` and `neighbor_dfs::Vector{Float64}`.
+
+
+"""
+    check_for_nans(s::Any; range=nothing, counter=nothing)
+
+Inspects all `AbstractVector{<:AbstractFloat}` fields within a given struct `s` for `NaN` values.
+
+If NaNs are found, it throws a detailed error specifying which fields contain NaNs,
+how many there are, and a list of the indices where they were found.
+
+# Arguments
+- `s::Any`: The struct to inspect.
+- `range::Union{UnitRange, Nothing}=nothing`: An optional range of indices to check within each vector. If `nothing`, the entire vector is checked.
+- `counter::Union{Base.Threads.Atomic{Int}, Nothing}=nothing`: An optional atomic counter to track calls.
+
+# Example
+```julia
+debug_counter = Threads.Atomic{Int}(0)
+# ... inside a loop
+check_for_nans(my_struct, counter=debug_counter)
+```
+"""
+function check_for_nans(s::Any; range::Union{UnitRange, Nothing}=nothing, counter::Union{Base.Threads.Atomic{Int}, Nothing}=nothing)
+    # --- NEW: Atomic Counter Logic ---
+    # If a counter is provided, increment it and optionally print a debug message.
+    if !isnothing(counter)
+        Threads.atomic_add!(counter, 1)
+        current_count = counter[]
+
+        # Example: Print a message every 1000 calls.
+        if mod(current_count, 1000) == 0
+            println("Running NaN check #$(current_count)...")
+        end
+    end
+
+    # A dictionary to store the field name and a list of indices where NaNs are found.
+    nan_locations = Dict{Symbol, Vector{Int}}()
+
+    # Iterate over all property names (fields) of the struct.
+    for field_name in propertynames(s)
+        field_value = getproperty(s, field_name)
+
+        # We only care about vectors of floating-point numbers.
+        if !(field_value isa AbstractVector{<:AbstractFloat})
+            continue
+        end
+
+        # Determine the actual range to iterate over.
+        check_range = isnothing(range) ? eachindex(field_value) : range
+        
+        # Safety check to prevent BoundsError if the provided range is too large.
+        if last(check_range) > length(field_value)
+            println("Warning: Skipping field `:$field_name` in check_for_nans because the provided range is out of bounds.")
+            continue
+        end
+
+        # Iterate and check for NaNs.
+        for i in check_range
+            if isnan(field_value[i])
+                if !haskey(nan_locations, field_name)
+                    nan_locations[field_name] = Int[]
+                end
+                push!(nan_locations[field_name], i)
+            end
+        end
+    end
+
+    # If the dictionary is not empty, it means we found NaNs.
+    if !isempty(nan_locations)
+        error_message = "NaNs detected!\n"
+        if !isnothing(counter)
+            error_message *= "(Check count: $(counter[]))\n"
+        end
+        
+        # Build a detailed error message.
+        for (field, indices) in nan_locations
+            count = length(indices)
+            error_message *= "Field `:$field`: Found $count NaN(s) at indices:\n"
+            
+            max_indices_to_show = 20
+            indices_str = join(indices[1:min(count, max_indices_to_show)], ", ")
+            if count > max_indices_to_show
+                indices_str *= ", ..."
+            end
+            error_message *= "  [$indices_str]\n"
+        end
+        
+        error(error_message)
+    end
+
+    return nothing
+end
+
+
+
+
 # A simple example for EulerUpwind
 struct EulerUpwind{G <: GradientInterpolator} <: MeshfreeTimeStepper
     gradientInterpolator::G
@@ -247,9 +349,12 @@ struct RalstonRK2{G1, G2, MOOD} <: MeshfreeTimeStepper
     rhos::Vector{Float64}
     div1::Vector{Float64}
 
+    neighbor_fs::Vector{Float64}
+    neighbor_dfs::Vector{Float64}
+
     function RalstonRK2(grad::G1, fallback::G2, mood::M) where {G1 <: GradientInterpolator, G2 <: GradientInterpolator, M <: MOODCriterion}
         # Initialize with empty buffers, they will be resized on the first step
-        new{G1, G2, M}(grad, fallback, mood, Float64[], Float64[], Float64[])
+        new{G1, G2, M}(grad, fallback, mood, Float64[], Float64[], Float64[], Float64[], Float64[])
     end
 end
 
@@ -259,60 +364,70 @@ function RalstonRK2(gradientInterpolator::G1; fallbackInterpolator::G2 = NoFallb
 end
 
 function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid, settings::SimSetting)
-    initTimeStep(ralston.gradientInterpolator, particleGrid)
     updateNeighbors!(particleGrid, ralston.gradientInterpolator.weightFunction)
-    if !(ralston.fallbackInterpolator isa NoFallbackGrad)
-        initTimeStep(ralston.fallbackInterpolator, particleGrid)
-    end
 end
 
 function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
-    
     # --- Resize buffers only if necessary, using N ---
     if length(ralston.rhoInit) != N
         resize!.((ralston.rhoInit, ralston.rhos, ralston.div1), N)
+        ralston.rhos .= 0.
+        ralston.div1 .= 0.
     end
 
     # --- First RK Stage ---
     # 1. Start with the current, correct state of the grid
     ralston.rhoInit .= particleGrid.rhos
-    apply_boundary_conditions!(particleGrid, ralston.rhoInit) # Apply BCs to the initial buffer
 
-    initTimeStep(ralston.gradientInterpolator, particleGrid)
-    if !(ralston.fallbackInterpolator isa NoFallbackGrad); initTimeStep(ralston.fallbackInterpolator, particleGrid) end
+    # 4. Apply boundary conditions to the intermediate result stored in the buffer
+    apply_boundary_conditions!(particleGrid, ralston.rhoInit)
+
+    initTSBuffer!(ralston, particleGrid, ralston.rhoInit)
+
+    initGIPos!(ralston.gradientInterpolator, particleGrid);
+    initGIRho!(ralston.gradientInterpolator, particleGrid, ralston.rhoInit, ralston.neighbor_fs, ralston.neighbor_dfs);
+    if !(ralston.fallbackInterpolator isa NoFallbackGrad); 
+        initGIPos!(ralston.fallbackInterpolator, particleGrid)
+        initGIRho!(ralston.fallbackInterpolator, particleGrid, ralston.rhoInit, ralston.neighbor_fs, ralston.neighbor_dfs); 
+    end
     
     # 3. Calculate divergence for interior particles
-    @inbounds for p_idx in 1:N
-        if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
+    @threads for p_idx in 1:N
+        if particleGrid.is_boundary[p_idx]; ralston.rhos[p_idx] = 0; continue; end # Skip ghost particles
 
-        ralston.div1[p_idx] = ralston.gradientInterpolator(particleGrid, p_idx, ralston.rhoInit, eq, settings)
+        ralston.div1[p_idx] = ralston.gradientInterpolator(particleGrid, p_idx, ralston.rhoInit, ralston.neighbor_fs, eq, settings)
         
         rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
         
         if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhoInit, rho_candidate; firstStage=true)
-            ralston.div1[p_idx] = ralston.fallbackInterpolator(particleGrid, p_idx, ralston.rhoInit, eq, settings; setCurvature=false)
+            ralston.div1[p_idx] = ralston.fallbackInterpolator(particleGrid, p_idx, ralston.rhoInit, ralston.neighbor_fs, eq, settings; setCurvature=false)
             rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
         end
         ralston.rhos[p_idx] = rho_candidate # Store intermediate result in the 'rhos' buffer
     end
-    
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     apply_boundary_conditions!(particleGrid, ralston.rhos)
+    
+    initTSBuffer!(ralston, particleGrid, ralston.rhos)
 
-    initTimeStep(ralston.gradientInterpolator, particleGrid)
-    if !(ralston.fallbackInterpolator isa NoFallbackGrad); initTimeStep(ralston.fallbackInterpolator, particleGrid) end
+    initGIPos!(ralston.gradientInterpolator, particleGrid);
+    initGIRho!(ralston.gradientInterpolator, particleGrid, ralston.rhos, ralston.neighbor_fs, ralston.neighbor_dfs);
+
+    if !(ralston.fallbackInterpolator isa NoFallbackGrad); 
+        initGIPos!(ralston.fallbackInterpolator, particleGrid)
+        initGIRho!(ralston.fallbackInterpolator, particleGrid, ralston.rhos, ralston.neighbor_fs, ralston.neighbor_dfs); 
+    end
     
     # 2. Calculate final divergence for interior particles
-    @inbounds for p_idx in 1:N
+    @threads for p_idx in 1:N
         if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
         
         # Pass the intermediate state (ralston.rhos) to the gradient calculation
-        div2 = ralston.gradientInterpolator(particleGrid, p_idx, ralston.rhos, eq, settings)
+        div2 = ralston.gradientInterpolator(particleGrid, p_idx, ralston.rhos, ralston.neighbor_fs, eq, settings)
         
         rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
-        if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhos, rho_final)
-            initTimeStep(ralston.fallbackInterpolator, particleGrid) # Re-init fallback for the new state
+        if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhos, ralston.neighbor_fs, rho_final)
             div2 = ralston.fallbackInterpolator(particleGrid, p_idx, ralston.rhos, eq, settings; setCurvature=false)
             rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
         end
@@ -451,3 +566,7 @@ function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicPDE, particleGrid
         end
     end
 end
+
+
+
+

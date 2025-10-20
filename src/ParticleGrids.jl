@@ -137,12 +137,11 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
     neighbor_xdistance::Vector{Float64}
     neighbor_ydistance::Vector{Float64}
     neighbor_weights::Vector{Float64}
-    neighbor_df::Vector{Float64}
 
     # --- NEW: Pre-allocated atomic buffers for thread-safety ---
-    #atomic_counts_buffer::Vector{Atomic{Int}}
-    #atomic_offsets_buffer::Vector{Atomic{Int}}
-    #atomic_seen_buffer::Vector{Atomic{Int}}
+    atomic_counts_buffer::Vector{Atomic{Int}}
+    atomic_offsets_buffer::Vector{Atomic{Int}}
+    atomic_seen_buffer::Vector{Atomic{Int}}
 
     # --- NEW: For Adaptive Reordering ---
     permutation::Vector{Int}          # Maps logical index `i` to its current physical storage index.
@@ -222,8 +221,8 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
         # 3. Create the stateful object
 
         pg = new{typeof(system)}(positions, zeros(N), is_boundary, 
-        system, Int[], zeros(Int,N+1), zeros(Int,N), Float64[], Float64[], Float64[], Float64[],
-        #[Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], 
+        system, Int[], zeros(Int,N+1), zeros(Int,N), Float64[], Float64[], Float64[],
+        [Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], 
         permutation, copy(permutation), zeros(Int,N), zeros(N), similar(positions), copy(is_boundary), falses(N),
         xmin, xmax, ymin, ymax, N, N_ghost,
         dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc)
@@ -251,7 +250,7 @@ This should be called once at the end of the `ParticleGrid2D` constructor.
 - `maxIter::Int`: Maximum number of reordering iterations to perform.
 - `convergence_threshold::Int`: The reordering stops when the number of mismatched particles is less than or equal to this value. `0` means it will try to sort perfectly.
 """
-function initPermutation!(pg::ParticleGrid2D, system; maxIter::Int = 50, convergence_threshold::Int = 0)
+function initPermutationS!(pg::ParticleGrid2D, system; maxIter::Int = 1000, convergence_threshold::Int = 0)
     
     for iter in 1:maxIter
         # 1. Update the cell list system with the current particle positions
@@ -319,6 +318,105 @@ function initPermutation!(pg::ParticleGrid2D, system; maxIter::Int = 50, converg
     end
     return nothing
 end
+"""
+    initPermutation!(pg, system; maxIter=1000, convergence_threshold=0)
+
+Performs an iterative, parallel pre-sort of particle data to optimize memory layout
+for efficient neighbor access. This function should be called once in the `ParticleGrid`
+constructor.
+
+The loop converges when the "optimal" memory order calculated in one iteration
+matches the order from the previous iteration, within a given threshold.
+"""
+function initPermutation!(pg::ParticleGrid2D, system; maxIter::Int = 1, convergence_threshold::Int = 0)
+    
+    # Ensure atomic buffers are allocated if they don't exist or have the wrong size
+    if !isdefined(pg, :atomic_counts_buffer) || length(pg.atomic_counts_buffer) != pg.N
+        pg.atomic_counts_buffer = [Atomic{Int}(0) for _ in 1:pg.N]
+        pg.atomic_seen_buffer = [Atomic{Int}(0) for _ in 1:pg.N]
+        pg.atomic_offsets_buffer = [Atomic{Int}(0) for _ in 1:pg.N]
+    end
+
+    for iter in 1:maxIter
+        # 1. Update the cell list system with the current particle positions.
+        #    This is crucial because `pg.positions` is modified in each iteration.
+        update!(system, pg.positions)
+
+        # 2. Discover the new "optimal" permutation in parallel.
+        #    Reset atomic buffers and permutation buffer for the new iteration.
+        @threads for i in 1:pg.N
+            pg.atomic_counts_buffer[i][] = 0
+            pg.atomic_seen_buffer[i][] = 0
+        end
+        fill!(pg.new_permutation_buffer, 0)
+        
+        atomic_counts = pg.atomic_counts_buffer
+        atomic_seen = pg.atomic_seen_buffer
+        new_order_counter = Atomic{Int}(0)
+
+        map_pairwise!(
+            (xi, xj, i, j, d2, null) -> begin
+                # Atomically check and set the `seen` flag. If it was 0 and is now 1,
+                # this thread is the first to see this particle.
+                if atomic_cas!(atomic_seen[i], 0, 1) == 0
+                    # Atomically increment the counter and assign the new value.
+                    # atomic_add! returns the OLD value, so add 1.
+                    pg.new_permutation_buffer[i] = atomic_add!(new_order_counter, 1) + 1
+                end
+                if atomic_cas!(atomic_seen[j], 0, 1) == 0
+                    pg.new_permutation_buffer[j] = atomic_add!(new_order_counter, 1) + 1
+                end
+                
+                # Atomically increment neighbor counts.
+                atomic_add!(atomic_counts[i], 1)
+                atomic_add!(atomic_counts[j], 1)
+                null
+            end,
+            0, system.box, system.cl; parallel = true
+        )
+
+        # Copy final counts from atomic to regular vector
+        @threads for i in 1:pg.N
+            pg.num_neighbors[i] = atomic_counts[i][]
+        end
+
+        # 3. Handle isolated particles serially after the parallel run.
+        #    This step is critical to ensure a valid permutation is generated.
+        final_counter_val = new_order_counter[]
+        for i in 1:pg.N
+            if pg.new_permutation_buffer[i] == 0 # Find particles that were missed
+                final_counter_val += 1
+                pg.new_permutation_buffer[i] = final_counter_val
+            end
+        end
+
+        @assert final_counter_val == pg.N "Permutation counter did not reach N during initialization."
+        @assert isperm(pg.new_permutation_buffer) "new_permutation_buffer is not a valid permutation."
+
+        # 4. Check for convergence by comparing with the previous permutation.
+        mismatches = 0
+        for i in 1:pg.N
+            if pg.permutation[i] != pg.new_permutation_buffer[i]
+                mismatches += 1
+            end
+        end
+
+        if mismatches <= convergence_threshold
+            @info "Permutation converged after $iter iterations with $mismatches mismatches."
+            break # Exit the loop
+        end
+
+        # 5. If not converged, physically reorder the particle data.
+        reorder_particles!(pg, pg.new_permutation_buffer)
+
+        if iter == maxIter
+            @warn "Permutation did not fully converge after $maxIter iterations ($mismatches mismatches remaining)."
+        end
+    end
+    
+    return nothing
+end
+
 
 #==============================================================================
   Grid Functions (Optimized for SoA)
@@ -381,7 +479,7 @@ function reorder_particles!(pg::ParticleGrid2D{S}, new_permutation::Vector{Int})
     # 1. Copy the current (old) data to the buffer.
     copyto!(pg.reorder_buffer_rhos, pg.rhos)
     # 2. Use the buffer to write the reordered data back into the main array.
-    @inbounds for i in 1:N
+    @threads for i in 1:N
         pg.rhos[i] = pg.reorder_buffer_rhos[new_inv_permutation[i]]
     end
 
@@ -389,14 +487,14 @@ function reorder_particles!(pg::ParticleGrid2D{S}, new_permutation::Vector{Int})
     # 1. Copy the current (old) data to the buffer.
     copyto!(pg.reorder_buffer_pos, pg.positions)
     # 2. Use the buffer to write the reordered data back into the main array.
-    @inbounds for i in 1:N
+    @threads for i in 1:N
         pg.positions[i] = pg.reorder_buffer_pos[new_inv_permutation[i]]
     end
     # --- Reorder boundary-flags using the pre-allocated buffer ---
     # 1. Copy the current (old) data to the buffer.
     copyto!(pg.reorder_buffer_boundary, pg.is_boundary)
     # 2. Use the buffer to write the reordered data back into the main array.
-    @inbounds for i in 1:N
+    @threads for i in 1:N
         pg.is_boundary[i] = pg.reorder_buffer_boundary[new_inv_permutation[i]]
     end
 
@@ -416,7 +514,7 @@ end
 Builds neighbor lists with an adaptive particle reordering strategy.
 This version is SERIAL (single-threaded).
 """
-function updateNeighbors!(
+function updateNeighborsS!(
     pg::ParticleGrid2D{S}, 
     weightFunc::WF;
     reorder_threshold::Float64 = .1 
@@ -490,7 +588,7 @@ function updateNeighbors!(
     #println(pg.num_neighbors, total_neighbors)
     #println("!")
     #println("2nd map")
-    resize!.((pg.neighbor_indices, pg.neighbor_xdistance, pg.neighbor_ydistance, pg.neighbor_weights, pg.neighbor_df), total_neighbors)
+    resize!.((pg.neighbor_indices, pg.neighbor_xdistance, pg.neighbor_ydistance, pg.neighbor_weights), total_neighbors)
     
     pg.neighbor_pointers[1] = 1
     for i in 1:pg.N
@@ -504,13 +602,6 @@ function updateNeighbors!(
     # --- PASS 2: FILL DATA (Serial) ---
     map_pairwise!(
         (xi, xj, i, j, d2, null) -> begin
-            # Get physical indices from the current (potentially new) permutation
-            phys_i = i#pg.inv_permutation[i]
-            phys_j = j#pg.inv_permutation[j]
-            #println(i,j)
-            f_i = fVec[phys_i]
-            f_j = fVec[phys_j]
-            diff = f_j - f_i
 
             dist_x = xj[1] - xi[1]
             dist_y = xj[2] - xi[2]
@@ -527,22 +618,20 @@ function updateNeighbors!(
             # Get 0-based offset
             offset_i = pg.num_neighbors[i]
             write_idx_i = pg.neighbor_pointers[i] + offset_i
-            pg.neighbor_indices[write_idx_i]   = phys_j
+            pg.neighbor_indices[write_idx_i]   = j
             pg.neighbor_xdistance[write_idx_i] = dist_x
             pg.neighbor_ydistance[write_idx_i] = dist_y
             pg.neighbor_weights[write_idx_i]   = weight
-            pg.neighbor_df[write_idx_i]        = diff
             pg.num_neighbors[i] += 1
             #print("ind",pg.neighbor_indices[write_idx_i], "; ")
 
             # Get 0-based offset
             offset_j = pg.num_neighbors[j]
             write_idx_j = pg.neighbor_pointers[j] + offset_j
-            pg.neighbor_indices[write_idx_j]   = phys_i
+            pg.neighbor_indices[write_idx_j]   = i
             pg.neighbor_xdistance[write_idx_j] = -dist_x
             pg.neighbor_ydistance[write_idx_j] = -dist_y
             pg.neighbor_weights[write_idx_j]   = weight
-            pg.neighbor_df[write_idx_j]        = -diff
             pg.num_neighbors[j] += 1
             null
         end,
@@ -558,14 +647,20 @@ end
 Builds neighbor lists with an adaptive particle reordering strategy.
 This function is now THREAD-SAFE and allocation-free.
 """
-function updateNeighborsParallel!(
+function updateNeighbors!(
     pg::ParticleGrid2D, 
     weightFunc::MLSWeightFunction;
     reorder_threshold::Float64 = 0.1 
 )
     system = pg.neighbor_system
-    fVec = pg.rhos
-    
+    reordered = false
+    if pg.permutation[1] == -1; 
+        reorder_particles!(pg, pg.new_permutation_buffer);
+        reordered = true
+    end
+
+    update!(system, pg.positions)
+
     # --- PASS 1: COUNT NEIGHBORS (Thread-Safe & Allocation-Free) ---
     @inbounds for i in 1:pg.N; pg.atomic_counts_buffer[i][] = 0; end
     @inbounds for i in 1:pg.N; pg.atomic_seen_buffer[i][] = 0; end
@@ -587,7 +682,7 @@ function updateNeighborsParallel!(
             atomic_add!(atomic_counts[j], 1)
             null
         end,
-        0, system.box, system.cl; parallel = false
+        0, system.box, system.cl; parallel = true
     )
     @inbounds for i in 1:pg.N; pg.num_neighbors[i] = atomic_counts[i][]; end
     
@@ -616,32 +711,24 @@ function updateNeighborsParallel!(
         end
     end
 
-    if mismatches / pg.N > reorder_threshold
-        reorder_particles!(pg, pg.new_permutation_buffer)
-        update!(system, pg.positions) 
+    if (mismatches / pg.N > reorder_threshold)# && !reordered
+        pg.permutation[1] = -1 
     end
 
     # --- PREPARE FOR PASS 2 ---
     total_neighbors = sum(pg.num_neighbors)
-    resize!.((pg.neighbor_indices, pg.neighbor_xdistance, pg.neighbor_ydistance, pg.neighbor_weights, pg.neighbor_df), total_neighbors)
+    resize!.((pg.neighbor_indices, pg.neighbor_xdistance, pg.neighbor_ydistance, pg.neighbor_weights), total_neighbors)
     
     pg.neighbor_pointers[1] = 1
     @inbounds for i in 1:pg.N
         pg.neighbor_pointers[i+1] = pg.neighbor_pointers[i] + pg.num_neighbors[i]
     end
-    println(sum(pg.num_neighbors))
     
     # --- PASS 2: FILL DATA (Thread-Safe & Allocation-Free) ---
     @inbounds for i in 1:pg.N; pg.atomic_offsets_buffer[i][] = 0; end
     atomic_offsets = pg.atomic_offsets_buffer
     map_pairwise!(
         (xi, xj, i, j, d2, null) -> begin
-            phys_i = pg.inv_permutation[i]
-            phys_j = pg.inv_permutation[j]
-
-            f_i = fVec[phys_i]
-            f_j = fVec[phys_j]
-            diff = f_j - f_i
 
             dist_x = xj[1] - xi[1]
             dist_y = xj[2] - xi[2]
@@ -658,28 +745,25 @@ function updateNeighborsParallel!(
             offset_i = atomic_offsets[i][] - 1
             write_idx_i = pg.neighbor_pointers[i] + offset_i
             #println(write_idx_i)
-            pg.neighbor_indices[write_idx_i]   = phys_j
+            pg.neighbor_indices[write_idx_i]   = j
             pg.neighbor_xdistance[write_idx_i] = dist_x
             pg.neighbor_ydistance[write_idx_i] = dist_y
             pg.neighbor_weights[write_idx_i]   = weight
-            pg.neighbor_df[write_idx_i]        = diff
 
             # CORRECTED: Use robust atomic pattern
             atomic_add!(atomic_offsets[j], 1) # -1 included bc of old value 
             offset_j = atomic_offsets[j][] - 1
             #println(pg.neighbor_pointers[j],":", atomic_offsets[j][])
             write_idx_j = pg.neighbor_pointers[j] + offset_j
-            pg.neighbor_indices[write_idx_j]   = phys_i
+            pg.neighbor_indices[write_idx_j]   = i
             pg.neighbor_xdistance[write_idx_j] = -dist_x
             pg.neighbor_ydistance[write_idx_j] = -dist_y
             pg.neighbor_weights[write_idx_j]   = weight
-            pg.neighbor_df[write_idx_j]        = -diff
             
             null
         end,
-        0, system.box, system.cl; parallel = false
+        0, system.box, system.cl; parallel = true
     )
-println(pg.new_permutation_buffer)
     return nothing
 end
 

@@ -2,6 +2,7 @@ module Interpolations
 
 using LinearAlgebra
 using Statistics
+using Base.Threads
 using ..Meshfree4ScalarEq.ParticleGrids
 using ..Meshfree4ScalarEq.SimSettings
 using ..Meshfree4ScalarEq.HyperbolicPDEs
@@ -9,7 +10,7 @@ using ..Meshfree4ScalarEq.FluxFunctions
 using ..Meshfree4ScalarEq.MLSWeightFunctions
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, getStencil, LaxFriedrichsGradient, MUSCLlimited,
-       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad, Interpolator
+       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad, Interpolator, initGIRho!, initGIPos!
 
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}

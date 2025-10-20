@@ -6,8 +6,8 @@ function main()
     params = ParamDict(
         # --- Shared Parameters ---
         "tmax" => 5.0,
-        "Nx" => 100,
-        "Ny" => 100,
+        "Nx" => 600,
+        "Ny" => 600,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "ymin" => -5.0,
@@ -16,11 +16,11 @@ function main()
         #"dt" => .02,
         "snapshots" => 20,
         "interp_alpha" => 1.0,
-        "interp_range" => 3.5,
+        "interp_range" => 4.5,
         "init_func" => "gauss", # Using the unified struct
         "init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
         #"init_params" => (0.,1.,-2.,2.,-2.,2.),
-        "randomness_factor" => (0., 0.), # (x_rand_factor, y_rand_factor)
+        "randomness_factor" => (0.2, 0.2), # (x_rand_factor, y_rand_factor)
         "SEED_value" => 42,
         "PDE" => "linear",
         "PDE_params" => (1.0, 1.2), # 2D velocity vector (vx, vy)
