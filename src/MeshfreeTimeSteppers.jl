@@ -118,10 +118,9 @@ Initializes all buffers within the timestepper `ts` based on the particle grid `
 It then runs a parallel "pre-gather" loop to fill the `neighbor_fs` and 
 `neighbor_dfs` buffers using data from `fVec`.
 """
-function initTS!(
+function initTSBuffer!(
     ts::T,
     pg, # Keep it generic, just need to access its fields
-    fVec::AbstractVector{<:Real}
 ) where {T <: MeshfreeTimeStepper}
 
     # --- 1. Get Required Buffer Sizes ---
@@ -138,45 +137,29 @@ function initTS!(
     # --- 3. Resize Per-Interaction Buffers (Size M) ---
     _ensure_capacity!(ts.neighbor_fs, num_interactions)
     _ensure_capacity!(ts.neighbor_dfs, num_interactions)
+    
+    return nothing
+end
 
+function initTS!(ts::MeshfreeTimeStepper, f_i, fVec, nb_indices, neighbor_slice)
     # --- 4. Parallel Pre-Gather Loop ---
     # Get local aliases to the buffers for cleaner code in the loop
     neighbor_fs  = ts.neighbor_fs
     neighbor_dfs = ts.neighbor_dfs
 
-    # This is a "pleasantly parallel" loop. Each thread `i` writes to
-    # a unique, non-overlapping slice of `neighbor_fs` and `neighbor_dfs`,
-    # so there are no race conditions.
-    Threads.@threads for i in 1:num_particles
-        f_i = fVec[i]
-        num_nb = pg.num_neighbors[i]
+    @inbounds for k in neighbor_slice
+        # `k` is the global index into the flat neighbor arrays
+        
+        # 1. GATHER: Get neighbor index `j`...
+        j = nb_indices[k]
+        # ...and then get its value `f_j`. This is the slow part.
+        f_j = fVec[j] 
 
-        if num_nb == 0
-            continue
-        end
-
-        # Get the unique slice of indices for this particle's neighbors
-        start_idx = pg.neighbor_pointers[i]
-        neighbor_slice = start_idx:(start_idx + num_nb - 1)
-
-        @inbounds for k in neighbor_slice
-            # `k` is the global index into the flat neighbor arrays
-            
-            # 1. GATHER: Get neighbor index `j`...
-            j = pg.neighbor_indices[k]
-            # ...and then get its value `f_j`. This is the slow part.
-            f_j = fVec[j] 
-
-            # 2. CALCULATE & STORE: Write to the pre-allocated buffers
-            neighbor_fs[k]  = f_j
-            neighbor_dfs[k] = f_j - f_i
-        end
+        # 2. CALCULATE & STORE: Write to the pre-allocated buffers
+        neighbor_fs[k]  = f_j
+        neighbor_dfs[k] = f_j - f_i
     end
-    
-    return nothing
 end
-
-
 # A simple example for EulerUpwind
 struct EulerUpwind{G <: GradientInterpolator} <: MeshfreeTimeStepper
     gradientInterpolator::G
@@ -463,24 +446,25 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     apply_boundary_conditions!(particleGrid, ralston.rhoInit)
 
-    initTS!(ralston, particleGrid, ralston.rhoInit)
+    initTSBuffer!(ralston, particleGrid)
 
     # Define a chunk size. 100 is a good starting point.
     chunk_size = 250 
     chunks = collect(Iterators.partition(1:N, chunk_size))
 
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
-    Threads.@threads :dynamic for particle_range in chunks
+    Threads.@threads for particle_range in chunks
         for p_idx in particle_range
-        fi = ralston.rhoInit[p_idx]
-        num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w = getNBInput(particleGrid, p_idx, ralston.neighbor_fs, ralston.neighbor_dfs)
+            fi = ralston.rhoInit[p_idx]
+            num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w = getNBInput(particleGrid, p_idx, ralston.neighbor_fs, ralston.neighbor_dfs)
+            initTS!(ralston, fi, ralston.rhoInit, particleGrid.neighbor_indices, neighbor_slice)
             initGI!(ralston.gradientInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
             initGI!(ralston.fallbackInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
         end
     end
     
     # 3. Calculate divergence for interior particles
-    Threads.@threads :dynamic for particle_range in chunks
+    Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
             fi = ralston.rhoInit[p_idx]
@@ -500,20 +484,19 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     apply_boundary_conditions!(particleGrid, ralston.rhos)
 
-    initTS!(ralston, particleGrid, ralston.rhos)
-
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
-    Threads.@threads :dynamic for particle_range in chunks
+    Threads.@threads for particle_range in chunks
         for p_idx in particle_range
         fi = ralston.rhos[p_idx]
         num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w = getNBInput(particleGrid, p_idx, ralston.neighbor_fs, ralston.neighbor_dfs)
+            initTS!(ralston, fi, ralston.rhoInit, particleGrid.neighbor_indices, neighbor_slice)
             initGI!(ralston.gradientInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
             initGI!(ralston.fallbackInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
         end
     end
 
     # 2. Calculate final divergence for interior particles
-    Threads.@threads :dynamic for particle_range in chunks
+    Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
         

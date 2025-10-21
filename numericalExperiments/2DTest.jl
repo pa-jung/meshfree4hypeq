@@ -6,14 +6,14 @@ function main()
     params = ParamDict(
         # --- Shared Parameters ---
         "tmax" => 5.0,
-        "Nx" => 400,
-        "Ny" => 400,
+        "Nx" => 600,
+        "Ny" => 600,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "ymin" => -5.0,
         "ymax" => 5.0,
-        "CFL" => 0.4,
-        #"dt" => .02,
+        #"CFL" => 0.4,
+        "dt" => .2,
         "snapshots" => 20,
         "interp_alpha" => 1.0,
         "interp_range" => 4.5,
