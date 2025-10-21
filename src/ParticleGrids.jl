@@ -3,7 +3,7 @@ module ParticleGrids
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGrid, plotDensity, 
        animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
        findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, 
-       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!
+       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBInput
 
 using FileIO, JLD2
 using Plots
@@ -235,6 +235,20 @@ using CellListMap
 using LinearAlgebra # For invperm
 using ..ParticleGrids # Assuming this is where ParticleGrid2D is defined
 using ..MLSWeightFunctions # Assuming this is where MLSWeightFunction is defined
+
+
+function getNBInput(pg::ParticleGrid, p_idx::Int, nb_fs::AbstractVector, nb_dfs::AbstractVector)
+    num_nb = pg.num_neighbors[p_idx]
+    pointer = pg.neighbor_pointers[p_idx]
+    neighbor_slice = pointer:(pointer + num_nb - 1)
+    neighbors = @view pg.neighbor_indices[neighbor_slice]
+    f_neighbors = @view nb_fs[neighbor_slice]
+    df_neighbors = @view nb_dfs[neighbor_slice]
+    dx = @view pg.neighbor_xdistance[neighbor_slice]
+    dy = @view pg.neighbor_ydistance[neighbor_slice]
+    w = @view pg.neighbor_weights[neighbor_slice]
+    return num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w
+end
 
 """
     initPermutation!(pg, system; maxIter=10, convergence_threshold=0)
@@ -1055,7 +1069,7 @@ function apply_boundary_conditions!(particleGrid::ParticleGrid2D, rhos_buffer::A
     if particleGrid.bc != :outflow; return; end
 
     # Find all ghost particles by checking the is_boundary flag
-    for ghost_idx in 1:particleGrid.N
+    @threads for ghost_idx in 1:particleGrid.N
         if particleGrid.is_boundary[ghost_idx]
             num_nb = particleGrid.num_neighbors[ghost_idx]
             if num_nb == 0; continue; end

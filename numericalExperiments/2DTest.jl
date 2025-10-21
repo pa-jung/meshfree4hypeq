@@ -6,8 +6,8 @@ function main()
     params = ParamDict(
         # --- Shared Parameters ---
         "tmax" => 5.0,
-        "Nx" => 600,
-        "Ny" => 600,
+        "Nx" => 400,
+        "Ny" => 400,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "ymin" => -5.0,
@@ -79,8 +79,8 @@ function main()
     # 2. You can then call your function directly:
     #
     
-    #sim_data = runScalarSimulation(params);
-    #@profview runScalarSimulation(params)
+    sim_data = runScalarSimulation(params);
+    @profview runScalarSimulation(params)
 
     # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.
     #
@@ -99,7 +99,7 @@ function main()
 #show1DSolutionFig(test_config)
 scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
 #show2DCutFig(test_config;scene_options = scene_options)
-show2DSolutionFig(test_config)
+#show2DSolutionFig(test_config)
 end
 
 main()

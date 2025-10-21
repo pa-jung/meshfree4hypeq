@@ -10,7 +10,7 @@ using ..Meshfree4ScalarEq.FluxFunctions
 using ..Meshfree4ScalarEq.MLSWeightFunctions
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, getStencil, LaxFriedrichsGradient, MUSCLlimited,
-       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad, Interpolator, initGIRho!, initGIPos!
+       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad, Interpolator, initGI!, initGIBuffers!
 
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
@@ -368,6 +368,14 @@ abstract type GradientInterpolator end
 
 # Fallback Gradient interpolator for no fallback
 struct NoFallbackGrad <: GradientInterpolator end
+
+function initGI!(::NoFallbackGrad, kwargs...)
+    return
+end
+
+function initGIBuffers!(::NoFallbackGrad, kwargs...)
+    return
+end
 
 function initTimeStep(g::GradientInterpolator, particleGrid::ParticleGrid) end  # Function called at the start of a time step (order RK-stage)
 
