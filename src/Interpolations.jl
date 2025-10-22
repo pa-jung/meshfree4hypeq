@@ -378,6 +378,17 @@ function initGIBuffers!(::NoFallbackGrad, kwargs...)
 end
 
 function initTimeStep(g::GradientInterpolator, particleGrid::ParticleGrid) end  # Function called at the start of a time step (order RK-stage)
+"""
+Ensures a vector `v` has at least capacity `n`.
+Resizes if `length(v) < n`.
+"""
+function _ensure_capacity!(v::AbstractVector, n::Int)
+    if length(v) < n
+        n = n + n ÷ 4
+        resize!(v, n)
+    end
+    return nothing
+end
 
 # # ------------------------------- Dumbser WENO -------------------------------
 

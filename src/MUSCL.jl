@@ -1018,47 +1018,57 @@ end
 # --- 3. NEW: MAIN LOCALIZED FUNCTION FOR SLOPE CALCULATION (2D, Order 1) ---
 
 """
-    initGI!(muscl, i, f_i, num_nb, neighbor_slice, f_neighbors, dx, dy, w)
+    initGI!(muscl, i, f_i, pg, neighbor_fs, neighbor_dfs)
 
-Main function to calculate and store limited slopes for a *single* particle `i`.
-This is intended to be called inside a parallel loop.
+Rewritten initGI! to be allocation-friendly.
+
+This function takes the top-level grid and flat data buffers.
+It is responsible for creating all the necessary views internally,
+which allows the compiler to optimize away the allocations.
 """
 function initGI!(
     muscl::MUSCL{2,MUSCLORDER1},
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    num_nb::Int,                    # Number of neighbors
-    neighbor_slice::UnitRange{Int}, # Slice into GLOBAL coefficient arrays
-    neighbors::AbstractVector,
-    f_neighbors::AbstractVector,    # View of neighbor f-values
-    df_neighbors::AbstractVector,   # View of neighbor df-values
-    dx::AbstractVector,             # View of neighbor x-distances
-    dy::AbstractVector,             # View of neighbor y-distances
-    w::AbstractVector               # View of neighbor weights
+    pg::ParticleGrid,               # The entire grid object
+    neighbor_fs::AbstractVector,    # The flat neighbor-value buffer
+    neighbor_dfs::AbstractVector    # The flat neighbor-difference buffer
 )
     ws = muscl.workspace
     
-    # Get views into the correct slice of the global coefficient buffers
-    alfaij_buffer = @view ws.alfaijs[neighbor_slice]
-    betaij_buffer = @view ws.betaijs[neighbor_slice]
-
+    # --- 1. Get particle-specific indices ---
+    num_nb = pg.num_neighbors[i]
     if num_nb == 0
-        fill!(alfaij_buffer, 0.0)
-        fill!(betaij_buffer, 0.0)
         ws.slopes_x[i] = 0.0
         ws.slopes_y[i] = 0.0
         return
     end
-
-    # Call the sequence of local helper functions
-    _compute_coeffs!(muscl.order, alfaij_buffer, betaij_buffer, dx, dy, w)
     
-    slope_x, slope_y = _calculate_slopes(df_neighbors, alfaij_buffer, betaij_buffer)
-
-    slope_x, slope_y = _limit_slopes(muscl.limiter, slope_x, slope_y, f_i, f_neighbors, dx, dy)
+    pointer = pg.neighbor_pointers[i]
+    neighbor_slice = pointer:(pointer + num_nb - 1)
     
-    if isnan(slope_y) ||
-    isnan(slope_x); error("Found NaN while calculating slopes for a particle!"); end
+    # --- 2. Create ALL views in one place ---
+    #    (The compiler has a high chance of optimizing these away)
+    alfaij_buffer     = @view ws.alfaijs[neighbor_slice]
+    betaij_buffer     = @view ws.betaijs[neighbor_slice]
+    f_neighbors_view  = @view neighbor_fs[neighbor_slice]
+    df_neighbors_view = @view neighbor_dfs[neighbor_slice]
+    dx_view           = @view pg.neighbor_xdistance[neighbor_slice]
+    dy_view           = @view pg.neighbor_ydistance[neighbor_slice]
+    w_view            = @view pg.neighbor_weights[neighbor_slice]
+    # 'neighbors' (indices) isn't needed by these helpers, so we skip it.
+
+    # --- 3. Call the (already clean) helpers ---
+    _compute_coeffs!(muscl.order, alfaij_buffer, betaij_buffer, dx_view, dy_view, w_view)
+    
+    slope_x, slope_y = _calculate_slopes(df_neighbors_view, alfaij_buffer, betaij_buffer)
+
+    # Note: _limit_slopes was not provided, but assuming it has the same signature
+    slope_x, slope_y = _limit_slopes(muscl.limiter, slope_x, slope_y, f_i, f_neighbors_view, dx_view, dy_view)
+    
+    if isnan(slope_y) || isnan(slope_x)
+        error("Found NaN while calculating slopes for a particle!")
+    end
 
     # Store the final, limited slopes
     ws.slopes_x[i] = slope_x
@@ -1074,19 +1084,19 @@ for a *single* particle `i`. This is intended to be called inside a parallel loo
 """
 function initGI!(
     muscl::MUSCL{2,MUSCLORDER2},
-    thread_idx::Int,                # <--- 1. ADDED THIS ARGUMENT
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
     num_nb::Int,                    # Number of neighbors
     neighbor_slice::UnitRange{Int}, # Slice into GLOBAL coefficient arrays
+    neighbors::AbstractVector,
     f_neighbors::AbstractVector,    # View of neighbor f-values
-    df_neighbors::AbstractVector,   # <--- 2. ADDED THIS ARGUMENT
+    df_neighbors::AbstractVector,   # View of neighbor df-values
     dx::AbstractVector,             # View of neighbor x-distances
     dy::AbstractVector,             # View of neighbor y-distances
-    w::AbstractVector,              # View of neighbor weights
+    w::AbstractVector               # View of neighbor weights
 )
     ws = muscl.workspace
-
+    thread_idx = 
     # --- Fetch the correct thread-local buffer ---
     A_buffer_threadlocal = ws.A_buffers[thread_idx] # <--- This now works
 

@@ -52,6 +52,19 @@ function initTimeStepper(method::MeshfreeSystemTimeStepper, particleGrids::Vecto
     @warn "Timestepper detected as a system timestepper, however, no initialization is used for this Timestepper."
 end
 
+"""
+Ensures a vector `v` has at least capacity `n`.
+Resizes if `length(v) < n`.
+"""
+function _ensure_capacity!(v::AbstractVector, n::Int)
+    if length(v) < n
+        n = n + n ÷ 4
+        resize!(v, n)
+    end
+    return nothing
+end
+
+
 include("MeshfreeTimeSteppers.jl")
 include("FixedGridTimeSteppers.jl")
 include("MeshfreeSystemTimeSteppers.jl")

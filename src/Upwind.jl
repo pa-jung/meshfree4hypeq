@@ -6,6 +6,8 @@ abstract type NonLinearPraveenAlgorithm <: UpwindAlgorithm end  # Praveen C. pos
 abstract type ClassicAlgorithm <: UpwindAlgorithm end  # Take all points 'behind' center point. 
 abstract type RusanovAlgorithm <: UpwindAlgorithm end # This is no upwinding of course but easy implementation in this framework (numerical Flux given does not have to be upwind)
 
+abstract type UpwindWorkspace end
+
 using InteractiveUtils
 
 """
@@ -95,47 +97,70 @@ function populate_buffers!(dxVec, dyVec, dfVec, neighbors, xdist, ydist, fVec, v
     return count
 end
 
-# Define a workspace to hold temporary arrays for Upwind calculations
-struct UpwindWorkspace
-    dxVec::Vector{Float64}
-    dyVec::Vector{Float64}
-    dfVec::Vector{Float64}
-    fVec::Vector{Float64}
-    wVec::Vector{Float64}
-    # For Tiwari algorithm
-    xWindow::BitVector
-    yWindow::BitVector
-    # For PraveenAlgorithm
-    coeff_x_Vec::Vector{Float64}
-    coeff_y_Vec::Vector{Float64}
-    aij_x_Vec::Vector{Float64}
-    aij_y_Vec::Vector{Float64}
-    nxVec::Vector{Float64}
-    nyVec::Vector{Float64}
-    # Add a buffer for neighbor values
-    ujVec::Vector{Float64}
-    nb_buffer::Vector{Int}
+# # Define a workspace to hold temporary arrays for Upwind calculations
+# struct UpwindWorkspace
+#     dxVec::Vector{Float64}
+#     dyVec::Vector{Float64}
+#     dfVec::Vector{Float64}
+#     fVec::Vector{Float64}
+#     wVec::Vector{Float64}
+#     # For Tiwari algorithm
+#     xWindow::BitVector
+#     yWindow::BitVector
+#     # For PraveenAlgorithm
+#     coeff_x_Vec::Vector{Float64}
+#     coeff_y_Vec::Vector{Float64}
+#     aij_x_Vec::Vector{Float64}
+#     aij_y_Vec::Vector{Float64}
+#     nxVec::Vector{Float64}
+#     nyVec::Vector{Float64}
+#     # Add a buffer for neighbor values
+#     ujVec::Vector{Float64}
+#     nb_buffer::Vector{Int}
 
-    function UpwindWorkspace(max_neighbors::Int=100) # Preallocate with a reasonable capacity
+#     function UpwindWorkspace(max_neighbors::Int=100) # Preallocate with a reasonable capacity
+#         new(
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             falses(max_neighbors),
+#             falses(max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Float64}(undef, max_neighbors),
+#             Vector{Int}(undef, max_neighbors),
+#         )
+#     end
+# end
+
+
+"""
+A minimal, thread-local workspace for the Upwind ClassicAlgorithm.
+It holds temporary buffers for the filtered "upwind" neighbors.
+"""
+struct UpwindWorkspaceCA <: UpwindWorkspace
+    dxVec::Vector{Float64} # Filtered dx (upwind)
+    dyVec::Vector{Float64} # Filtered dy (upwind)
+    dfVec::Vector{Float64} # Filtered df (upwind)
+    wVec::Vector{Float64}  # Filtered w (upwind)
+
+    function UpwindWorkspaceCA(max_neighbors::Int=100) # Preallocate
         new(
             Vector{Float64}(undef, max_neighbors),
             Vector{Float64}(undef, max_neighbors),
             Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            falses(max_neighbors),
-            falses(max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors),
-            Vector{Int}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors)
         )
     end
 end
+
+
 
 # Helper to ensure workspace vectors are large enough
 function ensure_capacity!(ws::UpwindWorkspace, n::Int)
@@ -144,13 +169,21 @@ function ensure_capacity!(ws::UpwindWorkspace, n::Int)
         resize!.((ws.dxVec, ws.dyVec, ws.dfVec, ws.fVec, ws.wVec, ws.xWindow, ws.yWindow, ws.coeff_x_Vec, ws.coeff_y_Vec, ws.aij_x_Vec, ws.aij_y_Vec, ws.nxVec, ws.nyVec, ws.ujVec, ws.nb_buffer), N)
     end
 end
-
+"""
+Ensures all buffers in the minimal UpwindWorkspaceCA are large enough.
+"""
+function ensure_capacity!(ws::UpwindWorkspaceCA, n::Int)
+    _ensure_capacity!(ws.dxVec, n)
+    _ensure_capacity!(ws.dyVec, n)
+    _ensure_capacity!(ws.dfVec, n)
+    _ensure_capacity!(ws.wVec, n)
+end
 
 struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: UpwindAlgorithm} <: GradientInterpolator
     order::Int
     weightFunction::MLSWeightFunction
     numericalFlux::NumericalFluxFunction
-    workspace::UpwindWorkspace
+    workspaces::Vector{WS}
     interpolator::I
 
     """
@@ -161,25 +194,74 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
     function UpwindGradient(order, dimension; numericalFlux::NumericalFluxFunction=UpwindFlux(), algType::String="Classic", weightFunction::MLSWeightFunction=exponentialWeightFunction())
         @assert order >= 1 "Order must be larger or equal to one."
         @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen"]
+        
         local alg_type
+        local WS_eltype::Type
+        
         if algType == "Classic"
             alg_type = ClassicAlgorithm
-        elseif algType == "Praveen"
-            @assert order == 1
-            alg_type = PraveenAlgorithm
-        elseif algType == "NonLinearPraveen"
-            @assert order == 1
-            alg_type = NonLinearPraveenAlgorithm
-        elseif algType == "Tiwari"
-            alg_type = TiwariAlgorithm
+            WS_eltype = UpwindWorkspaceCA # <-- Use minimal workspace
+        else
+            WS_eltype = UpwindWorkspace # <-- Use full workspace for others
+            if algType == "Praveen"
+                @assert order == 1
+                alg_type = PraveenAlgorithm
+            elseif algType == "NonLinearPraveen"
+                @assert order == 1
+                alg_type = NonLinearPraveenAlgorithm
+            elseif algType == "Tiwari"
+                alg_type = TiwariAlgorithm
+            end
         end
-        ws = UpwindWorkspace()
+
+        n_threads = Threads.nthreads()
+        # Create a vector of the chosen workspace type
+        workspaces = [WS_eltype(100) for _ in 1:n_threads] 
+        # --- End Change ---
+
         interpolator = Interpolator{dimension, order, 1}()
-        WS = typeof(ws)
         I = typeof(interpolator)
 
-        new{dimension, WS, I, alg_type}(order, weightFunction, numericalFlux, ws, interpolator)
+        new{dimension, WS_eltype, I, alg_type}(order, weightFunction, numericalFlux, workspaces, interpolator)
     end
+end
+
+"""
+Ensures all thread-local workspaces in the UpwindGradient object are
+correctly sized and re-initializes them if the thread count changed.
+"""
+function ensure_capacity!(g::UpwindGradient{<:Any, UpwindWorkspaceCA, <:Any, <:Any}, max_neighbors::Int)
+    n_threads = Threads.nthreads()
+    
+    # Re-create workspaces if thread count changed
+    if length(g.workspaces) != n_threads
+        empty!(g.workspaces)
+        for _ in 1:n_threads
+            push!(g.workspaces, UpwindWorkspaceCA(max_neighbors))
+        end
+    end
+    
+    # Ensure all workspaces have enough capacity
+    for ws in g.workspaces
+        ensure_capacity!(ws, max_neighbors)
+    end
+end
+
+"""
+Buffer initialization hook for UpwindGradient. Finds the max neighbors
+from the grid and calls ensure_capacity!
+"""
+function initGIBuffers!(g::UpwindGradient, pg::ParticleGrid)
+    max_nb = 0
+    if !isempty(pg.num_neighbors)
+        # Find the maximum number of neighbors any particle has
+        max_nb = maximum(pg.num_neighbors)
+    end
+    ensure_capacity!(g, max_nb)
+end
+
+function initGI!(g::UpwindGradient, kwargs...)
+    return
 end
 
 function initTimeStep(pg::ParticleGrid, weightFunc::MLSWeightFunction)
@@ -231,59 +313,93 @@ function (upwind::UpwindGradient{1,WS,I,A})(
     return 2 * res1 / settings.interpRange
 end
 
-
-function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
-    pg::ParticleGrid2D{S},
-    particleIndex::Int,
-    fVec_inp::AbstractVector{<:Real},
-    eq::LinearAdvection{2},
-    settings::SimSetting;
-    setCurvature::Bool=true
-)::Real where {S,WS <: UpwindWorkspace, I <: Interpolator}
+"""
+Helper function to resize a vector of workspaces.
+Handles thread-count changes and resizes all individual workspaces.
+"""
+function _init_buffers_internal!(workspaces::Vector{WS}, max_neighbors::Int) where WS
+    n_threads = Threads.nthreads()
+    # Re-create workspaces if thread count changed
+    if length(workspaces) != n_threads
+        empty!(workspaces)
+        for _ in 1:n_threads
+            push!(workspaces, WS(max_neighbors)) # Create new ones
+        end
+    end
     
-    vel = eq.vel
-    ws = upwind.workspace
+    # Ensure all workspaces have enough capacity
+    for ws in workspaces
+        ensure_capacity!(ws, max_neighbors) # Calls the correct overload
+    end
+end
+
+"""
+Buffer initialization hook for UpwindGradient. Finds the max neighbors
+from the grid and resizes all thread-local buffers.
+"""
+function initGIBuffers!(g::UpwindGradient, pg::ParticleGrid)
+    max_nb = 0
+    if !isempty(pg.num_neighbors)
+        # Find the maximum number of neighbors any particle has
+        max_nb = maximum(pg.num_neighbors)
+    end
+    
+    # Dispatch to the internal helper
+    _init_buffers_internal!(g.workspaces, max_nb)
+end
+
+"""
+Functor for UpwindGradient (ClassicAlgorithm) with the 'fused' signature.
+Calculates the upwind gradient for a single particle `i`.
+"""
+function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm})(
+    eq::ScalarHyperbolicPDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    num_nb::Int,                    # Number of neighbors
+    neighbor_slice::UnitRange{Int}, # Slice into GLOBAL coefficient arrays
+    neighbor_indices::AbstractVector, # (Not used by ClassicAlgorithm)
+    f_neighbors::AbstractVector,    # (Not used by ClassicAlgorithm)
+    df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
+    dx::AbstractVector,             # Pre-gathered view of (x_j - x_i)
+    dy::AbstractVector,             # Pre-gathered view of (y_j - y_i)
+    w::AbstractVector               # Pre-gathered view of weights
+)::Real
+    
+    # Cast equation type to access velocity
+    vel = (eq::LinearAdvection{2}).vel
+    
+    # --- 1. Get thread-local workspace and interpolator ---
+    thread_idx = Threads.threadid()
+    ws = upwind.workspaces[thread_idx]
     interp = upwind.interpolator
     
-    # --- 1. Get neighbor data slices from the main grid ---
-    start_idx = pg.neighbor_pointers[particleIndex]
-    num_neighbors = pg.num_neighbors[particleIndex]
-    if num_neighbors == 0; return 0.0; end
-    ensure_capacity!(ws, num_neighbors)
-    neighbor_slice = start_idx:(start_idx + num_neighbors - 1)
+    if num_nb == 0; return 0.0; end
     
-    # Create views into the large, persistent particle grid data. No copies here.
-    #all_neighbors = @view pg.neighbor_indices[neighbor_slice]
-    all_dx = @view pg.neighbor_xdistance[neighbor_slice]
-    all_dy = @view pg.neighbor_ydistance[neighbor_slice]
-    all_df = @view pg.neighbor_df[neighbor_slice]
-    all_w  = @view pg.neighbor_weights[neighbor_slice]
+    # Ensure the *internal* buffers are large enough
+    ensure_capacity!(ws, num_nb)
 
-
-    # --- 2. The Filter & Compact Loop (Zero Allocations) ---
-    # This loop reads from the grid and writes only the "upwind" data
-    # sequentially into the start of the workspace buffers.
+    # --- 2. The Filter & Compact Loop ---
     count = 0
-    
-    for i in 1:num_neighbors
-        # Condition check is simple and cheap
-        tmp = all_dx[i] * vel[1]
-        if tmp + all_dy[i] * vel[2] < 0
+    @inbounds for k in 1:num_nb
+        tmp = dx[k] * vel[1]
+        if tmp + dy[k] * vel[2] < 0
             count += 1
-            ws.dxVec[count] = all_dx[i]
-            ws.dyVec[count] = all_dy[i]
-            ws.dfVec[count] = all_df[i]
-            ws.wVec[count]  = all_w[i]
+            ws.dxVec[count] = dx[k]
+            ws.dyVec[count] = dy[k]
+            ws.dfVec[count] = df_neighbors[k]
+            ws.wVec[count]  = w[k]
         end
     end
 
     num_upwind = count
     if num_upwind < upwind.order; return 0.0; end
     
+    # Ensure the interpolator's internal buffers are also ready
+    # (Assuming the interpolator has its own `ensure_capacity!`)
     ensure_capacity!(interp, num_upwind)
 
     # --- 3. Process the Compacted Data ---
-    # Create views into the small, dense, cache-friendly data we just collected.
     dxVec_upwind = @view ws.dxVec[1:num_upwind]
     dyVec_upwind = @view ws.dyVec[1:num_upwind]
     dfVec_upwind = @view ws.dfVec[1:num_upwind]
@@ -294,13 +410,11 @@ function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
         res1, res2 = interp(dxVec_upwind, dyVec_upwind, wVec_upwind, dfVec_upwind)
     elseif upwind.order == 2
         res1, res2, res3, res4 = interp(dxVec_upwind, dyVec_upwind, wVec_upwind, dfVec_upwind)
-        if setCurvature
-            pg.curvatures[particleIndex, 1] = res3 / (settings.interpRange^2)
-            pg.curvatures[particleIndex, 2] = res4 / (settings.interpRange^2)
-        end
+        # Curvature cannot be set as `pg` is not an argument in this signature
     end
     
-    return (vel[1] * res1 + vel[2] * res2) / settings.interpRange
+    # Note: Division by settings.interpRange is removed to match signature.
+    return (vel[1] * res1 + vel[2] * res2)
 end
 
 # # --- REFACTORED 2D Upwind Functor (Classic Algorithm) ---

@@ -6,17 +6,17 @@ function main()
     params = ParamDict(
         # --- Shared Parameters ---
         "tmax" => 5.0,
-        "Nx" => 600,
-        "Ny" => 600,
+        "Nx" => 100,
+        "Ny" => 100,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "ymin" => -5.0,
         "ymax" => 5.0,
-        #"CFL" => 0.4,
-        "dt" => .2,
+        "CFL" => 0.4,
+        #"dt" => .2,
         "snapshots" => 20,
         "interp_alpha" => 1.0,
-        "interp_range" => 4.5,
+        "interp_range" => 3.5,
         "init_func" => "gauss", # Using the unified struct
         "init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
         #"init_params" => (0.,1.,-2.,2.,-2.,2.),
@@ -79,7 +79,7 @@ function main()
     # 2. You can then call your function directly:
     #
     
-    sim_data = runScalarSimulation(params);
+    #sim_data = runScalarSimulation(params);
     @profview runScalarSimulation(params)
 
     # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.

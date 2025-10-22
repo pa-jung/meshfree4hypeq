@@ -3,7 +3,7 @@ module ParticleGrids
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGrid, plotDensity, 
        animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
        findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, 
-       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBInput
+       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBInput, reorder_particles_for_locality!
 
 using FileIO, JLD2
 using Plots
@@ -14,6 +14,7 @@ using LinearAlgebra
 using CellListMap
 using StaticArrays
 using Base.Threads # For Atomic operations
+using ProgressMeter
 using ..SimSettings
 using ..HyperbolicPDEs
 using ..MLSWeightFunctions
@@ -196,7 +197,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
                 x=positions, 
                 cutoff=interp_range, 
                 unitcell=[xmax-xmin; ymax-ymin],
-                parallel=false # Enable parallelization
+                parallel=true # Enable parallelization
             )
         else # Non-periodic logic
             for i in 1:Nx_total, j in 1:Ny_total
@@ -213,7 +214,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
             system = InPlaceNeighborList(
                 x=positions, 
                 cutoff=interp_range, 
-                parallel=false # Enable parallelization
+                parallel=true # Enable parallelization
             )
         end
 
@@ -226,7 +227,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
         permutation, copy(permutation), zeros(Int,N), zeros(N), similar(positions), copy(is_boundary), falses(N),
         xmin, xmax, ymin, ymax, N, N_ghost,
         dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc)
-        initPermutation!(pg, system)
+        reorder_particles_for_locality!(pg)
         return pg
     end
 end
@@ -265,11 +266,10 @@ This should be called once at the end of the `ParticleGrid2D` constructor.
 - `convergence_threshold::Int`: The reordering stops when the number of mismatched particles is less than or equal to this value. `0` means it will try to sort perfectly.
 """
 function initPermutationS!(pg::ParticleGrid2D, system; maxIter::Int = 1000, convergence_threshold::Int = 0)
-    
-    for iter in 1:maxIter
+    @showprogress for iter in 1:maxIter
         # 1. Update the cell list system with the current particle positions
         #    This is crucial because `pg.positions` is modified in each iteration.
-        update!(system, pg.positions)
+        CellListMap.update!(system, pg.positions)
 
         # 2. Discover the new "optimal" permutation based on the current layout
         pg.num_neighbors .= 0
@@ -332,49 +332,260 @@ function initPermutationS!(pg::ParticleGrid2D, system; maxIter::Int = 1000, conv
     end
     return nothing
 end
+
+"""
+    reorder_particles_for_locality!(pg::ParticleGrid2D, system)
+
+Calculates an optimal particle permutation using the Reverse Cuthill-McKee (RCM)
+algorithm and then physically reorders all particle data (`rhos`, `positions`, etc.)
+to match this new order for improved cache locality.
+
+This function should be called ONCE after the grid is first initialized.
+"""
+function reorder_particles_for_locality!(pg::ParticleGrid2D)
+    @info "Building connectivity graph for reordering..."
+    # 1. Build the minimal connectivity graph (neighbor lists)
+    _build_connectivity_graph!(pg, pg.neighbor_system)
+
+    @info "Calculating RCM permutation..."
+    # 2. Calculate the optimal permutation (writes to pg.permutation)
+    _calculate_rcm_permutation!(pg)
+
+    @info "Physically reordering particle data..."
+    # 3. Physically reorder all particle data using this permutation
+    reorder_particles!(pg)
+    
+    @info "Particle reordering complete."
+    return nothing
+end
+
+"""
+    reorder_particles!(pg::ParticleGrid2D)
+
+Physically reorders all persistent state arrays (`rhos`, `positions`, `is_boundary`)
+based on the permutation stored in `pg.permutation`.
+
+This function is allocation-free, using pre-allocated buffers.
+"""
+function reorder_particles!(pg::ParticleGrid2D)
+    N = pg.N
+    
+    # 1. Calculate the inverse permutation in-place (parallel)
+    #    We write into pg.inv_permutation
+    @threads for i in 1:N
+        pg.inv_permutation[pg.permutation[i]] = i
+    end
+
+    # 2. Copy all current (old) data to their respective buffers (fast, serial)
+    copyto!(pg.reorder_buffer_rhos, pg.rhos)
+    copyto!(pg.reorder_buffer_pos, pg.positions)
+    copyto!(pg.reorder_buffer_boundary, pg.is_boundary)
+    # 3. Use the buffers to write all reordered data back in ONE parallel loop
+    @threads for i in 1:N
+        # Get the source index from the old (buffered) data
+        src_idx = pg.permutation[i]
+        
+        # Reorder all arrays at once
+        pg.rhos[i]         = pg.reorder_buffer_rhos[src_idx]
+        pg.positions[i]    = pg.reorder_buffer_pos[src_idx]
+        pg.is_boundary[i]  = pg.reorder_buffer_boundary[src_idx]
+    end
+
+    # 4. Update the grid's official permutation map
+    #    (This is just a copy, `pg.permutation` already holds the new perm)
+    #    pg.permutation .= new_permutation (No-op)
+    #    pg.inv_permutation is already correct from step 1.
+    return nothing
+end
+
+"""
+    _calculate_rcm_permutation!(pg::ParticleGrid2D)
+
+Performs a serial Reverse Cuthill-McKee (RCM) graph traversal,
+writing the resulting permutation *directly into* `pg.permutation`.
+"""
+function _calculate_rcm_permutation!(pg::ParticleGrid2D)
+    N = pg.N
+    adj = pg.neighbor_indices
+    ptr = pg.neighbor_pointers
+    degrees = pg.num_neighbors
+    
+    # Use the grid's permutation buffer as the output
+    permutation = pg.permutation
+    # Use the grid's seen_buffer as the visited set
+    visited = pg.seen_buffer
+    fill!(visited, false)
+
+    perm_idx = 0
+    
+    # Local allocations are fine here (small, and only run once)
+    queue = Int[]
+    neighbor_buffer = Int[] 
+
+    for i in 1:N # Loop over all particles to find starting points
+        if !visited[i]
+            # Found an unvisited component. Find the best starting node
+            # (lowest degree) in this component.
+            
+            # --- Simple start: just use i ---
+            # (A full search for the min-degree node in the component
+            # is more robust but more complex. This is usually fine.)
+            start_node = i 
+            
+            # --- Start BFS ---
+            visited[start_node] = true
+            resize!(queue, 0)
+            push!(queue, start_node)
+
+            while !isempty(queue)
+                current_node = popfirst!(queue)
+                
+                # Add current node to the permutation
+                perm_idx += 1
+                permutation[perm_idx] = current_node
+
+                # --- Cuthill-McKee part: Get & sort unvisited neighbors ---
+                resize!(neighbor_buffer, 0)
+                num_nb = degrees[current_node]
+                
+                if num_nb > 0
+                    neighbor_slice = ptr[current_node] : (ptr[current_node] + num_nb - 1)
+                    @inbounds for k in neighbor_slice
+                        nb_idx = adj[k]
+                        if !visited[nb_idx]
+                            visited[nb_idx] = true # Mark as visited *when adding*
+                            push!(neighbor_buffer, nb_idx)
+                        end
+                    end
+                end
+                
+                # Sort neighbors by their degree (low to high)
+                sort!(neighbor_buffer, by = i -> degrees[i])
+                
+                # Add them to the *end* of the queue
+                append!(queue, neighbor_buffer)
+            end
+        end
+    end
+    
+    @assert perm_idx == N "RCM permutation did not visit all nodes."
+
+    # --- "Reverse" part (in-place) ---
+    reverse!(permutation)
+    
+    return nothing
+end
+
+"""
+    _build_connectivity_graph!(pg::ParticleGrid2D, system)
+
+Populates the grid's neighbor graph (`num_neighbors`, `neighbor_pointers`, 
+`neighbor_indices`) using a two-pass parallel neighbor search.
+This is the minimum information needed for the RCM algorithm.
+"""
+function _build_connectivity_graph!(pg::ParticleGrid2D, system)
+    N = pg.N
+    
+    # # 1. Ensure atomic buffers are ready
+    # if !isdefined(pg, :atomic_counts_buffer) || length(pg.atomic_counts_buffer) != N
+    #     pg.atomic_counts_buffer = [Atomic{Int}(0) for _ in 1:N]
+    # end
+    # if !isdefined(pg, :atomic_offsets_buffer) || length(pg.atomic_offsets_buffer) != N
+    #     pg.atomic_offsets_buffer = [Atomic{Int}(0) for _ in 1:N]
+    # end
+
+    # --- PASS 1: Count Neighbors (Parallel) ---
+    # We must reset counts to zero.
+    @threads for i in 1:N
+        pg.atomic_counts_buffer[i][] = 0
+    end
+
+    map_pairwise!(
+        (xi, xj, i, j, d2, null) -> begin
+            atomic_add!(pg.atomic_counts_buffer[i], 1)
+            atomic_add!(pg.atomic_counts_buffer[j], 1)
+            null
+        end,
+        0, system.box, system.cl; parallel = true
+    )
+
+    # --- Serial Prefix-Sum ---
+    # Copy counts to `num_neighbors` and build `neighbor_pointers`.
+    total_neighbors = 0
+    for i in 1:N
+        num_nb = pg.atomic_counts_buffer[i][]
+        pg.num_neighbors[i] = num_nb
+        pg.neighbor_pointers[i] = total_neighbors + 1
+        total_neighbors += num_nb
+    end
+
+    # --- PASS 2: Fill Neighbor Indices (Parallel) ---
+    # Resize neighbor_indices array if needed
+    if length(pg.neighbor_indices) < total_neighbors
+        resize!(pg.neighbor_indices, total_neighbors)
+    end
+    
+    # Reset atomic offsets for the fill pass
+    @threads for i in 1:N
+        pg.atomic_offsets_buffer[i][] = 0
+    end
+    
+    atomic_offsets = pg.atomic_offsets_buffer
+
+    map_pairwise!(
+        (xi, xj, i, j, d2, null) -> begin
+            # Fill neighbor list for i
+            offset_i = atomic_add!(atomic_offsets[i], 1)
+            write_idx_i = pg.neighbor_pointers[i] + offset_i
+            pg.neighbor_indices[write_idx_i] = j
+
+            # Fill neighbor list for j
+            offset_j = atomic_add!(atomic_offsets[j], 1)
+            write_idx_j = pg.neighbor_pointers[j] + offset_j
+            pg.neighbor_indices[write_idx_j] = i
+            null
+        end,
+        0, system.box, system.cl; parallel = true
+    )
+    
+    return nothing
+end
+
 """
     initPermutation!(pg, system; maxIter=1000, convergence_threshold=0)
 
-Performs an iterative, parallel pre-sort of particle data to optimize memory layout
-for efficient neighbor access. This function should be called once in the `ParticleGrid`
-constructor.
-
-The loop converges when the "optimal" memory order calculated in one iteration
-matches the order from the previous iteration, within a given threshold.
+Performs an iterative, parallel pre-sort of particle data to optimize memory layout.
+This version fuses loops for better efficiency and correctly handles isolated particles.
 """
-function initPermutation!(pg::ParticleGrid2D, system; maxIter::Int = 1, convergence_threshold::Int = 0)
+function initPermutation!(pg::ParticleGrid2D, system; maxIter::Int = 1, convergence_threshold::Float64 = 0.1)
     
-    # Ensure atomic buffers are allocated if they don't exist or have the wrong size
+    # Ensure atomic buffers are allocated
     if !isdefined(pg, :atomic_counts_buffer) || length(pg.atomic_counts_buffer) != pg.N
         pg.atomic_counts_buffer = [Atomic{Int}(0) for _ in 1:pg.N]
         pg.atomic_seen_buffer = [Atomic{Int}(0) for _ in 1:pg.N]
         pg.atomic_offsets_buffer = [Atomic{Int}(0) for _ in 1:pg.N]
     end
 
-    for iter in 1:maxIter
+    @showprogress for iter in 1:maxIter
         # 1. Update the cell list system with the current particle positions.
-        #    This is crucial because `pg.positions` is modified in each iteration.
-        update!(system, pg.positions)
+        CellListMap.update!(system, pg.positions)
 
-        # 2. Discover the new "optimal" permutation in parallel.
-        #    Reset atomic buffers and permutation buffer for the new iteration.
+        # 2. Reset buffers in a single parallel loop (fused from 2 loops)
         @threads for i in 1:pg.N
             pg.atomic_counts_buffer[i][] = 0
             pg.atomic_seen_buffer[i][] = 0
+            pg.new_permutation_buffer[i] = 0 # Also reset the permutation buffer
         end
-        fill!(pg.new_permutation_buffer, 0)
         
         atomic_counts = pg.atomic_counts_buffer
         atomic_seen = pg.atomic_seen_buffer
-        new_order_counter = Atomic{Int}(0)
+        new_order_counter = Atomic{Int}(0) # Counter for "seen" particles
 
+        # 3. Discover new permutation and count neighbors in parallel.
         map_pairwise!(
             (xi, xj, i, j, d2, null) -> begin
-                # Atomically check and set the `seen` flag. If it was 0 and is now 1,
-                # this thread is the first to see this particle.
+                # Atomically discover the new permutation order
                 if atomic_cas!(atomic_seen[i], 0, 1) == 0
-                    # Atomically increment the counter and assign the new value.
-                    # atomic_add! returns the OLD value, so add 1.
                     pg.new_permutation_buffer[i] = atomic_add!(new_order_counter, 1) + 1
                 end
                 if atomic_cas!(atomic_seen[j], 0, 1) == 0
@@ -389,38 +600,37 @@ function initPermutation!(pg::ParticleGrid2D, system; maxIter::Int = 1, converge
             0, system.box, system.cl; parallel = true
         )
 
-        # Copy final counts from atomic to regular vector
-        @threads for i in 1:pg.N
-            pg.num_neighbors[i] = atomic_counts[i][]
-        end
-
-        # 3. Handle isolated particles serially after the parallel run.
-        #    This step is critical to ensure a valid permutation is generated.
+        # 4. Handle isolated particles and copy counts in a single serial loop
+        #    (This fuses the count-copy loop and fixes the isolated particle bug)
         final_counter_val = new_order_counter[]
+        mismatches = 0
+
         for i in 1:pg.N
-            if pg.new_permutation_buffer[i] == 0 # Find particles that were missed
+            # Copy final counts from atomic to regular vector
+            pg.num_neighbors[i] = atomic_counts[i][]
+
+            # Handle isolated particles that were missed by map_pairwise!
+            if pg.new_permutation_buffer[i] == 0 
                 final_counter_val += 1
                 pg.new_permutation_buffer[i] = final_counter_val
             end
-        end
 
-        @assert final_counter_val == pg.N "Permutation counter did not reach N during initialization."
-        @assert isperm(pg.new_permutation_buffer) "new_permutation_buffer is not a valid permutation."
-
-        # 4. Check for convergence by comparing with the previous permutation.
-        mismatches = 0
-        for i in 1:pg.N
+            # Check for convergence
             if pg.permutation[i] != pg.new_permutation_buffer[i]
                 mismatches += 1
             end
         end
 
-        if mismatches <= convergence_threshold
+        # 5. Check convergence
+        @assert final_counter_val == pg.N "Permutation counter did not reach N. ($final_counter_val != $(pg.N))"
+        # @assert isperm(pg.new_permutation_buffer) "new_permutation_buffer is not a valid permutation."
+
+        if mismatches / pg.N <= convergence_threshold
             @info "Permutation converged after $iter iterations with $mismatches mismatches."
             break # Exit the loop
         end
 
-        # 5. If not converged, physically reorder the particle data.
+        # 6. If not converged, physically reorder the particle data.
         reorder_particles!(pg, pg.new_permutation_buffer)
 
         if iter == maxIter
@@ -482,43 +692,36 @@ getEuclideanDistance(pg::ParticleGrid2D{S}, i, j) where S = norm(getDistance(pg,
 """
     reorder_particles!(pg::ParticleGrid2D, new_permutation::Vector{Int})
 
-Physically reorders the persistent state arrays (`rhos`, `positions`)
-using pre-allocated buffers to be completely allocation-free.
+Physically reorders persistent state arrays (`rhos`, `positions`, `is_boundary`)
+using pre-allocated buffers. This version fuses the parallel reordering
+into a single loop for efficiency.
 """
 function reorder_particles!(pg::ParticleGrid2D{S}, new_permutation::Vector{Int}) where S
     N = pg.N
-    new_inv_permutation = invperm(new_permutation)
-
-    # --- Reorder rhos using the pre-allocated buffer ---
-    # 1. Copy the current (old) data to the buffer.
-    copyto!(pg.reorder_buffer_rhos, pg.rhos)
-    # 2. Use the buffer to write the reordered data back into the main array.
-    @threads for i in 1:N
-        pg.rhos[i] = pg.reorder_buffer_rhos[new_inv_permutation[i]]
-    end
-
-    # --- Reorder positions using the pre-allocated buffer ---
-    # 1. Copy the current (old) data to the buffer.
-    copyto!(pg.reorder_buffer_pos, pg.positions)
-    # 2. Use the buffer to write the reordered data back into the main array.
-    @threads for i in 1:N
-        pg.positions[i] = pg.reorder_buffer_pos[new_inv_permutation[i]]
-    end
-    # --- Reorder boundary-flags using the pre-allocated buffer ---
-    # 1. Copy the current (old) data to the buffer.
-    copyto!(pg.reorder_buffer_boundary, pg.is_boundary)
-    # 2. Use the buffer to write the reordered data back into the main array.
-    @threads for i in 1:N
-        pg.is_boundary[i] = pg.reorder_buffer_boundary[new_inv_permutation[i]]
-    end
-
-
-    # NOTE: If you add other persistent state, you would need another buffer and
-    # another loop here.
-
-    # Update the grid's official permutation maps
+    pg.inv_permutation .=  invperm(new_permutation)
     pg.permutation .= new_permutation
-    pg.inv_permutation .= new_inv_permutation
+
+    # 1. Copy all current (old) data to their respective buffers (fast, serial)
+    copyto!(pg.reorder_buffer_rhos, pg.rhos)
+    copyto!(pg.reorder_buffer_pos, pg.positions)
+    copyto!(pg.reorder_buffer_boundary, pg.is_boundary)
+
+    # 2. Use the buffers to write all reordered data back in ONE parallel loop
+    @threads for i in 1:N
+        # Get the source index from the old (buffered) data
+        src_idx = pg.inv_permutation[i]
+        
+        # Reorder all arrays at once
+        pg.rhos[i]         = pg.reorder_buffer_rhos[src_idx]
+        pg.positions[i]    = pg.reorder_buffer_pos[src_idx]
+        pg.is_boundary[i]  = pg.reorder_buffer_boundary[src_idx]
+    end
+
+    # NOTE: If you add other persistent state, add its copyto! above
+    # and its reorder line inside the @threads loop.
+
+    # 3. Update the grid's official permutation maps
+    
     
     return nothing
 end
@@ -542,7 +745,7 @@ function updateNeighborsS!(
         reordered = true
     end
     
-    update!(system, pg.positions)     
+    CellListMap.update!(system, pg.positions)     
     
     # --- PASS 1: Discover New Optimal Order & Count Neighbors (Serial) ---
     pg.num_neighbors .= 0
@@ -572,7 +775,7 @@ function updateNeighborsS!(
         0, system.box, system.cl; parallel=false # Explicitly serial
     )
 
-    #update!(system, pg.positions)
+    #CellListMap.update!(system, pg.positions)
 
     # --- Handle isolated particles to guarantee a valid permutation ---
     # for i in 1:pg.N
@@ -673,7 +876,7 @@ function updateNeighbors!(
         reordered = true
     end
 
-    update!(system, pg.positions)
+    CellListMap.update!(system, pg.positions)
 
     # --- PASS 1: COUNT NEIGHBORS (Thread-Safe & Allocation-Free) ---
     @inbounds for i in 1:pg.N; pg.atomic_counts_buffer[i][] = 0; end
@@ -717,17 +920,17 @@ function updateNeighbors!(
     @assert final_counter_val == pg.N "Permutation counter did not reach N. Something is wrong."
     @assert isperm(pg.new_permutation_buffer) "new_permutation_buffer is not a valid permutation. It may contain zeros or duplicates."
 
-    # --- ADAPTIVE REORDERING DECISION ---
-    mismatches = 0
-    for i in 1:pg.N
-        if pg.permutation[i] != pg.new_permutation_buffer[i]
-            mismatches += 1
-        end
-    end
+    # # --- ADAPTIVE REORDERING DECISION ---
+    # mismatches = 0
+    # for i in 1:pg.N
+    #     if pg.permutation[i] != pg.new_permutation_buffer[i]
+    #         mismatches += 1
+    #     end
+    # end
 
-    if (mismatches / pg.N > reorder_threshold)# && !reordered
-        pg.permutation[1] = -1 
-    end
+    # if (mismatches / pg.N > reorder_threshold)# && !reordered
+    #     pg.permutation[1] = -1 
+    # end
 
     # --- PREPARE FOR PASS 2 ---
     total_neighbors = sum(pg.num_neighbors)

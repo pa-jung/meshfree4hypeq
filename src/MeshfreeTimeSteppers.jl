@@ -100,18 +100,6 @@ function check_for_nans(s::Any; range::Union{UnitRange, Nothing}=nothing, counte
 end
 
 """
-Ensures a vector `v` has at least capacity `n`.
-Resizes if `length(v) < n`.
-"""
-function _ensure_capacity!(v::Vector, n::Int)
-    if length(v) < n
-        n = n + n ÷ 4
-        resize!(v, n)
-    end
-    return nothing
-end
-
-"""
     initTS!(ts::MeshfreeTimeStepper, pg::ParticleGrid, fVec::AbstractVector)
 
 Initializes all buffers within the timestepper `ts` based on the particle grid `pg`.
@@ -141,20 +129,22 @@ function initTSBuffer!(
     return nothing
 end
 
-function initTS!(ts::MeshfreeTimeStepper, f_i, fVec, nb_indices, neighbor_slice)
+function initTS!(ts::MeshfreeTimeStepper, i, f_i, fVec, pg::ParticleGrid)
     # --- 4. Parallel Pre-Gather Loop ---
     # Get local aliases to the buffers for cleaner code in the loop
     neighbor_fs  = ts.neighbor_fs
     neighbor_dfs = ts.neighbor_dfs
-
-    @inbounds for k in neighbor_slice
+    pointer = pg.neighbor_pointers[i]
+    neighbor_slice = pointer:(pointer + pg.num_neighbors[i] - 1)
+    nb_indices = pg.neighbor_indices
+    for k in neighbor_slice
         # `k` is the global index into the flat neighbor arrays
         
         # 1. GATHER: Get neighbor index `j`...
         j = nb_indices[k]
         # ...and then get its value `f_j`. This is the slow part.
         f_j = fVec[j] 
-
+        #println(i,":",j)
         # 2. CALCULATE & STORE: Write to the pre-allocated buffers
         neighbor_fs[k]  = f_j
         neighbor_dfs[k] = f_j - f_i
@@ -449,17 +439,16 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     initTSBuffer!(ralston, particleGrid)
 
     # Define a chunk size. 100 is a good starting point.
-    chunk_size = 250 
+    chunk_size = 100
     chunks = collect(Iterators.partition(1:N, chunk_size))
 
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
     Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             fi = ralston.rhoInit[p_idx]
-            num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w = getNBInput(particleGrid, p_idx, ralston.neighbor_fs, ralston.neighbor_dfs)
-            initTS!(ralston, fi, ralston.rhoInit, particleGrid.neighbor_indices, neighbor_slice)
-            initGI!(ralston.gradientInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
-            initGI!(ralston.fallbackInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
+            initTS!(ralston, p_idx, fi, ralston.rhoInit, particleGrid)
+            initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
         end
     end
     
@@ -487,11 +476,10 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
     Threads.@threads for particle_range in chunks
         for p_idx in particle_range
-        fi = ralston.rhos[p_idx]
-        num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w = getNBInput(particleGrid, p_idx, ralston.neighbor_fs, ralston.neighbor_dfs)
-            initTS!(ralston, fi, ralston.rhoInit, particleGrid.neighbor_indices, neighbor_slice)
-            initGI!(ralston.gradientInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
-            initGI!(ralston.fallbackInterpolator, p_idx, fi, num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w)
+            fi = ralston.rhos[p_idx]
+            initTS!(ralston, p_idx, fi, ralston.rhos, particleGrid)
+            initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
         end
     end
 
