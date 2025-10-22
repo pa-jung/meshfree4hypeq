@@ -831,35 +831,33 @@ function (muscl::MUSCL{2, ORDER})(
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    num_nb::Int,                    # Number of neighbors
-    neighbor_slice::UnitRange{Int}, # Slice into GLOBAL coefficient arrays
-    neighbor_indices::AbstractVector,
+    pg::ParticleGrid,
     f_neighbors::AbstractVector,    # View of neighbor f-values
     df_neighbors::AbstractVector,   # View of neighbor df-values
-    dx::AbstractVector,             # View of neighbor x-distances
-    dy::AbstractVector,             # View of neighbor y-distances
-    w::AbstractVector,              # View of neighbor weights
 )::Real where {ORDER<:MUSCLORDER}
     
     div = 0.0
     ws = muscl.workspace
     nFlux = muscl.numericalFlux
+    
+    if pg.num_neighbors[i] == 0; return 0.0; end
 
-    if num_nb == 0;
-return 0.0; end
+    neighbor_slice = getNBSlice(pg, i)
+    dx = pg.neighbor_xdistance
+    dy = pg.neighbor_ydistance
+    nb_indices = pg.neighbor_indices
 
     fx, fy = flux(eq, f_i)
 
     # Loop over neighbors using the local index `k_local`
-    @inbounds for k_local in 1:num_nb
+    @inbounds for k_global in neighbor_slice
         # Get global index for coefficient arrays
-        k_global = neighbor_slice[k_local] 
         
         # Get data from views
-        nbIndex = neighbor_indices[k_local]
-        deltaX = dx[k_local]
-        deltaY = dy[k_local]
-        fj = f_neighbors[k_local]
+        nbIndex = nb_indices[k_global]
+        deltaX = dx[k_global]
+        deltaY = dy[k_global]
+        fj = f_neighbors[k_global]
         
         # Get pre-calculated coefficients
         alfaij = ws.alfaijs[k_global]
@@ -886,18 +884,19 @@ end
 Calculates 1st-order MUSCL coefficients (alfaij, betaij) for a single particle.
 This is the internal logic from the old `_compute_muscl_coeffs!(::MUSCLORDER1, ...)`
 """
-function _compute_coeffs!(
+@inline function _compute_coeffs!(
     ::MUSCLORDER1,
-    alfaij_buffer::AbstractVector, # View into ws.alfaijs
-    betaij_buffer::AbstractVector, # View into ws.betaijs
+    nb_slice::UnitRange{Int},
+    alfaij::AbstractVector, # View into ws.alfaijs
+    betaij::AbstractVector, # View into ws.betaijs
     dx::AbstractVector,            # View of neighbor x-distances
     dy::AbstractVector,            # View of neighbor y-distances
     w::AbstractVector              # View of neighbor weights
 )
     # --- 1. Calculate A-matrix components ---
- 
+    
    A11 = 0.0; A22 = 0.0; A12 = 0.0
-    @inbounds for k in eachindex(dx)
+    @inbounds for k in nb_slice
         w_k = w[k]
         dx_k = dx[k]
         dy_k = dy[k]
@@ -916,16 +915,16 @@ D = A11 * A22 - A12^2
     end
 
     # --- 2. Calculate final coefficients ---
-    @inbounds for k in eachindex(dx)
+    @inbounds for k in nb_slice
         w_k = w[k]
         dx_k = dx[k]
         dy_k = dy[k]
 
         num_a = w_k * (A22 * dx_k - A12 * dy_k)
-        alfaij_buffer[k] = num_a / D
+        alfaij[k] = num_a / D
 
         num_b = w_k * (A11 * dy_k - A12 * dx_k)
-        betaij_buffer[k] = num_b / D
+        betaij[k] = num_b / D
     end
 end
 
@@ -934,16 +933,17 @@ Calculates the unlimited slopes for a single particle.
 This is the internal logic from the old `calculate_slopes!(::MUSCLORDER1, ...)`
 """
 function _calculate_slopes(
+    nb_slice::UnitRange{Int64},
     df_neighbors::AbstractVector,   # View of neighbor df-values
-    alfaij_buffer::AbstractVector, # View of alfaij coefficients
-    betaij_buffer::AbstractVector  # View of betaij coefficients
+    alfaij::AbstractVector, # View of alfaij coefficients
+    betaij::AbstractVector  # View of betaij coefficients
 )
     slope_x = 0.0
     slope_y = 0.0
-    @inbounds for k in eachindex(df_neighbors)
+    @inbounds for k in nb_slice
         df = df_neighbors[k]
-        slope_x += alfaij_buffer[k] * df
-        slope_y += betaij_buffer[k] * df
+        slope_x += alfaij[k] * df
+        slope_y += betaij[k] * df
     end
     return slope_x, slope_y
 end
@@ -1044,27 +1044,21 @@ function initGI!(
         return
     end
     
-    pointer = pg.neighbor_pointers[i]
-    neighbor_slice = pointer:(pointer + num_nb - 1)
+    neighbor_slice = getNBSlice(pg, i)
     
-    # --- 2. Create ALL views in one place ---
-    #    (The compiler has a high chance of optimizing these away)
-    alfaij_buffer     = @view ws.alfaijs[neighbor_slice]
-    betaij_buffer     = @view ws.betaijs[neighbor_slice]
-    f_neighbors_view  = @view neighbor_fs[neighbor_slice]
-    df_neighbors_view = @view neighbor_dfs[neighbor_slice]
-    dx_view           = @view pg.neighbor_xdistance[neighbor_slice]
-    dy_view           = @view pg.neighbor_ydistance[neighbor_slice]
-    w_view            = @view pg.neighbor_weights[neighbor_slice]
+
+    dx = pg.neighbor_xdistance
+    dy = pg.neighbor_ydistance
+    w  = pg.neighbor_weights
     # 'neighbors' (indices) isn't needed by these helpers, so we skip it.
 
     # --- 3. Call the (already clean) helpers ---
-    _compute_coeffs!(muscl.order, alfaij_buffer, betaij_buffer, dx_view, dy_view, w_view)
+    _compute_coeffs!(muscl.order, neighbor_slice, ws.alfaijs, ws.betaijs, dx, dy, w)
     
-    slope_x, slope_y = _calculate_slopes(df_neighbors_view, alfaij_buffer, betaij_buffer)
+    slope_x, slope_y = _calculate_slopes(neighbor_slice, neighbor_dfs, ws.alfaijs, ws.betaijs)
 
     # Note: _limit_slopes was not provided, but assuming it has the same signature
-    slope_x, slope_y = _limit_slopes(muscl.limiter, slope_x, slope_y, f_i, f_neighbors_view, dx_view, dy_view)
+    slope_x, slope_y = _limit_slopes(muscl.limiter, slope_x, slope_y, f_i, neighbor_fs, dx, dy)
     
     if isnan(slope_y) || isnan(slope_x)
         error("Found NaN while calculating slopes for a particle!")

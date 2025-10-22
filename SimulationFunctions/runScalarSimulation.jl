@@ -139,6 +139,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         weight_func = if weight_func_name == "exponential"; exponentialWeightFunction(interp_alpha, interp_range)
                       elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         updateNeighbors!(particleGrid, weight_func)
+        
         # --- 6. Time Step and Settings ---
         if !isnothing(cfl)
             # For non-linear, use a dummy linear equation with max characteristic speed

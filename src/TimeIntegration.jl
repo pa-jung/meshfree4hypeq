@@ -58,7 +58,7 @@ Resizes if `length(v) < n`.
 """
 function _ensure_capacity!(v::AbstractVector, n::Int)
     if length(v) < n
-        n = n + n ÷ 4
+        n = n #+ n ÷ 4
         resize!(v, n)
     end
     return nothing

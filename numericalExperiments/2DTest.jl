@@ -6,8 +6,8 @@ function main()
     params = ParamDict(
         # --- Shared Parameters ---
         "tmax" => 5.0,
-        "Nx" => 100,
-        "Ny" => 100,
+        "Nx" => 1000,
+        "Ny" => 1000,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "ymin" => -5.0,
@@ -78,9 +78,10 @@ function main()
     #
     # 2. You can then call your function directly:
     #
-    
+    # 1. Configure the profiler to sample ALL threads
+    #    We also give it a larger buffer (n) and a reasonable delay
     #sim_data = runScalarSimulation(params);
-    @profview runScalarSimulation(params)
+    #@profview runScalarSimulation(params)
 
     # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.
     #
@@ -99,7 +100,7 @@ function main()
 #show1DSolutionFig(test_config)
 scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
 #show2DCutFig(test_config;scene_options = scene_options)
-#show2DSolutionFig(test_config)
+show2DSolutionFig(test_config)
 end
 
 main()

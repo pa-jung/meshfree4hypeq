@@ -3,7 +3,7 @@ module ParticleGrids
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGrid, plotDensity, 
        animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
        findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, 
-       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBInput, reorder_particles_for_locality!
+       determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBSlice, reorder_particles_for_locality!
 
 using FileIO, JLD2
 using Plots
@@ -227,7 +227,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
         permutation, copy(permutation), zeros(Int,N), zeros(N), similar(positions), copy(is_boundary), falses(N),
         xmin, xmax, ymin, ymax, N, N_ghost,
         dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc)
-        reorder_particles_for_locality!(pg)
+        #reorder_particles_for_locality!(pg)
         return pg
     end
 end
@@ -238,17 +238,11 @@ using ..ParticleGrids # Assuming this is where ParticleGrid2D is defined
 using ..MLSWeightFunctions # Assuming this is where MLSWeightFunction is defined
 
 
-function getNBInput(pg::ParticleGrid, p_idx::Int, nb_fs::AbstractVector, nb_dfs::AbstractVector)
+@inline function getNBSlice(pg::ParticleGrid, p_idx::Int)
     num_nb = pg.num_neighbors[p_idx]
     pointer = pg.neighbor_pointers[p_idx]
     neighbor_slice = pointer:(pointer + num_nb - 1)
-    neighbors = @view pg.neighbor_indices[neighbor_slice]
-    f_neighbors = @view nb_fs[neighbor_slice]
-    df_neighbors = @view nb_dfs[neighbor_slice]
-    dx = @view pg.neighbor_xdistance[neighbor_slice]
-    dy = @view pg.neighbor_ydistance[neighbor_slice]
-    w = @view pg.neighbor_weights[neighbor_slice]
-    return num_nb, neighbor_slice, neighbors, f_neighbors, df_neighbors, dx, dy, w
+    return neighbor_slice
 end
 
 """
@@ -362,39 +356,41 @@ end
 """
     reorder_particles!(pg::ParticleGrid2D)
 
-Physically reorders all persistent state arrays (`rhos`, `positions`, `is_boundary`)
-based on the permutation stored in `pg.permutation`.
+Physically reorders the persistent *particle data* (`rhos`, `positions`, 
+`is_boundary`) based on the permutation stored in `pg.permutation`.
 
-This function is allocation-free, using pre-allocated buffers.
+This function does NOT reorder the graph itself, as it assumes
+`updateNeighbors!` will be called immediately after to rebuild
+the graph from scratch.
 """
 function reorder_particles!(pg::ParticleGrid2D)
     N = pg.N
     
-    # 1. Calculate the inverse permutation in-place (parallel)
-    #    We write into pg.inv_permutation
-    @threads for i in 1:N
-        pg.inv_permutation[pg.permutation[i]] = i
-    end
-
-    # 2. Copy all current (old) data to their respective buffers (fast, serial)
+    # 1. Copy all current (old) particle data to buffers (fast, serial)
     copyto!(pg.reorder_buffer_rhos, pg.rhos)
     copyto!(pg.reorder_buffer_pos, pg.positions)
     copyto!(pg.reorder_buffer_boundary, pg.is_boundary)
-    # 3. Use the buffers to write all reordered data back in ONE parallel loop
+    # 2. Use the buffers to write all reordered data back in ONE parallel loop
     @threads for i in 1:N
-        # Get the source index from the old (buffered) data
-        src_idx = pg.permutation[i]
+        # i = The NEW, destination index (1..N)
         
-        # Reorder all arrays at once
+        # --- THE FIX ---
+        # Get the OLD source index from the permutation map
+        src_idx = pg.permutation[i]
+        # --- END FIX ---
+        
+        # Reorder all particle data arrays at once
         pg.rhos[i]         = pg.reorder_buffer_rhos[src_idx]
         pg.positions[i]    = pg.reorder_buffer_pos[src_idx]
         pg.is_boundary[i]  = pg.reorder_buffer_boundary[src_idx]
     end
 
-    # 4. Update the grid's official permutation map
-    #    (This is just a copy, `pg.permutation` already holds the new perm)
-    #    pg.permutation .= new_permutation (No-op)
-    #    pg.inv_permutation is already correct from step 1.
+    # 3. Update the grid's permutation maps for consistency
+    # (Even though the graph is stale, these maps reflect the data)
+    @threads for i in 1:N
+        pg.inv_permutation[pg.permutation[i]] = i
+    end
+    
     return nothing
 end
 
@@ -858,6 +854,8 @@ function updateNeighborsS!(
     #error("Test")
     return nothing
 end
+
+include("./TestUtils.jl")
 """
     updateNeighborsParallel!(pg, weightFunc; reorder_threshold=0.1)
 
@@ -870,6 +868,7 @@ function updateNeighbors!(
     reorder_threshold::Float64 = 0.1 
 )
     system = pg.neighbor_system
+    
     reordered = false
     if pg.permutation[1] == -1; 
         reorder_particles!(pg, pg.new_permutation_buffer);
@@ -958,8 +957,7 @@ function updateNeighbors!(
             weight = weightFunc(d2)
 
             # CORRECTED: Use robust atomic pattern
-            atomic_add!(atomic_offsets[i], 1)
-            offset_i = atomic_offsets[i][] - 1
+            offset_i = atomic_add!(atomic_offsets[i], 1)
             write_idx_i = pg.neighbor_pointers[i] + offset_i
             #println(write_idx_i)
             pg.neighbor_indices[write_idx_i]   = j
@@ -968,19 +966,21 @@ function updateNeighbors!(
             pg.neighbor_weights[write_idx_i]   = weight
 
             # CORRECTED: Use robust atomic pattern
-            atomic_add!(atomic_offsets[j], 1) # -1 included bc of old value 
-            offset_j = atomic_offsets[j][] - 1
+            
+            offset_j = atomic_add!(atomic_offsets[j], 1) # -1 included bc of old value 
             #println(pg.neighbor_pointers[j],":", atomic_offsets[j][])
             write_idx_j = pg.neighbor_pointers[j] + offset_j
             pg.neighbor_indices[write_idx_j]   = i
             pg.neighbor_xdistance[write_idx_j] = -dist_x
             pg.neighbor_ydistance[write_idx_j] = -dist_y
             pg.neighbor_weights[write_idx_j]   = weight
-            
+            @assert (!isnan(dist_x) && !isnan(dist_y)) "$dist_x,$dist_y"
             null
         end,
         0, system.box, system.cl; parallel = true
     )
+    #println(pg.neighbor_xdistance)
+    #check_for_nans(pg)
     return nothing
 end
 
@@ -1269,7 +1269,14 @@ boundary conditions by finding the closest interior neighbor. This operates
 on a buffer to avoid modifying the grid's state mid-step.
 """
 function apply_boundary_conditions!(particleGrid::ParticleGrid2D, rhos_buffer::AbstractVector)
-    if particleGrid.bc != :outflow; return; end
+    if particleGrid.bc == :periodic; return; 
+    elseif particleGrid.bc == :fixed_dirichlet
+        for ghost_idx in 1:particleGrid.N
+            if particleGrid.is_boundary[ghost_idx]
+                rhos_buffer[ghost_idx] = particleGrid.rhos[ghost_idx]
+            end
+        end
+    elseif particleGrid.bc == :outflow
 
     # Find all ghost particles by checking the is_boundary flag
     @threads for ghost_idx in 1:particleGrid.N
@@ -1306,6 +1313,7 @@ function apply_boundary_conditions!(particleGrid::ParticleGrid2D, rhos_buffer::A
             end
         end
     end
+end
 end
 """
 Finds the local min/max in the neighborhood of a particle.
