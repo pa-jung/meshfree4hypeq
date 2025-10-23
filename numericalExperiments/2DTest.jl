@@ -5,9 +5,9 @@ include("../SimulationFunctions/runScalarSimulation.jl")
 function main()
     params = ParamDict(
         # --- Shared Parameters ---
-        "tmax" => 5.0,
-        "Nx" => 1000,
-        "Ny" => 1000,
+        "tmax" => 10.0,
+        "Nx" => 200,
+        "Ny" => 200,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "ymin" => -5.0,
@@ -24,7 +24,7 @@ function main()
         "SEED_value" => 42,
         "PDE" => "linear",
         "PDE_params" => (1.0, 1.2), # 2D velocity vector (vx, vy)
-        "bc" => :fixed_dirichlet,
+        "bc" => :periodic,
         "sim_function" => "runScalarSimulation",
         "weight_function" => "exponential",
         #"limiter" => "VK",

@@ -794,7 +794,7 @@ end
 
 
 # --- REFACTORED: Order 2 now just fetches pre-calculated values ---
-function reconstruct_interface_states(::MUSCLORDER2, particleGrid::ParticleGrid2D{S}, ws, f_i, f_j, p_idx, nb_idx, deltaX, deltaY) where S
+function reconstruct_interface_states(::MUSCLORDER2, ws, f_i, f_j, p_idx, nb_idx, deltaX, deltaY)
     # Fetch derivatives for particle i
     slope_ix   = ws.slopes_x[p_idx]
     slope_iy   = ws.slopes_y[p_idx]
@@ -811,8 +811,7 @@ function reconstruct_interface_states(::MUSCLORDER2, particleGrid::ParticleGrid2
 
     # Taylor expansion
     h = 0.5 * deltaX
-    k = 
-0.5 * deltaY
+    k = 0.5 * deltaY
     fij = f_i + h*slope_ix + k*slope_iy + 0.5*(h^2*curve_xx_i + 2*h*k*curve_xy_i + k^2*curve_yy_i)
     fji = f_j - h*slope_jx - k*slope_jy + 0.5*(h^2*curve_xx_j + 2*h*k*curve_xy_j + k^2*curve_yy_j)
     
@@ -857,7 +856,7 @@ function (muscl::MUSCL{2, ORDER})(
         nbIndex = nb_indices[k_global]
         deltaX = dx[k_global]
         deltaY = dy[k_global]
-        fj = f_neighbors[k_global]
+        f_j = f_neighbors[k_global]
         
         # Get pre-calculated coefficients
         alfaij = ws.alfaijs[k_global]
@@ -865,7 +864,7 @@ function (muscl::MUSCL{2, ORDER})(
         betaij = ws.betaijs[k_global]
         
         # This call uses pre-calculated slopes from the workspace
-        fij, fji = reconstruct_interface_states(muscl.order, ws, f_i, fj, i, nbIndex, deltaX, deltaY)
+        fij, fji = reconstruct_interface_states(muscl.order, ws, f_i, f_j, i, nbIndex, deltaX, deltaY)
 
         fmx, fpx, fmy, fpy = sortFlux(fij, fji, deltaX, deltaY)
         
@@ -909,8 +908,8 @@ D = A11 * A22 - A12^2
 
     # --- Handle singular matrix case ---
     if abs(D) < 1e-14
-        fill!(alfaij_buffer, 0.0)
-        fill!(betaij_buffer, 0.0)
+        fill!(alfaij, 0.0)
+        fill!(betaij, 0.0)
         return
     end
 
@@ -1080,35 +1079,37 @@ function initGI!(
     muscl::MUSCL{2,MUSCLORDER2},
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    num_nb::Int,                    # Number of neighbors
-    neighbor_slice::UnitRange{Int}, # Slice into GLOBAL coefficient arrays
-    neighbors::AbstractVector,
+    pg::ParticleGrid, 
     f_neighbors::AbstractVector,    # View of neighbor f-values
     df_neighbors::AbstractVector,   # View of neighbor df-values
-    dx::AbstractVector,             # View of neighbor x-distances
-    dy::AbstractVector,             # View of neighbor y-distances
-    w::AbstractVector               # View of neighbor weights
 )
     ws = muscl.workspace
-    thread_idx = 
+    thread_idx = Threads.threadid() - 1
     # --- Fetch the correct thread-local buffer ---
     A_buffer_threadlocal = ws.A_buffers[thread_idx] # <--- This now works
 
     # Get views into the correct slice of the global coefficient buffers
-    alfaij_buffer     = @view ws.alfaijs[neighbor_slice]
-    betaij_buffer     = @view ws.betaijs[neighbor_slice]
-    alfaij_bar_buffer = @view ws.alfaij_bars[neighbor_slice]
-    betaij_bar_buffer = @view ws.betaij_bars[neighbor_slice]
-    gammaij_buffer    = @view ws.gammaijs[neighbor_slice]
+    alfaij      = ws.alfaijs
+    betaij      = ws.betaijs
+    alfaij_bar  = ws.alfaij_bars
+    betaij_bar  = ws.betaij_bars
+    gammaij     = ws.gammaijs
+    dx          = pg.neighbor_xdistance
+    dy          = pg.neighbor_ydistance
+    w          = pg.neighbor_weights
+    num_nb      = pg.num_neighbors[i]
+
+    nb_slice = getNBSlice(pg, i)
 
     # --- Handle zero-neighbor case ---
     if num_nb == 0
-        fill!(alfaij_buffer, 0.0)
-        fill!(betaij_buffer, 0.0)
-        fill!(alfaij_bar_buffer, 0.0)
-        fill!(betaij_bar_buffer, 0.0)
-        fill!(gammaij_buffer, 0.0)
-        
+        for k = nb_slice
+            alfaij[k] = 0.
+            betaij[k] = 0.
+            alfaij_bar[k] = 0.
+            betaij_bar[k] = 0.
+            gammaij[k] = 0.
+        end
         ws.slopes_x[i] = 0.0
         ws.slopes_y[i] = 0.0
         ws.curves_xx[i] = 0.0
@@ -1121,23 +1122,23 @@ function initGI!(
     A_view = @view A_buffer_threadlocal[1:num_nb, 1:5]
     
     _compute_coeffs!(
-        muscl.order,
-        alfaij_buffer, betaij_buffer, alfaij_bar_buffer,
-        betaij_bar_buffer, gammaij_buffer,
+        muscl.order, nb_slice,
+        alfaij, betaij, alfaij_bar,
+        betaij_bar, gammaij,
         A_view, dx, dy, w
     )
     
     # --- 2. Calculate Derivatives ---
     # <--- 3. PASS df_neighbors, NOT f_i and f_neighbors ---
     (slope_x, slope_y, curve_xx, curve_yy, curve_xy) = _calculate_derivatives(
-        muscl.order, df_neighbors,
-        alfaij_buffer, betaij_buffer, alfaij_bar_buffer,
-        betaij_bar_buffer, gammaij_buffer
+        muscl.order, nb_slice, df_neighbors,
+        alfaij, betaij, alfaij_bar,
+        betaij_bar, gammaij
     )
 
     # --- 3. Limit Derivatives ---
     (slope_x, slope_y, curve_xx, curve_yy, curve_xy) = _limit_derivatives(
-        muscl.order, muscl.limiter,
+        muscl.order, nb_slice, muscl.limiter,
         slope_x, slope_y, curve_xx, curve_yy, curve_xy,
         f_i, f_neighbors, dx, dy
     )
@@ -1162,40 +1163,46 @@ This is the internal logic from the old `_compute_muscl_coeffs!(::MUSCLORDER2, .
 """
 function _compute_coeffs!(
     ::MUSCLORDER2,
-    alfaij_buffer::AbstractVector,     # View into ws.alfaijs
-    betaij_buffer::AbstractVector,     # View into ws.betaijs
-    alfaij_bar_buffer::AbstractVector, # View into ws.alfaij_bars
-    betaij_bar_buffer::AbstractVector, # View into ws.betaij_bars
-    gammaij_buffer::AbstractVector,    # View into ws.gammaijs
+    nb_slice::UnitRange{Int},
+    alfaij::AbstractVector,     # View into ws.alfaijs
+    betaij::AbstractVector,     # View into ws.betaijs
+    alfaij_bar::AbstractVector, # View into ws.alfaij_bars
+    betaij_bar::AbstractVector, # View into ws.betaij_bars
+    gammaij::AbstractVector,    # View into ws.gammaijs
     A_view::AbstractMatrix,            # View of thread-local temp matrix
     dx::AbstractVector,                # View of neighbor x-distances
     dy::AbstractVector,                # View of neighbor y-distances
     w::AbstractVector                  # View of neighbor weights
 )
+    count = 0
     # --- 1. Populate the temporary A matrix ---
-    @inbounds for k in eachindex(dx)
+    @inbounds for k in nb_slice
+        count += 1
+
         dx_k = dx[k]
         dy_k = dy[k]
         w_k  = w[k]
 
-        A_view[k, 1] = dx_k * w_k
-        A_view[k, 2] = dy_k * w_k
-        A_view[k, 3] = (dx_k^2) * w_k * 0.5
-        A_view[k, 4] = (dy_k^2) * w_k * 0.5
-        A_view[k, 5] = dx_k * dy_k * w_k
+        A_view[count, 1] = dx_k * w_k
+        A_view[count, 2] = dy_k * w_k
+        A_view[count, 3] = (dx_k^2) * w_k * 0.5
+        A_view[count, 4] = (dy_k^2) * w_k * 0.5
+        A_view[count, 5] = dx_k * dy_k * w_k
     end
 
     # --- 2. Perform the pseudo-inverse (this is a necessary allocation) ---
     coeff = pinv(A_view, rtol=sqrt(eps(real(float(oneunit(eltype(A_view)))))))
     
     # --- 3. Write final coefficients ---
-    @inbounds for k in eachindex(dx)
+    count = 0
+    @inbounds for k in nb_slice
+        count += 1
         w_k = w[k]
-        alfaij_buffer[k]     = coeff[1, k] * w_k
-        betaij_buffer[k]     = coeff[2, k] * w_k
-        alfaij_bar_buffer[k] = coeff[3, k] * w_k
-        betaij_bar_buffer[k] = coeff[4, k] * w_k
-        gammaij_buffer[k]    = coeff[5, k] * w_k
+        alfaij[k]     = coeff[1, count] * w_k
+        betaij[k]     = coeff[2, count] * w_k
+        alfaij_bar[k] = coeff[3, count] * w_k
+        betaij_bar[k] = coeff[4, count] * w_k
+        gammaij[k]    = coeff[5, count] * w_k
     end
 end
 
@@ -1205,27 +1212,28 @@ This version uses the pre-calculated neighbor_dfs buffer.
 """
 function _calculate_derivatives(
     ::MUSCLORDER2,
+    nb_slice::UnitRange{Int},
     df_neighbors::AbstractVector, # <--- CHANGED
-    alfaij_buffer::AbstractVector,
-    betaij_buffer::AbstractVector,
-    alfaij_bar_buffer::AbstractVector,
-    betaij_bar_buffer::AbstractVector,
-    gammaij_buffer::AbstractVector
+    alfaij::AbstractVector,
+    betaij::AbstractVector,
+    alfaij_bar::AbstractVector,
+    betaij_bar::AbstractVector,
+    gammaij::AbstractVector
 )
     slope_x = 0.0
     slope_y = 0.0
     curve_xx = 0.0
     curve_yy = 0.0
     curve_xy = 0.0
-
-    @inbounds for k in eachindex(df_neighbors)
+    
+    @inbounds for k in nb_slice
         df = df_neighbors[k] # <--- CHANGED
         
-        slope_x  += alfaij_buffer[k] * df
-        slope_y  += betaij_buffer[k] * df
-        curve_xx += alfaij_bar_buffer[k] * df
-        curve_yy += betaij_bar_buffer[k] * df
-        curve_xy += gammaij_buffer[k] * df
+        slope_x  += alfaij[k] * df
+        slope_y  += betaij[k] * df
+        curve_xx += alfaij_bar[k] * df
+        curve_yy += betaij_bar[k] * df
+        curve_xy += gammaij[k] * df
     end
 
     return slope_x, slope_y, curve_xx, curve_yy, curve_xy
@@ -1236,6 +1244,7 @@ Local derivative limiting function (NoLimiter dispatch for MUSCLORDER2).
 """
 function _limit_derivatives(
     ::MUSCLORDER2,
+    nb_slice::UnitRange{Int64},
     limiter::NoLimiter,
     slope_x, slope_y, curve_xx, curve_yy, curve_xy,
     f_i, f_neighbors, dx, dy
@@ -1250,6 +1259,7 @@ Based on the assertion, this is not implemented.
 """
 function _limit_derivatives(
     ::MUSCLORDER2,
+    nb_slice::UnitRange{Int},
     limiter::RealSlopeLimiter,
     slope_x, slope_y, curve_xx, curve_yy, curve_xy,
     f_i, f_neighbors, dx, dy

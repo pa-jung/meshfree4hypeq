@@ -308,6 +308,7 @@ struct RalstonRK2{G1, G2, MOOD} <: MeshfreeTimeStepper
     rhos::Vector{Float64}
     div1::Vector{Float64}
 
+    # Buffers for efficient calculations
     neighbor_fs::Vector{Float64}
     neighbor_dfs::Vector{Float64}
 
@@ -391,10 +392,11 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
             if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
         
             fi = ralston.rhoInit[p_idx]
+            nb_slice = getNBSlice(particleGrid, p_idx)
             # Pass the intermediate state (ralston.rhos) to the gradient calculation
-            div2 = ralston.gradientInterpolator(eq, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            div2 = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
-            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhos, ralston.neighbor_fs, rho_final)
+            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhos, rho_final)
                 div2 = ralston.fallbackInterpolator(eq, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
                 rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
             end

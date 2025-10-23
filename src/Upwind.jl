@@ -356,32 +356,33 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    num_nb::Int,                    # Number of neighbors
-    neighbor_slice::UnitRange{Int}, # Slice into GLOBAL coefficient arrays
-    neighbor_indices::AbstractVector, # (Not used by ClassicAlgorithm)
+    pg::ParticleGrid2D,
     f_neighbors::AbstractVector,    # (Not used by ClassicAlgorithm)
     df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
-    dx::AbstractVector,             # Pre-gathered view of (x_j - x_i)
-    dy::AbstractVector,             # Pre-gathered view of (y_j - y_i)
-    w::AbstractVector               # Pre-gathered view of weights
 )::Real
     
     # Cast equation type to access velocity
     vel = (eq::LinearAdvection{2}).vel
     
     # --- 1. Get thread-local workspace and interpolator ---
-    thread_idx = Threads.threadid()
+    thread_idx = Threads.threadid() - 1
     ws = upwind.workspaces[thread_idx]
     interp = upwind.interpolator
+    dx = pg.neighbor_xdistance
+    dy = pg.neighbor_ydistance
+    w = pg.neighbor_weights
+    num_nb = pg.num_neighbors[i]
     
     if num_nb == 0; return 0.0; end
     
     # Ensure the *internal* buffers are large enough
     ensure_capacity!(ws, num_nb)
 
+    nb_slice = getNBSlice(pg, i)
+
     # --- 2. The Filter & Compact Loop ---
     count = 0
-    @inbounds for k in 1:num_nb
+    @inbounds for k in nb_slice
         tmp = dx[k] * vel[1]
         if tmp + dy[k] * vel[2] < 0
             count += 1

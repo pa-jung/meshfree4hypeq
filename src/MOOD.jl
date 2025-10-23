@@ -47,9 +47,9 @@ end
 # --- REFACTORED Functor for MOODu1 ---
 # This method now works for any grid type thanks to the SoA design.
 function (mood::MOODu1)(
-    particleGrid::ParticleGrid{D},
-    ws,
-    particleIndex::Int, 
+    
+    i::Int,
+    f_i::Float64, 
     rhoVec::AbstractVector{Float64}, 
     newRho::Float64; 
     firstStage::Bool=false
@@ -85,7 +85,7 @@ mutable struct MOODLoubertU2 <: MOODCriterion
     end
 end
 
-function (mood::MOODLoubertU2)(particleGrid::ParticleGrid1D, ws, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+function (mood::MOODLoubertU2)(particleGrid::ParticleGrid1D, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
     # Prep
     minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
     δ = mood.d
@@ -137,9 +137,6 @@ function (mood::MOODu2)(
     end
     
     # u2 check for 1D
-    # particleGrid.curvatures now holds curvatures from `copyCurvatures!`
-    # @code_warntype run_extrema_test(particleGrid, particleIndex, particleGrid.curvatures)
-    # error("TEST!")
     mini, maxi, minxx, maxxx = findLocalExtremaAbs!(particleGrid, particleIndex, particleGrid.curvatures)
     u2_satisfied = (mini * maxi > -delta) && ((minxx / maxxx >= 0.5) || (maxxx < delta))
     
