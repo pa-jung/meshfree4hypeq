@@ -1,3 +1,5 @@
+export MUSCLORDER, MUSCLORDER1, MUSCLORDER2, MUSCLORDER3, MUSCLORDER4, AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter
+
 abstract type MUSCLORDER end
 struct MUSCLORDER1 <: MUSCLORDER end
 struct MUSCLORDER2 <: MUSCLORDER end
@@ -829,7 +831,8 @@ and neighbor data provided as views.
 function (muscl::MUSCL{2, ORDER})(
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index
-    f_i::Real,                      # Value of f at particle i
+    f_i::Real,
+    neighbor_slice::UnitRange{Int},                      # Value of f at particle i
     pg::ParticleGrid,
     f_neighbors::AbstractVector,    # View of neighbor f-values
     df_neighbors::AbstractVector,   # View of neighbor df-values
@@ -841,7 +844,6 @@ function (muscl::MUSCL{2, ORDER})(
     
     if pg.num_neighbors[i] == 0; return 0.0; end
 
-    neighbor_slice = getNBSlice(pg, i)
     dx = pg.neighbor_xdistance
     dy = pg.neighbor_ydistance
     nb_indices = pg.neighbor_indices

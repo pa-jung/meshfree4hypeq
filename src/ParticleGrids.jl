@@ -1,8 +1,8 @@
 module ParticleGrids
 
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGrid, plotDensity, 
-       animateDensity, getTimeStep, findLocalExtrema!, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
-       findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs!, 
+       animateDensity, getTimeStep, findLocalExtrema, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
+       findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs, 
        determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBSlice, reorder_particles_for_locality!
 
 using FileIO, JLD2
@@ -157,7 +157,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
     # --- Grid Metadata ---
     xmin::Float64; xmax::Float64; ymin::Float64; ymax::Float64
     N::Int; N_ghost::Int; dx::Float64; dy::Float64
-    regular::Bool; bc::Symbol
+    regular::Bool; bc::Symbol; range_factor::Float64
 
     function ParticleGrid2D(
         xmin::Real, xmax::Real, ymin::Real, ymax::Real, 
@@ -226,7 +226,7 @@ struct ParticleGrid2D{S} <: ParticleGrid{2}
         [Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], 
         permutation, copy(permutation), zeros(Int,N), zeros(N), similar(positions), copy(is_boundary), falses(N),
         xmin, xmax, ymin, ymax, N, N_ghost,
-        dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc)
+        dx_nominal, dy_nominal, (randomness == (0.0, 0.0)), bc, convert(Float64,interp_range_factor))
         #reorder_particles_for_locality!(pg)
         return pg
     end
@@ -1316,31 +1316,6 @@ function apply_boundary_conditions!(particleGrid::ParticleGrid2D, rhos_buffer::A
 end
 end
 """
-Finds the local min/max in the neighborhood of a particle.
-"""
-function findLocalExtrema!(particleGrid::ParticleGrid1D, particleIndex::Integer, fVec::AbstractVector{Float64})
-    # This function now works for both 1D and 2D without changes
-    mini = fVec[particleIndex]
-    maxi = fVec[particleIndex]
-    for i in (particleGrid.neighbor_indices[particleIndex])
-        mini = min(mini, fVec[i])
-        maxi = max(maxi, fVec[i])
-    end
-    return (mini, maxi)
-end
-function findLocalExtrema!(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{Float64})
-    # This function now works for both 1D and 2D without changes
-    
-    neighbor_slice = particleGrid.neighbor_pointers[particleIndex]:(particleGrid.neighbor_pointers[particleIndex] + num_nb - 1)
-    mini = fVec[particleIndex]
-    maxi = fVec[particleIndex]
-    for i in (particleGrid.neighbor_indices[neighbor_slice])
-        mini = min(mini, fVec[i])
-        maxi = max(maxi, fVec[i])
-    end
-    return (mini, maxi)
-end
-"""
     getTimeStep(particleGrid::ParticleGrid1D, eq::LinearAdvection{1}, interpAlpha::Real, interpRange::Real)
 
 Return the maximum time step for which the first-order Euler & upwind method is a positive scheme for the 1D linear advection equation.
@@ -1446,78 +1421,99 @@ function getTimeStep(particleGrid::ParticleGrid2D{S}, eq::LinearAdvection{2}) wh
 end
 
 """
-Finds the local min/max and absolute min/max in the neighborhood of a particle
-for a 1D vector of data `fVec`. Optimized for SoA grids.
+Finds the local min/max of `rho` in the neighborhood using direct indexing.
 """
-function findLocalExtremaAbs!(
-    particleGrid::ParticleGrid1D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector{Float64}
+function findLocalExtrema(
+    rho_i::Float64,
+    nb_slice::UnitRange{Int},          # Slice for the current particle
+    neighbor_indices_full::Vector{Int}, # The grid's full neighbor index list
+    rhoVec::AbstractVector{Float64}     # Full rho vector
+)::Tuple{Float64, Float64}
+    
+    minU = rho_i
+    maxU = rho_i
+    
+    # Iterate through the slice of the full neighbor index list
+    @inbounds for k in nb_slice 
+        j = neighbor_indices_full[k] # Get neighbor index
+        rho_j = rhoVec[j]
+        minU = min(minU, rho_j)
+        maxU = max(maxU, rho_j)
+    end
+    
+    return (minU, maxU)
+end
+
+"""
+Finds the local min/max and absolute min/max of curvature (1D) using direct indexing.
+"""
+function findLocalExtremaAbs(
+    curve_i::Float64,
+    nb_slice::UnitRange{Int},          # Slice for the current particle
+    neighbor_indices_full::Vector{Int}, # The grid's full neighbor index list
+    curveVec::AbstractVector{Float64}   # Full curvature vector from workspace
 )::Tuple{Float64, Float64, Float64, Float64}
     
-    val_i = fVec[particleIndex]
-    mini = maxi = val_i
-    minAbs = maxAbs = abs(val_i)
+    mini = maxi = curve_i
+    minAbs = maxAbs = abs(curve_i)
     
-    # Access the neighbor list directly from the grid's SoA field
-    for i in particleGrid.neighbor_indices[particleIndex]
-        val_j = fVec[i]
-        abs_val_j = abs(val_j)
+    @inbounds for k in nb_slice
+        j = neighbor_indices_full[k] # Get neighbor index
+        curve_j = curveVec[j]
+        abs_curve_j = abs(curve_j)
 
-        mini = min(mini, val_j)
-        maxi = max(maxi, val_j)
-        minAbs = min(minAbs, abs_val_j)
-        maxAbs = max(maxAbs, abs_val_j)
+        mini = min(mini, curve_j)
+        maxi = max(maxi, curve_j)
+        minAbs = min(minAbs, abs_curve_j)
+        maxAbs = max(maxAbs, abs_curve_j)
     end
     
     return (mini, maxi, minAbs, maxAbs)
 end
 
-"""
-Finds the local min/max and absolute min/max in the neighborhood of a particle
-for a 2D matrix of data `fMatrix` (e.g., curvatures). Optimized for SoA grids.
-"""
-function findLocalExtremaAbs!(
-    particleGrid::ParticleGrid2D{S}, 
-    particleIndex::Integer, 
-    curvature_x::AbstractVector,
-    curvature_y::AbstractVector,
-)::NTuple{8, Float64} where S
 
-    neighbor_slice = particleGrid.neighbor_pointers[particleIndex]:(particleGrid.neighbor_pointers[particleIndex] + num_nb - 1)
-    # Initialize with values at the central particle
-    val1_i = curvature_x[particleIndex]
-    val2_i = curvature_y[particleIndex]
-    
-    mini1 = maxi1 = val1_i
-    mini2 = maxi2 = val2_i
-    
-    minAbs1 = maxAbs1 = abs(val1_i)
-    minAbs2 = maxAbs2 = abs(val2_i)
-    
-    # Access the neighbor list directly from the grid's SoA field
-    for i in particleGrid.neighbor_indices[neighbor_slice]
-        val1_j = curvature_x[i]
-        val2_j = curvature_y[i]
-        abs_val1_j = abs(val1_j)
-        abs_val2_j = abs(val2_j)
+"""
+Finds the local min/max and absolute min/max of curvatures (xx, yy) (2D) using direct indexing.
+"""
+function findLocalExtremaAbs(
+    curve_xx_i::Float64,
+    curve_yy_i::Float64,
+    nb_slice::UnitRange{Int},          # Slice for the current particle
+    neighbor_indices_full::Vector{Int}, # The grid's full neighbor index list
+    curve_xx_Vec::AbstractVector{Float64}, # Full xx curvature vector from workspace
+    curve_yy_Vec::AbstractVector{Float64}  # Full yy curvature vector from workspace
+)::NTuple{8, Float64}
 
-        # Update extrema for the first component
-        mini1 = min(mini1, val1_j)
-        maxi1 = max(maxi1, val1_j)
-        minAbs1 = min(minAbs1, abs_val1_j)
-        maxAbs1 = max(maxAbs1, abs_val1_j)
+    # Initialize with values at the central particle i
+    mini1 = maxi1 = curve_xx_i
+    mini2 = maxi2 = curve_yy_i
+    minAbs1 = maxAbs1 = abs(curve_xx_i)
+    minAbs2 = maxAbs2 = abs(curve_yy_i)
+    
+    @inbounds for k in nb_slice
+        j = neighbor_indices_full[k] # Get neighbor index
         
-        # Update extrema for the second component
-        mini2 = min(mini2, val2_j)
-        maxi2 = max(maxi2, val2_j)
-        minAbs2 = min(minAbs2, abs_val2_j)
-        maxAbs2 = max(maxAbs2, abs_val2_j)
+        # Fetch neighbor curvatures
+        curve_xx_j = curve_xx_Vec[j]
+        curve_yy_j = curve_yy_Vec[j]
+        abs_curve_xx_j = abs(curve_xx_j)
+        abs_curve_yy_j = abs(curve_yy_j)
+
+        # Update extrema for the xx component
+        mini1 = min(mini1, curve_xx_j)
+        maxi1 = max(maxi1, curve_xx_j)
+        minAbs1 = min(minAbs1, abs_curve_xx_j)
+        maxAbs1 = max(maxAbs1, abs_curve_xx_j)
+        
+        # Update extrema for the yy component
+        mini2 = min(mini2, curve_yy_j)
+        maxi2 = max(maxi2, curve_yy_j)
+        minAbs2 = min(minAbs2, abs_curve_yy_j)
+        maxAbs2 = max(maxAbs2, abs_curve_yy_j)
     end
     
     return (mini1, maxi1, minAbs1, maxAbs1, mini2, maxi2, minAbs2, maxAbs2)
 end
-
 
 
 end  # module ParticleGrids

@@ -141,6 +141,33 @@ end
 
 
 """
+A thread-local workspace for the Upwind TiwariAlgorithm.
+Holds temporary buffers for all neighbors and for the filtered stencils.
+"""
+struct UpwindWorkspaceTA <: UpwindWorkspace
+    # Buffers to hold ALL neighbor data initially (size num_neighbors)
+    dxVec::Vector{Float64}
+    dyVec::Vector{Float64}
+    dfVec::Vector{Float64}
+    wVec::Vector{Float64}  # For calculated weights
+
+    # BitVectors to mark upwind neighbors for each direction
+    xWindow::BitVector
+    yWindow::BitVector
+
+    function UpwindWorkspaceTA(max_neighbors::Int=100) # Preallocate
+        new(
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            falses(max_neighbors),
+            falses(max_neighbors)
+        )
+    end
+end
+
+"""
 A minimal, thread-local workspace for the Upwind ClassicAlgorithm.
 It holds temporary buffers for the filtered "upwind" neighbors.
 """
@@ -160,6 +187,24 @@ struct UpwindWorkspaceCA <: UpwindWorkspace
     end
 end
 
+"""
+A minimal, thread-local workspace for the Upwind PraveenAlgorithm.
+Stores only essential coefficients.
+"""
+struct UpwindWorkspacePA <: UpwindWorkspace
+    # Buffers to hold calculated coefficients (size num_neighbors)
+    coeff_x_Vec::Vector{Float64}
+    coeff_y_Vec::Vector{Float64}
+    cijVec::Vector{Float64}     # Final coefficient
+
+    function UpwindWorkspacePA(max_neighbors::Int=100) # Preallocate
+        new(
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors)
+        )
+    end
+end
 
 
 # Helper to ensure workspace vectors are large enough
@@ -179,53 +224,39 @@ function ensure_capacity!(ws::UpwindWorkspaceCA, n::Int)
     _ensure_capacity!(ws.wVec, n)
 end
 
-struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: UpwindAlgorithm} <: GradientInterpolator
-    order::Int
-    weightFunction::MLSWeightFunction
-    numericalFlux::NumericalFluxFunction
-    workspaces::Vector{WS}
-    interpolator::I
-
-    """
-        UpwindGradient(order::Int64 = 1; algType::String = "")
-
-    Constructor for Upwind Object. algType only has impact in 2D upwinding.
-    """
-    function UpwindGradient(order, dimension; numericalFlux::NumericalFluxFunction=UpwindFlux(), algType::String="Classic", weightFunction::MLSWeightFunction=exponentialWeightFunction())
-        @assert order >= 1 "Order must be larger or equal to one."
-        @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen"]
-        
-        local alg_type
-        local WS_eltype::Type
-        
-        if algType == "Classic"
-            alg_type = ClassicAlgorithm
-            WS_eltype = UpwindWorkspaceCA # <-- Use minimal workspace
-        else
-            WS_eltype = UpwindWorkspace # <-- Use full workspace for others
-            if algType == "Praveen"
-                @assert order == 1
-                alg_type = PraveenAlgorithm
-            elseif algType == "NonLinearPraveen"
-                @assert order == 1
-                alg_type = NonLinearPraveenAlgorithm
-            elseif algType == "Tiwari"
-                alg_type = TiwariAlgorithm
-            end
-        end
-
-        n_threads = Threads.nthreads()
-        # Create a vector of the chosen workspace type
-        workspaces = [WS_eltype(100) for _ in 1:n_threads] 
-        # --- End Change ---
-
-        interpolator = Interpolator{dimension, order, 1}()
-        I = typeof(interpolator)
-
-        new{dimension, WS_eltype, I, alg_type}(order, weightFunction, numericalFlux, workspaces, interpolator)
+# --- Modify the UpwindGradient Constructor ---
+function UpwindGradient(order, dimension; numericalFlux::NumericalFluxFunction=UpwindFlux(), algType::String="Classic", weightFunction::MLSWeightFunction=exponentialWeightFunction())
+    # ... (assertions) ...
+    
+    local alg_type
+    local WS_eltype::Type 
+    
+    if algType == "Classic"
+        alg_type = ClassicAlgorithm
+        WS_eltype = UpwindWorkspaceCA 
+    elseif algType == "Tiwari"
+         alg_type = TiwariAlgorithm
+         WS_eltype = UpwindWorkspaceTA 
+    elseif algType == "Praveen"
+        alg_type = PraveenAlgorithm # <-- NEW
+        WS_eltype = UpwindWorkspacePA # <-- NEW
+        @assert order == 1
+    # elseif algType == "NonLinearPraveen" 
+    #     alg_type = NonLinearPraveenAlgorithm
+    #     WS_eltype = UpwindWorkspace # Or create UpwindWorkspaceNLPA
+    #     @assert order == 1
+    else
+         error("Algorithm type $algType not fully configured for workspace selection.")
     end
-end
 
+    n_threads = Threads.nthreads()
+    workspaces = [WS_eltype(100) for _ in 1:n_threads] 
+
+    interpolator = Interpolator{dimension, order, 1}()
+    I = typeof(interpolator)
+
+    new{dimension, WS_eltype, I, alg_type}(order, weightFunction, numericalFlux, workspaces, interpolator)
+end
 """
 Ensures all thread-local workspaces in the UpwindGradient object are
 correctly sized and re-initializes them if the thread count changed.
@@ -247,22 +278,73 @@ function ensure_capacity!(g::UpwindGradient{<:Any, UpwindWorkspaceCA, <:Any, <:A
     end
 end
 
+# Uses the simple _ensure_capacity! helper from your code
+"""
+Ensures all buffers in the UpwindWorkspaceTA are large enough.
+"""
+function ensure_capacity!(ws::UpwindWorkspaceTA, n::Int)
+    _ensure_capacity!(ws.dxVec, n)
+    _ensure_capacity!(ws.dyVec, n)
+    _ensure_capacity!(ws.dfVec, n)
+    _ensure_capacity!(ws.wVec, n)
+    _ensure_capacity!(ws.xWindow, n)
+    _ensure_capacity!(ws.yWindow, n)
+end
+
+# Uses the simple _ensure_capacity! helper
+"""
+Ensures all buffers in the minimal UpwindWorkspacePA are large enough.
+"""
+function ensure_capacity!(ws::UpwindWorkspacePA, n::Int)
+    _ensure_capacity!(ws.coeff_x_Vec, n)
+    _ensure_capacity!(ws.coeff_y_Vec, n)
+    _ensure_capacity!(ws.cijVec, n)
+end
+
+# The _init_buffers_internal! and initGIBuffers! functions 
+# will adapt correctly based on the dispatch for ensure_capacity!
+
+# Add dispatch for the Tiwari workspace vector to the existing helper
+"""
+Helper function to resize a vector of workspaces.
+Handles thread-count changes and resizes all individual workspaces.
+"""
+function _init_buffers_internal!(workspaces::Vector{WS}, max_neighbors::Int) where WS <: UpwindWorkspace # Adjust constraint if needed
+    n_threads = Threads.nthreads()
+    
+    if length(workspaces) != n_threads
+        empty!(workspaces)
+        for _ in 1:n_threads
+            push!(workspaces, WS(max_neighbors)) 
+        end
+    end
+    
+    for ws in workspaces
+        ensure_capacity!(ws, max_neighbors) # Calls correct overload based on WS
+    end
+end
+
+
+
+# The main initGIBuffers! function remains unchanged, as it uses the helper above.
 """
 Buffer initialization hook for UpwindGradient. Finds the max neighbors
-from the grid and calls ensure_capacity!
+[cite_start]from the grid and resizes all thread-local buffers. [cite: 30, 35]
 """
 function initGIBuffers!(g::UpwindGradient, pg::ParticleGrid)
     max_nb = 0
     if !isempty(pg.num_neighbors)
-        # Find the maximum number of neighbors any particle has
         max_nb = maximum(pg.num_neighbors)
     end
-    ensure_capacity!(g, max_nb)
+    _init_buffers_internal!(g.workspaces, max_nb)
 end
+
 
 function initGI!(g::UpwindGradient, kwargs...)
     return
 end
+
+
 
 function initTimeStep(pg::ParticleGrid, weightFunc::MLSWeightFunction)
     updateNeighbors!(pg, weightFunc)
@@ -351,12 +433,14 @@ end
 """
 Functor for UpwindGradient (ClassicAlgorithm) with the 'fused' signature.
 Calculates the upwind gradient for a single particle `i`.
+Uses pg.range_factor for scaling.
 """
 function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm})(
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    pg::ParticleGrid2D,
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid2D,             # Grid object to access global arrays and range_factor
     f_neighbors::AbstractVector,    # (Not used by ClassicAlgorithm)
     df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
 )::Real
@@ -364,49 +448,59 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     # Cast equation type to access velocity
     vel = (eq::LinearAdvection{2}).vel
     
-    # --- 1. Get thread-local workspace and interpolator ---
-    thread_idx = Threads.threadid() - 1
+    # --- 1. Get thread-local workspace, interpolator, and scaling factor ---
+    thread_idx = Threads.threadid()
     ws = upwind.workspaces[thread_idx]
     interp = upwind.interpolator
-    dx = pg.neighbor_xdistance
-    dy = pg.neighbor_ydistance
-    w = pg.neighbor_weights
-    num_nb = pg.num_neighbors[i]
+    interpRange = pg.range_factor # Access the range factor
+
+    # Get references to GLOBAL grid data arrays
+    dx_all_full = pg.neighbor_xdistance
+    dy_all_full = pg.neighbor_ydistance
+    w_all_full = pg.neighbor_weights # Use pre-gathered weights
+
+    num_nb = length(nb_slice)
     
     if num_nb == 0; return 0.0; end
     
     # Ensure the *internal* buffers are large enough
     ensure_capacity!(ws, num_nb)
 
-    nb_slice = getNBSlice(pg, i)
-
     # --- 2. The Filter & Compact Loop ---
+    # This loop filters neighbors based on the *unscaled* distances
+    # but stores the *scaled* distances in the workspace.
     count = 0
-    @inbounds for k in nb_slice
-        tmp = dx[k] * vel[1]
-        if tmp + dy[k] * vel[2] < 0
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        dx_k_unscaled = dx_all_full[global_idx]
+        dy_k_unscaled = dy_all_full[global_idx]
+
+        # Upwind check uses unscaled distances
+        tmp = dx_k_unscaled * vel[1]
+        if tmp + dy_k_unscaled * vel[2] < 0
             count += 1
-            ws.dxVec[count] = dx[k]
-            ws.dyVec[count] = dy[k]
-            ws.dfVec[count] = df_neighbors[k]
-            ws.wVec[count]  = w[k]
+            # Store SCALED distances in the workspace
+            ws.dxVec[count] = dx_k_unscaled / interpRange
+            ws.dyVec[count] = dy_k_unscaled / interpRange
+            # Store pre-gathered difference and weight
+            ws.dfVec[count] = df_neighbors[local_idx] # df needs local index
+            ws.wVec[count]  = w_all_full[global_idx]
         end
     end
 
     num_upwind = count
     if num_upwind < upwind.order; return 0.0; end
     
-    # Ensure the interpolator's internal buffers are also ready
-    # (Assuming the interpolator has its own `ensure_capacity!`)
     ensure_capacity!(interp, num_upwind)
 
     # --- 3. Process the Compacted Data ---
+    # These views now contain the SCALED dx/dy values
     dxVec_upwind = @view ws.dxVec[1:num_upwind]
     dyVec_upwind = @view ws.dyVec[1:num_upwind]
     dfVec_upwind = @view ws.dfVec[1:num_upwind]
     wVec_upwind  = @view ws.wVec[1:num_upwind]
     
     local res1, res2
+    # The interpolator works with the scaled distances
     if upwind.order == 1
         res1, res2 = interp(dxVec_upwind, dyVec_upwind, wVec_upwind, dfVec_upwind)
     elseif upwind.order == 2
@@ -414,369 +508,233 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
         # Curvature cannot be set as `pg` is not an argument in this signature
     end
     
-    # Note: Division by settings.interpRange is removed to match signature.
-    return (vel[1] * res1 + vel[2] * res2)
+    # --- SCALE the final derivative result ---
+    # res1 and res2 represent the scaled derivatives (d/d(x/L), d/d(y/L))
+    # Divide by interpRange to get the actual derivatives (d/dx, d/dy)
+    ddx = res1 / interpRange
+    ddy = res2 / interpRange
+    # --- END SCALE ---
+
+    return (vel[1] * ddx + vel[2] * ddy)
 end
-
-# # --- REFACTORED 2D Upwind Functor (Classic Algorithm) ---
-# function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
-#     pg::ParticleGrid2D{S},
-#     particleIndex::Int,
-#     fVec_inp::AbstractVector{<:Real},
-#     eq::LinearAdvection{2},
-#     settings::SimSetting;
-#     setCurvature::Bool=true
-# )::Real where {S,WS <: UpwindWorkspace, I <: Interpolator}
+"""
+Functor for UpwindGradient (TiwariAlgorithm) with the 'fused' signature.
+Calculates the upwind gradient for a single particle `i`.
+Uses pre-gathered neighbor data, minimizes view creation, and uses pg.range_factor for scaling.
+"""
+function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm})(
+    eq::ScalarHyperbolicPDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid2D,             # Grid object to access global arrays and range_factor
+    f_neighbors::AbstractVector,    # (Not used directly by Tiwari)
+    df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
+)::Real
     
-#     vel = eq.vel
-#     ws = upwind.workspace
-#     interp = upwind.interpolator
-#     # --- NEW, FAST WAY ---
-#     start_idx = pg.neighbor_pointers[particleIndex]
-#     end_idx   = pg.neighbor_pointers[particleIndex + 1] - 1
-#     neighbor_slice = start_idx:end_idx
-#     neighbors = @view pg.neighbor_indices[neighbor_slice]
-#     num_neighbors = pg.num_neighbors[particleIndex]
-
-#     ensure_capacity!(ws, num_neighbors)
-
-#     dxVec = @view ws.dxVec[1:num_neighbors]
-#     dyVec = ws.dyVec[1:num_neighbors]
-#     dfVec = ws.dfVec[1:num_neighbors]
-#     fVec = ws.fVec[1:num_neighbors]
-#     wVec = ws.wVec[1:num_neighbors]
-#     upwinding = ws.xWindow[1:num_neighbors]
-#     buffer = ws.ujVec[1:num_neighbors]
-
-#     fVal = fVec_inp[particleIndex]
-
-#     dxVec .= pg.neighbor_xdistance[neighbor_slice]
-#     dyVec .= pg.neighbor_ydistance[neighbor_slice]
-#     fVec .= fVec_inp[neighbors]
-#     buffer .= dxVec * vel[1]
-#     buffer .+= dyVec * vel[2]
-#     dfVec .= fVec .+ fVal
-
-#     upwinding .= 0
-#     upwinding = buffer .< 0.
-#     #@code_warntype populate_buffers!(dxVec, dyVec, dfVec, neighbors, xdist, ydist, fVec, vel, particleIndex)
-#     #error("TEST")
-# # --- THE FIX: The "Gather" Loop ---
-#     # In a single pass, identify upwind neighbors and gather ALL their data
-#     # into the small, contiguous workspace buffers.
-#     # count = 0
-#     # @inbounds for i in 1:num_neighbors
-#     #     if dxVec[i] * vel[1] + dyVec[i] * vel[2] < 0
-#     #         count += 1
-#     #         nbIndex = neighbors[i]
-#     #         dfVec[count] = fVec[nbIndex] - fVec[particleIndex]
-#     #     end
-#     # end
-
-#     num_upwind = sum(upwinding)
-#     if num_upwind < upwind.order; return 0.0; end
+    # Cast equation type to access velocity
+    vel = (eq::LinearAdvection{2}).vel 
     
-#     ensure_capacity!(interp, num_upwind)
-
-#     # --- The "Process" Step ---
-#     # All subsequent operations are on small, dense, cache-friendly buffers.
-#     # All memory access from here is sequential and extremely fast.
-#     dxVec = @view dxVec[upwinding]
-#     dyVec = @view dyVec[upwinding]
-#     dfVec = @view dfVec[upwinding]
-#     wVec  = @view wVec[upwinding]
-
-#     upwind.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
-#     local res1, res2
-#     if upwind.order == 1
-#         res1, res2 = interp(dxVec, dyVec, wVec, dfVec)
-#     elseif upwind.order == 2
-#         res1, res2, res3, res4 = interp(dxVec, dyVec, wVec, dfVec)
-
-#         if setCurvature
-#             pg.curvatures[particleIndex, 1] = res3 / (settings.interpRange^2)
-#             pg.curvatures[particleIndex, 2] = res4 / (settings.interpRange^2)
-#         end
-#     end
-    
-#     return (vel[1] * res1  + vel[2] * res2) / settings.interpRange
-# end
-
-# function (upwind::UpwindGradient{2,WS,I,ClassicAlgorithm})(
-#     pg::ParticleGrid2D{S},
-#     particleIndex::Int,
-#     fVec_inp::AbstractVector{<:Real},
-#     eq::LinearAdvection{2},
-#     settings::SimSetting;
-#     setCurvature::Bool=true
-# )::Real where {S,WS <: UpwindWorkspace, I <: Interpolator}
-    
-#     vel = eq.vel
-#     ws = upwind.workspace
-#     interp = upwind.interpolator
-
-#     # --- 1. Get views into neighbor data and workspace buffers ---
-#     start_idx = pg.neighbor_pointers[particleIndex]
-#     num_neighbors = pg.num_neighbors[particleIndex]
-#     if num_neighbors == 0; return 0.0; end
-#     neighbor_slice = start_idx:(start_idx + num_neighbors - 1)
-
-#     ensure_capacity!(ws, num_neighbors)
-
-#     # These are all views into pre-allocated memory
-#     dxVec = @view ws.dxVec[1:num_neighbors]
-#     dyVec = @view ws.dyVec[1:num_neighbors]
-#     dfVec = @view ws.dfVec[1:num_neighbors]
-#     wVec = @view ws.wVec[1:num_neighbors]
-#     buffer = ws.ujVec[1:num_neighbors]
-#     upwinding_mask = @view ws.xWindow[1:num_neighbors] # Use the BitVector from workspace
-
-#     # --- 2. Populate workspace and create the boolean mask (Vectorized & Allocation-Free) ---
-#     dxVec .= @view pg.neighbor_xdistance[neighbor_slice]
-#     dyVec .= @view pg.neighbor_ydistance[neighbor_slice]
-
-#     buffer .= dxVec * vel[1]
-#     buffer .+= dyVec * vel[2]
-    
-#     # Use a temporary view for neighbors to populate dfVec
-#     neighbors_view = @view pg.neighbor_indices[neighbor_slice]
-#     f_particle = fVec_inp[particleIndex]
-#     dfVec .= (@view fVec_inp[neighbors_view]) .- f_particle
-
-#     # Calculate the upwind condition and store it in the pre-allocated BitVector
-#     upwinding_mask .= buffer .< 0
-
-#     num_upwind = sum(upwinding_mask)
-#     if num_upwind < upwind.order; return 0.0; end
-
-#     # --- 3. Partition all workspace arrays based on the mask (The Efficient Sort) ---
-#     partition_workspace!(upwinding_mask, dxVec, dyVec, dfVec) # wVec is not needed yet
-
-#     ensure_capacity!(interp, num_upwind)
-
-#     # --- 4. Process the compacted data ---
-#     # The data we need is now guaranteed to be in the first `num_upwind` slots.
-#     # Create cheap views into this dense, cache-friendly data.
-#     dxVec_upwind = @view dxVec[1:num_upwind]
-#     dyVec_upwind = @view dyVec[1:num_upwind]
-#     dfVec_upwind = @view dfVec[1:num_upwind]
-#     wVec_upwind  = @view wVec[1:num_upwind] # wVec is only used here
-
-#     upwind.weightFunction(wVec_upwind, dxVec_upwind, dyVec_upwind; param=settings.interpAlpha, normalisation=1.0)
-    
-#     local res1, res2
-#     if upwind.order == 1
-#         res1, res2 = interp(dxVec_upwind, dyVec_upwind, wVec_upwind, dfVec_upwind)
-#     elseif upwind.order == 2
-#         res1, res2, res3, res4 = interp(dxVec_upwind, dyVec_upwind, wVec_upwind, dfVec_upwind)
-#         if setCurvature
-#             pg.curvatures[particleIndex, 1] = res3 / (settings.interpRange^2)
-#             pg.curvatures[particleIndex, 2] = res4 / (settings.interpRange^2)
-#         end
-#     end
-    
-#     return (vel[1] * res1 + vel[2] * res2) / settings.interpRange
-# end
-
-function (upwind::UpwindGradient{2,WS ,I ,TiwariAlgorithm})(
-    particleGrid::ParticleGrid2D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector{<:Real}, 
-    eq::LinearAdvection{2}, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
-)::Real where {WS <: UpwindWorkspace, I <: Interpolator}
-    
-    vel = velocity(eq, 0.0)
-    ws = upwind.workspace
+    # --- 1. Get thread-local workspace, interpolator, and scaling factor ---
+    thread_idx = Threads.threadid()
+    ws = upwind.workspaces[thread_idx] 
     interp = upwind.interpolator
-    neighbor_indices = particleGrid.neighbor_indices[particleIndex]
-    num_neighbors = length(neighbor_indices)
+    interpRange = pg.range_factor # Access the range factor from the grid
 
-    if num_neighbors < upwind.order
-        if setCurvature; particleGrid.curvatures[particleIndex, :] .= 0.0; end
-        return 0.0
+    # Get references to GLOBAL grid data arrays
+    dx_all_full = pg.neighbor_xdistance
+    dy_all_full = pg.neighbor_ydistance
+    w_all_full = pg.neighbor_weights # Use pre-gathered weights
+
+    num_neighbors = length(nb_slice)
+    
+    if num_neighbors < upwind.order 
+        return 0.0 
     end
+    
+    ensure_capacity!(ws, num_neighbors) 
 
-    ensure_capacity!(ws, num_neighbors)
-
-    # --- 1. Data Collection (Single Pass) ---
-    # Get views into the main workspace buffers
+    # --- 2. Data Collection & Window Calculation (Single Pass) ---
     dxVec = @view ws.dxVec[1:num_neighbors]
     dyVec = @view ws.dyVec[1:num_neighbors]
     dfVec = @view ws.dfVec[1:num_neighbors]
-    xWindow = @view ws.xWindow[1:num_neighbors] # Reuse left_window as xWindow
-    yWindow = @view ws.yWindow[1:num_neighbors]  # Reuse top_window as yWindow
+    wVec  = @view ws.wVec[1:num_neighbors] 
+    xWindow = @view ws.xWindow[1:num_neighbors] 
+    yWindow = @view ws.yWindow[1:num_neighbors] 
 
-    for (i, nbIndex) in enumerate(neighbor_indices)
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        dxVec[i] = deltaX / settings.interpRange
-        dyVec[i] = deltaY / settings.interpRange
-        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-        xWindow[i] = (vel[1] * deltaX <= 0.0) # Simplified upwind condition
-        yWindow[i] = (vel[2] * deltaY <= 0.0) # Simplified upwind condition
-    end
-
-    # --- 2. X-Derivative Calculation ---
-    stencil_size_x = 0
-    for i in 1:num_neighbors
-        if xWindow[i]
-            stencil_size_x += 1
-            ws.dxVec[stencil_size_x] = dxVec[i]
-            ws.dyVec[stencil_size_x] = dyVec[i]
-            ws.dfVec[stencil_size_x] = dfVec[i]
-        end
+    # Loop using enumerate for workspace index and nb_slice for global index
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        # --- SCALE dx, dy ---
+        dx_k = dx_all_full[global_idx] / interpRange 
+        dy_k = dy_all_full[global_idx] / interpRange
+        # --- END SCALE ---
+        
+        dxVec[local_idx] = dx_k
+        dyVec[local_idx] = dy_k
+        dfVec[local_idx] = df_neighbors[local_idx] 
+        wVec[local_idx]  = w_all_full[global_idx]   
+        
+        xWindow[local_idx] = (vel[1] * dx_k <= 0.0) 
+        yWindow[local_idx] = (vel[2] * dy_k <= 0.0) 
     end
 
     ddx = 0.0
-    if stencil_size_x >= upwind.order
-        # Create views of the filtered data in the scratch buffers
-        dx_stencil_x = @view ws.dxVec[1:stencil_size_x]
-        dy_stencil_x = @view ws.dyVec[1:stencil_size_x]
-        df_stencil_x = @view ws.dfVec[1:stencil_size_x]
-        w_stencil_x  = @view ws.wVec[1:stencil_size_x]
-
-        ensure_capacity!(interp, stencil_size_x)
-        upwind.weightFunction(w_stencil_x, dx_stencil_x, dy_stencil_x; param=settings.interpAlpha, normalisation=1.0)
-        res_x = interp(dx_stencil_x, dy_stencil_x, w_stencil_x, df_stencil_x)
-        
-        ddx = res_x[1] / settings.interpRange
-        if setCurvature && upwind.order == 2
-            particleGrid.curvatures[particleIndex, 1] = res_x[3] / (settings.interpRange^2)
-        end
-    end
-        
-    # --- 3. Y-Derivative Calculation ---
-    stencil_size_y = 0
-    for i in 1:num_neighbors
-        if yWindow[i]
-            stencil_size_y += 1
-            # REUSE the same scratch buffers
-            ws.dxVec[stencil_size_y] = dxVec[i]
-            ws.dyVec[stencil_size_y] = dyVec[i]
-            ws.dfVec[stencil_size_y] = dfVec[i]
-        end
-    end
-    
     ddy = 0.0
-    if stencil_size_y >= upwind.order
-        # Create views of the filtered data in the scratch buffers
-        dx_stencil_y = @view ws.dxVec[1:stencil_size_y]
-        dy_stencil_y = @view ws.dyVec[1:stencil_size_y]
-        df_stencil_y = @view ws.dfVec[1:stencil_size_y]
-        w_stencil_y  = @view ws.wVec[1:stencil_size_y]
-        
-        ensure_capacity!(interp, stencil_size_y)
-        upwind.weightFunction(w_stencil_y, dx_stencil_y, dy_stencil_y; param=settings.interpAlpha, normalisation=1.0)
-        res_y = interp(dx_stencil_y, dy_stencil_y, w_stencil_y, df_stencil_y)
+    
+    # --- 3. X-Derivative Calculation ---
+    stencil_size_x = sum(xWindow) 
 
-        ddy = res_y[2] / settings.interpRange
-        if setCurvature && upwind.order == 2
-            particleGrid.curvatures[particleIndex, 2] = res_y[4] / (settings.interpRange^2)
-        end
+    if stencil_size_x >= upwind.order
+        partition_workspace!(xWindow, dxVec, dyVec, dfVec, wVec) 
+ 
+        dx_stencil_x = @view dxVec[1:stencil_size_x]
+        dy_stencil_x = @view dyVec[1:stencil_size_x]
+        df_stencil_x = @view dfVec[1:stencil_size_x]
+        w_stencil_x  = @view wVec[1:stencil_size_x] 
+
+        ensure_capacity!(interp, stencil_size_x) 
+        res_x = interp(dx_stencil_x, dy_stencil_x, w_stencil_x, df_stencil_x) 
+        
+        # --- SCALE result ---
+        ddx = res_x[1] / interpRange
+        # --- END SCALE ---
+    end
+        
+    # --- 4. Y-Derivative Calculation ---
+    stencil_size_y = sum(yWindow) 
+
+    if stencil_size_y >= upwind.order
+        partition_workspace!(yWindow, dxVec, dyVec, dfVec, wVec)
+
+        dx_stencil_y = @view dxVec[1:stencil_size_y]
+        dy_stencil_y = @view dyVec[1:stencil_size_y]
+        df_stencil_y = @view dfVec[1:stencil_size_y]
+        w_stencil_y  = @view wVec[1:stencil_size_y] 
+        
+        ensure_capacity!(interp, stencil_size_y) 
+        res_y = interp(dx_stencil_y, dy_stencil_y, w_stencil_y, df_stencil_y) 
+
+        # --- SCALE result ---
+        ddy = res_y[2] / interpRange 
+        # --- END SCALE ---
     end
 
-    # --- 4. Final Result ---
-    return ddx * vel[1] + ddy * vel[2]
+    # --- 5. Final Result ---
+    # The final combination doesn't need scaling because ddx/ddy are already scaled derivatives
+    return ddx * vel[1] + ddy * vel[2] 
 end
 
 
-# ... (existing content of Interpolations.jl, including the UpwindWorkspace) ...
-
-#==============================================================================
-  Additional 2D Upwind Functors (Optimized for SoA Grids & Workspace)
-==============================================================================#
-
-function (upwind::UpwindGradient{2, WS, I, PraveenAlgorithm})(
-    particleGrid::ParticleGrid2D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector{<:Real}, 
-    eq::LinearAdvection{2}, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
-)::Real where {WS <: UpwindWorkspace, I <: Interpolator}
+"""
+Functor for UpwindGradient (PraveenAlgorithm) using minimal workspace
+and precalculated weights.
+"""
+function (upwind::UpwindGradient{2, <:UpwindWorkspacePA, <:Any, PraveenAlgorithm})(
+    eq::ScalarHyperbolicPDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid2D,             # Grid object to access global arrays and range_factor
+    f_neighbors::AbstractVector,    # (Not used directly by Praveen)
+    df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
+)::Real
     
-    vel = velocity(eq, 0.0)
-    neighbor_indices = particleGrid.neighbor_indices[particleIndex]
-    num_neighbors = length(neighbor_indices)
+    vel = (eq::LinearAdvection{2}).vel 
     
-    if num_neighbors == 0; return 0.0; end
+    # --- 1. Get workspace, scaling factor, and refs to global data ---
+    thread_idx = Threads.threadid()
+    ws = upwind.workspaces[thread_idx]
+    interpRange = pg.range_factor 
 
-    if setCurvature
-        particleGrid.curvatures[particleIndex, :] .= 0.0
+    dx_all_full = pg.neighbor_xdistance
+    dy_all_full = pg.neighbor_ydistance
+    w_all_full = pg.neighbor_weights # <-- USE PRECALCULATED WEIGHTS
+
+    num_neighbors = length(nb_slice)
+    
+    if num_neighbors < 3; return 0.0; end 
+    
+    ensure_capacity!(ws, num_neighbors) 
+
+    # --- 2. Least-Squares System Setup (Explicit Loop with Scaling) ---
+    A11 = 0.0
+    A22 = 0.0
+    A12 = 0.0
+    
+    # Use workspace buffers directly
+    coeff_x_Vec = ws.coeff_x_Vec
+    coeff_y_Vec = ws.coeff_y_Vec
+    cijVec      = ws.cijVec
+
+    inv_interpRange = 1.0 / interpRange # Precompute inverse for scaling
+
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        # Fetch precalculated weight
+        w_k = w_all_full[global_idx]
+        
+        # Scale distances
+        dx_k = dx_all_full[global_idx] * inv_interpRange 
+        dy_k = dy_all_full[global_idx] * inv_interpRange
+        
+        # Accumulate matrix components
+        A11 += w_k * dx_k * dx_k
+        A22 += w_k * dy_k * dy_k
+        A12 += w_k * dx_k * dy_k
     end
     
-    # --- 1. Data Collection (Single Pass) ---
-    ws = upwind.workspace
-    ensure_capacity!(ws, num_neighbors)
-    ui = fVec[particleIndex]
-    for (i, nbIndex) in enumerate(neighbor_indices)
-        ws.dxVec[i], ws.dyVec[i] = getDistance(particleGrid, particleIndex, nbIndex)
-        ws.dfVec[i] = fVec[nbIndex] - ui
-    end
-
-    # Create views for the exact number of neighbors
-    dxVec = @view ws.dxVec[1:num_neighbors]
-    dyVec = @view ws.dyVec[1:num_neighbors]
-    dfVec = @view ws.dfVec[1:num_neighbors]
-    wVec  = @view ws.wVec[1:num_neighbors]
-    
-    # --- 2. Least-Squares System Setup (Vectorized) ---
-    upwind.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=settings.interpRange)
-
-    A11 = sum(wVec[i] * dxVec[i]^2 for i in 1:num_neighbors)
-    A22 = sum(wVec[i] * dyVec[i]^2 for i in 1:num_neighbors)
-    A12 = sum(wVec[i] * dxVec[i] * dyVec[i] for i in 1:num_neighbors)
     D = A11 * A22 - A12^2
-    
     if abs(D) < 1e-14; return 0.0; end
-    
-    # --- 3. Divergence Calculation (Vectorized) ---
-    # Get views for all necessary buffers
-    coeff_x_Vec = @view ws.coeff_x_Vec[1:num_neighbors]
-    coeff_y_Vec = @view ws.coeff_y_Vec[1:num_neighbors]
-    nxVec       = @view ws.nxVec[1:num_neighbors]
-    nyVec       = @view ws.nyVec[1:num_neighbors]
-    
-    # Solve for coefficients (vectorized)
-    coeff_x_Vec .= (wVec .* (A22 .* dxVec .- A12 .* dyVec)) ./ D
-    coeff_y_Vec .= (wVec .* (A11 .* dyVec .- A12 .* dxVec)) ./ D
+    invD = 1.0 / D
 
-    # Rotational vectors (vectorized)
-    angles = atan.(dyVec, dxVec)
-    nxVec .= cos.(angles)
-    nyVec .= sin.(angles)
-    # sxVec is -nyVec, syVec is nxVec
+    # --- 3. Divergence Calculation (Explicit Loop) ---
+    div = 0.0 # Accumulator for the final dot product
 
-    # Compute adapted coefficients and positivity terms (vectorized)
-    # Reuse aij buffers for alfaBar and betaBar
-    alfaBarVec = @view ws.aij_x_Vec[1:num_neighbors]
-    betaBarVec = @view ws.aij_y_Vec[1:num_neighbors]
-    
-    alfaBarVec .= nxVec .* coeff_x_Vec .+ nyVec .* coeff_y_Vec
-    betaBarVec .= (-nyVec) .* coeff_x_Vec .+ nxVec .* coeff_y_Vec
-    
-    # Reuse coeff buffers for temporary dot products with velocity
-    dot_vel_n = coeff_x_Vec # Rename for clarity
-    dot_vel_s = coeff_y_Vec
-    
-    dot_vel_n .= vel[1] .* nxVec .+ vel[2] .* nyVec
-    dot_vel_s .= vel[1] .* (-nyVec) .+ vel[2] .* nxVec
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        # Fetch precalculated weight and scaled distances (can re-fetch or buffer)
+        w_k  = w_all_full[global_idx] 
+        dx_k = dx_all_full[global_idx] * inv_interpRange
+        dy_k = dy_all_full[global_idx] * inv_interpRange
+        
+        # Solve for coefficients (no need to store in full Vecs if not reused)
+        coeff_x = (w_k * (A22 * dx_k - A12 * dy_k)) * invD
+        coeff_y = (w_k * (A11 * dy_k - A12 * dx_k)) * invD
+        # Store coefficients temporarily if needed, otherwise use directly
+        # coeff_x_Vec[local_idx] = coeff_x 
+        # coeff_y_Vec[local_idx] = coeff_y
 
-    # Calculate bracket terms using min/max for conditional logic
-    bracketMinusVec  = min.(dot_vel_n, 0.0)
-    bracketMinus2Vec = min.(betaBarVec .* dot_vel_s, 0.0)
+        # Rotational vectors
+        hyp = hypot(dx_k, dy_k)
+        nx, ny = if hyp < 1e-14
+            (1.0, 0.0) # Handle dx=dy=0 case
+        else
+            invHyp = 1.0 / hyp
+            (dx_k * invHyp, dy_k * invHyp)
+        end
+        sx = -ny 
+        sy = nx  
+
+        # Compute adapted coefficients
+        alfaBar = nx * coeff_x + ny * coeff_y
+        betaBar = sx * coeff_x + sy * coeff_y
+
+        # Dot products with velocity
+        vel_n = vel[1] * nx + vel[2] * ny
+        vel_s = vel[1] * sx + vel[2] * sy
+
+        # Calculate bracket terms
+        bracketMinus1 = min(vel_n, 0.0)
+        bracketMinus2 = min(betaBar * vel_s, 0.0)
     
-    # Calculate final coefficient vector `cij`
-    # Reuse alfaBarVec buffer to store the final `cij` values
-    cijVec = alfaBarVec
-    cijVec .*= bracketMinusVec
-    cijVec .+= bracketMinus2Vec
+        # Calculate final coefficient `cij`
+        cij = alfaBar * bracketMinus1 + bracketMinus2
+        # cijVec[local_idx] = cij # Only store if needed later
+
+        # Accumulate dot product using precalculated df
+        div += cij * df_neighbors[local_idx] 
+    end
     
-    # Final divergence is a single dot product
-    div = 2 * dot(cijVec, dfVec)
-    
-    return div
+    # Scale the final result
+    return 2 * div / interpRange
 end
 
 

@@ -362,12 +362,15 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
+
             fi = ralston.rhoInit[p_idx]
-            ralston.div1[p_idx] = ralston.gradientInterpolator(eq, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            nb_slice = getNBSlice(particleGrid, p_idx)
+
+            ralston.div1[p_idx] = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
             
-            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhoInit, rho_candidate; firstStage=true)
-                ralston.div1[p_idx] = ralston.fallbackInterpolator(eq, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, ralston.rhoInit)
+                ralston.div1[p_idx] = ralston.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
                 rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
             end
             ralston.rhos[p_idx] = rho_candidate # Store intermediate result in the 'rhos' buffer
@@ -396,8 +399,8 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
             # Pass the intermediate state (ralston.rhos) to the gradient calculation
             div2 = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
-            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(particleGrid, p_idx, ralston.rhos, rho_final)
-                div2 = ralston.fallbackInterpolator(eq, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, ralston.rhos)
+                div2 = ralston.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
                 rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
             end
             # Directly write the final result for this particle into the grid

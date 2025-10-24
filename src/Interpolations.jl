@@ -10,7 +10,7 @@ using ..Meshfree4ScalarEq.FluxFunctions
 using ..Meshfree4ScalarEq.MLSWeightFunctions
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, getStencil, LaxFriedrichsGradient, MUSCLlimited,
-       AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter, NoFallbackGrad, Interpolator, initGI!, initGIBuffers!
+    NoFallbackGrad, Interpolator, initGI!, initGIBuffers!
 
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}

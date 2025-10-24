@@ -1,6 +1,7 @@
 module MOOD
 
 using ..ParticleGrids
+using ..Interpolations
 
 
 export MOODCriterion, MOODu1, MOODu2, NoMOOD, MOODLoubertU2, OnlyMOOD, FirstStageNoMOOD, initMOOD!
@@ -17,15 +18,7 @@ function initMOOD!(mood::MOODCriterion, d)
     return
 end
 
-"""
-    MOODu1
-
-Original MOOD criterion. Checks DMP for rho. It has been observed that this limits the order to two.
-particleGrid.grid[particleIndex].moodEvent is set to true if at least once during the RK-step a MOOD event occurs. 
-
-# Arguments:
-- `deltaRelax::Bool`: Relax DMP and other conditions in flat regions or not.
-"""
+# --- MOODu1 (Simple DMP Check) ---
 mutable struct MOODu1 <: MOODCriterion 
     count::Int64
     const d::Float64
@@ -34,35 +27,30 @@ mutable struct MOODu1 <: MOODCriterion
     end
 end
 
-"""
-    (mood::MOODu1)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::Vector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-
-# Arguments:
-- `particleGrid::ParticleGrid`
-- `particleIndex::Integer`
-- `rhoVec::Vector{<:Real}`: Solutions at previous time step to be used in DMP.
-- `newRho::Real`: newly proposed solution at next time step or RK stage.
-- `firstStage::Bool`: True in case this is the first or only stage of the time integration routine. 
-"""
-# --- REFACTORED Functor for MOODu1 ---
-# This method now works for any grid type thanks to the SoA design.
+# MOODu1 functor signature now includes particleGrid
 function (mood::MOODu1)(
+    g::GradientInterpolator,        # The primary gradient interpolator
+    i::Int,                         # Current particle index
+    rho_i::Float64,                 # Value of rho at particle i
+    nb_slice::UnitRange{Int},
+    newRho::Float64,                # Proposed new value
+    particleGrid::ParticleGrid,     # Grid to access neighbor info
+    rhoVec::AbstractVector{Float64} # Full rho vector
+)::Bool
     
-    i::Int,
-    f_i::Float64, 
-    rhoVec::AbstractVector{Float64}, 
-    newRho::Float64; 
-    firstStage::Bool=false
-)::Bool where {D}
+    num_nb = particleGrid.num_neighbors[i]
+    if num_nb == 0; return false; end # If no neighbors, DMP cannot be violated
     
-    minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
-    # More efficient way to get max volume
-    δ = mood.d
+    # Calculate local extrema using the helper with direct indexing
+    minU, maxU = findLocalExtrema(rho_i, nb_slice, particleGrid.neighbor_indices, rhoVec)
+    
+    δ = mood.d # Relaxation parameter
 
+    # Basic DMP check with relaxation delta
     moodEvent = (newRho < minU - δ) || (newRho > maxU + δ)
     
-    # Check for flat sections (where DMP might fail spuriously)
-    if abs(maxU - minU) < δ^3
+    # Flatness check
+    if abs(maxU - minU) < δ^3 
         moodEvent = false
     end
 
@@ -72,43 +60,7 @@ function (mood::MOODu1)(
 end
 
 
-"""
-    MOODLoubertU2
-
-Enhanced MOOD criterion. Checks relaxed DMP for rho. This criterion relaxes the DMP at local extrema using second order derivatives.
-"""
-mutable struct MOODLoubertU2 <: MOODCriterion
-    count::Int64
-    const d::Float64
-    function MOODLoubertU2(;deltaRelax::Real)
-        new(0, convert(Float64, deltaRelax))
-    end
-end
-
-function (mood::MOODLoubertU2)(particleGrid::ParticleGrid1D, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    # Prep
-    minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
-    δ = mood.d
-
-    # DMP criterion
-    DMPFail = (newRho < minU) || (newRho > maxU)
-    DMPFail = DMPFail && (abs(maxU - minU) < δ^3) ? false : DMPFail
-    
-    # u2 check with faulty curvatures!
-    mini, maxi = findLocalExtrema!(particleGrid, particleIndex, particleGrid.curvatures)  # particleGrid.curvatures contains the curvatures
-    u2 = (mini*maxi > -δ) && ((mini/maxi >= 0.5) || (max(abs(mini), abs(maxi)) < δ)) # True if criterion is satisfied, so no MOOD event
-
-    # If DMP criterion failed, check u2 criterion
-    moodEvent = DMPFail ? !u2 : false
-    if moodEvent; mood.count += 1 end
-    return moodEvent
-end
-
-"""
-    MOODu2
-
-Enhanced MOOD criterion. Checks relaxed DMP for rho. This criterion relaxes the DMP at local extrema using second order derivatives.
-"""
+# --- MOODu2 (DMP Check + Conditional Curvature Relaxation) ---
 mutable struct MOODu2 <: MOODCriterion 
     count::Int64
     const d::Float64
@@ -117,67 +69,107 @@ mutable struct MOODu2 <: MOODCriterion
     end
 end
 
-# --- REFACTORED Functor for MOODu2 ---
-# We use dispatch to create separate, clear methods for 1D and 2D.
+# Helper to check for curvature remains the same
+function _has_curvature(g::MUSCL{D, O, L, WF, NFF, WS}) where {D, O<:Union{MUSCLORDER2, MUSCLORDER3, MUSCLORDER4}, L, WF, NFF, WS}
+    return hasproperty(g.workspace, :curves_xx) &&
+           hasproperty(g.workspace, :curves_yy) 
+end
+function _has_curvature(g::GradientInterpolator)
+    return false
+end
+
+# --- MOODu2 Functor (1D) ---
 function (mood::MOODu2)(
-    particleGrid::ParticleGrid1D, 
-    particleIndex::Integer, 
-    rhoVec::AbstractVector{<:Real}, 
-    newRho::Real; 
-    firstStage::Bool=false
+    g::GradientInterpolator,     # The primary gradient interpolator (1D)
+    i::Int,                         # Current particle index
+    rho_i::Float64,                 # Value of rho at particle i
+    nb_slice::UnitRange{Int},
+    newRho::Float64,                # Proposed new value
+    particleGrid::ParticleGrid1D,  # Grid to access neighbor info (1D)
+    rhoVec::AbstractVector{Float64} # Full rho vector
 )::Bool
     
-    minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
+    num_nb = particleGrid.num_neighbors[i]
+    if num_nb == 0; return false; end 
 
-    delta = mood.d
+    minU, maxU = findLocalExtrema(rho_i, nb_slice, particleGrid.neighbor_indices, rhoVec)
+    δ = mood.d
 
-    DMPFail = (newRho < minU - delta) || (newRho > maxU + delta)
-    if abs(maxU - minU) < delta^3
+    # Basic DMP check
+    DMPFail = (newRho < minU - δ) || (newRho > maxU + δ)
+    if abs(maxU - minU) < δ^3 # Flatness check
         DMPFail = false
     end
     
-    # u2 check for 1D
-    mini, maxi, minxx, maxxx = findLocalExtremaAbs!(particleGrid, particleIndex, particleGrid.curvatures)
-    u2_satisfied = (mini * maxi > -delta) && ((minxx / maxxx >= 0.5) || (maxxx < delta))
+    # --- Conditional u2 check for 1D ---
+    u2_satisfied = false 
+    if _has_curvature(g)
+        curve_vec = g.workspace.curves_xx # Assumes 1D curve stored here
+        curve_i   = curve_vec[i]
+        
+        mini, maxi, minAbs, maxAbs = findLocalExtremaAbs( # Dispatches to 1D version
+            curve_i, nb_slice, particleGrid.neighbor_indices, curve_vec
+        )
+        
+        ratio = (maxAbs < 1e-12) ? 1.0 : minAbs / maxAbs 
+        u2_satisfied = (mini * maxi > -δ) && ((ratio >= 0.5) || (maxAbs < δ))
+    end
+    # --- End Conditional u2 check ---
     
     moodEvent = DMPFail ? !u2_satisfied : false
-
     if moodEvent; mood.count += 1 end
-    
     return moodEvent
 end
 
+# --- MOODu2 Functor (2D) ---
 function (mood::MOODu2)(
-    particleGrid::ParticleGrid2D, 
-    particleIndex::Integer, 
-    rhoVec::AbstractVector{<:Real}, 
-    newRho::Real; 
-    firstStage::Bool=false
+    g::GradientInterpolator,     # The primary gradient interpolator (2D)
+    i::Int,                         # Current particle index
+    rho_i::Float64,                 # Value of rho at particle i
+    nb_slice::UnitRange{Int},
+    newRho::Float64,                # Proposed new value
+    particleGrid::ParticleGrid2D,  # Grid to access neighbor info (2D)
+    rhoVec::AbstractVector{Float64} # Full rho vector
 )::Bool
     
-    minU, maxU = findLocalExtrema!(particleGrid, particleIndex, rhoVec)
-    delta = mood.d
+    num_nb = particleGrid.num_neighbors[i]
+    if num_nb == 0; return false; end
 
-    DMPFail = (newRho < minU - delta) || (newRho > maxU + delta)
-    if abs(maxU - minU) < delta^3
+    minU, maxU = findLocalExtrema(rho_i, nb_slice, particleGrid.neighbor_indices, rhoVec)
+    δ = mood.d
+
+    # Basic DMP check
+    DMPFail = (newRho < minU - δ) || (newRho > maxU + δ)
+    if abs(maxU - minU) < δ^3 # Flatness check
         DMPFail = false
     end
     
-    # u2 check for 2D
-    # particleGrid.curvatures is now an N x 2 matrix of curvatures
-    # We need a new findLocalExtremaAbs! that works on this SoA data
-    extrema_vals = findLocalExtremaAbs!(particleGrid, particleIndex, particleGrid.curvatures)
-    mini1, maxi1, minxx1, maxxx1 = extrema_vals[1:4]
-    mini2, maxi2, minxx2, maxxx2 = extrema_vals[5:8]
-    
-    u2x = (mini1 * maxi1 > -delta) && ((minxx1 / maxxx1 >= 0.5) || (maxxx1 < delta))
-    u2y = (mini2 * maxi2 > -delta) && ((minxx2 / maxxx2 >= 0.5) || (maxxx2 < delta))
-    u2_satisfied = u2x && u2y
+    # --- Conditional u2 check for 2D ---
+    u2_satisfied = false 
+    if _has_curvature(g)
+        curve_xx_vec = g.workspace.curves_xx
+        curve_yy_vec = g.workspace.curves_yy
+        curve_xx_i   = curve_xx_vec[i]
+        curve_yy_i   = curve_yy_vec[i]
+        
+        extrema_vals = findLocalExtremaAbs( # Dispatches to 2D version
+            curve_xx_i, curve_yy_i, nb_slice, particleGrid.neighbor_indices, 
+            curve_xx_vec, curve_yy_vec
+        )
+        mini1, maxi1, minAbs1, maxAbs1 = extrema_vals[1:4]
+        mini2, maxi2, minAbs2, maxAbs2 = extrema_vals[5:8]
+        
+        ratio1 = (maxAbs1 < 1e-12) ? 1.0 : minAbs1 / maxAbs1 
+        ratio2 = (maxAbs2 < 1e-12) ? 1.0 : minAbs2 / maxAbs2 
+        
+        u2x = (mini1 * maxi1 > -δ) && ((ratio1 >= 0.5) || (maxAbs1 < δ))
+        u2y = (mini2 * maxi2 > -δ) && ((ratio2 >= 0.5) || (maxAbs2 < δ))
+        u2_satisfied = u2x && u2y
+    end
+    # --- End Conditional u2 check ---
     
     moodEvent = DMPFail ? !u2_satisfied : false
-
     if moodEvent; mood.count += 1 end
-    
     return moodEvent
 end
 
@@ -193,7 +185,7 @@ struct NoMOOD <: MOODCriterion
     end
 end
 
-function (mood::NoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+function (mood::NoMOOD)(kwargs...)::Bool
     return false
 end
 
@@ -209,24 +201,8 @@ struct OnlyMOOD <: MOODCriterion
     end
 end
 
-function (mood::OnlyMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
+function (mood::OnlyMOOD)(kwargs...)::Bool
     return true
 end
-
-"""
-FirstStageNoMOOD
-
-Test case for mixing of stages. Returns false only in the first stage.
-"""
-struct FirstStageNoMOOD <: MOODCriterion
-    count::Int64
-    function FirstStageNoMOOD()
-        new(0)
-    end
-end
-function (mood::FirstStageNoMOOD)(particleGrid::ParticleGrid, particleIndex::Integer, rhoVec::AbstractVector{<:Real}, newRho::Real; firstStage::Bool=false)::Bool
-    return !firstStage
-end
-
 
 end
