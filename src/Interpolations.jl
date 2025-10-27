@@ -12,6 +12,7 @@ using ..Meshfree4ScalarEq.MLSWeightFunctions
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, getStencil, LaxFriedrichsGradient, MUSCLlimited,
     NoFallbackGrad, Interpolator, initGI!, initGIBuffers!
 
+
 """
     sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
 
@@ -228,41 +229,6 @@ function (interp::Interpolator{1, 2, 1})(
     return
 end
 
-# function (interp::Interpolator{2, 2, 1})(
-#     dxVec::AbstractVector{<:Real},
-#     dyVec::AbstractVector{<:Real},
-#     wVec::AbstractVector{<:Real},
-#     dfVec::AbstractVector{<:Real};
-#     robust_svd_solve::Bool=false # Solver toggle
-# )
-#     num_points = length(dxVec)
-#     A_view = @view interp.A[1:num_points, :]
-#     b_view = @view interp.b[1:num_points]
-#     sqrt_w_view = @view interp.sqrt_w[1:num_points]
-
-#     # Build the weighted system
-#     sqrt_w_view .= sqrt.(wVec)
-#     b_view .= dfVec .* sqrt_w_view
-
-#     # Basis functions for 2D gradient: x, y, x^2/2, y^2/2, xy
-#     A_view[:, 1] .= dxVec .* sqrt_w_view
-#     A_view[:, 2] .= dyVec .* sqrt_w_view
-#     A_view[:, 3] .= (dxVec.^2 ./ 2) .* sqrt_w_view
-#     A_view[:, 4] .= (dyVec.^2 ./ 2) .* sqrt_w_view
-#     A_view[:, 5] .= (dxVec .* dyVec) .* sqrt_w_view
-
-#     # Solve using the chosen method
-#     if robust_svd_solve
-#         return pinv(A_view, rtol = sqrt(eps(eltype(A_view)))) * b_view
-#     else
-#         qr_factors = qr!(A_view, NoPivot())
-#         res = @view interp.sqrt_w[1:5] # Minimal size 5 is ensured by default
-#         # 2. Solve the system in-place into the result buffer.
-#         ldiv!(res, qr_factors, b_view)
-#         return res
-#     end
-# end
-
 function (interp::Interpolator{2, 2, 1})(
     dxVec::AbstractVector{<:Real},
     dyVec::AbstractVector{<:Real},
@@ -276,7 +242,7 @@ function (interp::Interpolator{2, 2, 1})(
     fill!(b, 0.0)
     # --- Directly construct the 5x5 Normal Matrix and RHS in a single loop ---
     # The basis vector for each point is [x, y, x²/2, y²/2, xy]
-    @inbounds for i in 1:num_points
+    @inbounds for i in eachindex(dxVec)
         w = wVec[i]
         dx = dxVec[i]
         dy = dyVec[i]
@@ -352,6 +318,380 @@ function (interp::Interpolator{2, 2, 1})(
     res3 = (y3 - l43*res4 - l53*res5) / l33
     res2 = (y2 - l32*res3 - l42*res4 - l52*res5) / l22
     res1 = (y1 - l21*res2 - l31*res3 - l41*res4 - l51*res5) / l11
+
+    return (res1, res2, res3, res4, res5)
+end
+
+### Bufferless versions
+
+function (interp::Interpolator{1, 0, 0})(
+    wVec::Vector{Float64},  # Full Vector
+    fVec::Vector{Float64},  # Full Vector
+    n::Int                  # Number of elements to use (1:n)
+)
+    sum_w = 0.0
+    dot_wf = 0.0
+
+    @inbounds for i in 1:n
+        w = wVec[i]
+        sum_w += w
+        dot_wf += w * fVec[i]
+    end
+
+    if abs(sum_w) < 1e-14
+        return 0.0 # Return the mean value directly
+    else
+        return dot_wf / sum_w # Return the mean value directly
+    end
+    # Original code modified interp.res[1], removed to fit pattern
+end
+
+function (interp::Interpolator{1, 1, 0})(
+    dxVec::Vector{Float64}, # Full Vector
+    wVec::Vector{Float64},  # Full Vector
+    fVec::Vector{Float64},  # Full Vector
+    n::Int                  # Number of elements to use (1:n)
+)
+    # Accumulate matrix and RHS components in a loop
+    A11 = 0.0; A12 = 0.0; A22 = 0.0
+    b1 = 0.0; b2 = 0.0
+
+    @inbounds for i in 1:n
+        w = wVec[i]
+        dx = dxVec[i]
+        f = fVec[i]
+
+        # RHS components (b1 = w*f, b2 = w*dx*f)
+        b1 += w * f
+        wdx = w * dx # Compute w*dx once
+        b2 += wdx * f
+
+        # Matrix components (A11 = w, A12 = w*dx, A22 = w*dx*dx)
+        A11 += w
+        A12 += wdx
+        A22 += wdx * dx
+    end
+
+    # Solve 2x2 system: [A11 A12; A12 A22] [c0; c1] = [b1; b2]
+    D = A11 * A22 - A12 * A12
+    if abs(D) < 1e-14
+        # Handle singular matrix case (e.g., return zero coefficients)
+        return 0.0, 0.0
+    else
+        invD = 1.0 / D
+        # Cramer's rule or explicit inverse
+        res0 = (A22 * b1 - A12 * b2) * invD # c0
+        res1 = (A11 * b2 - A12 * b1) * invD # c1
+        return res0, res1
+    end
+    # Original code had a slightly different solver, replaced with standard 2x2 solve
+end
+
+function (interp::Interpolator{1, 2, 0})(
+    dxVec::Vector{Float64}, # Full Vector
+    wVec::Vector{Float64},  # Full Vector
+    fVec::Vector{Float64},  # Full Vector
+    n::Int                  # Number of elements to use (1:n)
+)
+    # Accumulate matrix and RHS components
+    # Basis: [1, x, x^2/2]
+    A11 = 0.0; A12 = 0.0; A13 = 0.0
+    A22 = 0.0; A23 = 0.0; A33 = 0.0
+    b1 = 0.0; b2 = 0.0; b3 = 0.0
+
+    @inbounds for i in 1:n
+        w = wVec[i]
+        dx = dxVec[i]
+        f = fVec[i]
+        dx2_2 = dx * dx / 2.0 # Basis function x^2/2
+
+        # RHS: b = A^T W f
+        b1 += w * f       # Coeff for basis 1
+        b2 += w * dx * f  # Coeff for basis x
+        b3 += w * dx2_2 * f # Coeff for basis x^2/2
+
+        # Matrix N = A^T W A (Upper Triangle)
+        A11 += w          # (1 * 1)
+        A12 += w * dx     # (1 * x)
+        A13 += w * dx2_2  # (1 * x^2/2)
+        A22 += w * dx * dx # (x * x)
+        A23 += w * dx * dx2_2 # (x * x^2/2)
+        A33 += w * dx2_2 * dx2_2 # (x^2/2 * x^2/2)
+    end
+    
+    # Fill lower triangle (matrix is symmetric)
+    # A21 = A12; A31 = A13; A32 = A23 
+
+    # Hardcoded solve of 3x3 system (Ax=b where A is symmetric N)
+    # Using LU decomposition logic from original code
+    # Check for potential division by zero
+    if abs(A11) < 1e-14; return 0.0, 0.0, 0.0; end
+    L21 = A12 / A11
+    L31 = A13 / A11
+    
+    U22 = A22 - L21 * A12
+    if abs(U22) < 1e-14; return 0.0, 0.0, 0.0; end
+    L32 = (A23 - L31 * A12) / U22
+    
+    U23 = A23 - L21 * A13 # Original A23 used here
+    
+    U33 = A33 - L31 * A13 - L32 * U23
+    if abs(U33) < 1e-14; return 0.0, 0.0, 0.0; end
+
+    # Forward substitution Ly = b
+    y1 = b1
+    y2 = b2 - L21 * y1
+    y3 = b3 - L31 * y1 - L32 * y2
+    
+    # Backward substitution Ux = y
+    res3 = y3 / U33          # c2 (coefficient for x^2/2)
+    res2 = (y2 - U23 * res3) / U22 # c1 (coefficient for x)
+    res1 = (y1 - A12 * res2 - A13 * res3) / A11 # c0 (coefficient for 1)
+
+    return res1, res2, res3
+end
+
+function (interp::Interpolator{1, 1, 1})(
+    dxVec::Vector{Float64}, # Full Vector
+    wVec::Vector{Float64},  # Full Vector
+    dfVec::Vector{Float64}, # Full Vector
+    n::Int                  # Number of elements to use (1:n)
+)
+    # Calculate A11 = sum(w*dx*dx) and b1 = sum(w*dx*df)
+    A11 = 0.0
+    b1 = 0.0
+
+    @inbounds for i in 1:n
+        w = wVec[i]
+        dx = dxVec[i]
+        
+        wdx = w * dx
+        b1 += wdx * dfVec[i]
+        A11 += wdx * dx
+    end
+    
+    if abs(A11) < 1e-14
+        return 0.0 # Return the gradient (c1)
+    else
+        return b1 / A11 # Return the gradient (c1)
+    end
+end
+
+function (interp::Interpolator{1, 2, 1})(
+    dxVec::Vector{Float64}, # Full Vector
+    wVec::Vector{Float64},  # Full Vector
+    dfVec::Vector{Float64}, # Full Vector
+    n::Int                  # Number of elements to use (1:n)
+)
+
+    A11 = 0.0; A12 = 0.0; A22 = 0.0
+    b2 = 0.0; b3 = 0.0
+
+    # Calculate intermediate values and matrix/rhs components in one loop
+    @inbounds for i in 1:n
+        w = wVec[i]
+        dx = dxVec[i]
+        df = dfVec[i]
+        
+        # Calculate w_buffer[i] = w * dx
+        wdx = w * dx 
+        # w_buffer[i] = wdx # Only store if needed later, maybe not
+
+        # Accumulate b2 = dot(w_buffer, dfVec)
+        b2 += wdx * df 
+
+        # Calculate term for A11 and b3
+        wdx2 = wdx * dx 
+        
+        # Accumulate A11 = sum(w_buffer .* dxVec) where w_buffer = wVec .* dxVec
+        A11 += wdx2
+
+        # Accumulate b3 = dot(w_buffer, dfVec) / 2 where w_buffer = wVec .* dxVec .* dxVec
+        b3 += (wdx2 * df) # Will divide by 2 later
+
+        # Calculate term for A12 and A22
+        wdx3 = wdx2 * dx
+
+        # Accumulate A12 = sum(w_buffer .* dxVec) / 2 where w_buffer = wVec .* dxVec .* dxVec
+        A12 += wdx3 # Will divide by 2 later
+
+        # Accumulate A22 = dot(w_buffer, dxVec) / 4 where w_buffer = wVec .* dxVec .* dxVec
+        A22 += (wdx3 * dx) # Will divide by 4 later
+    end
+
+    # Apply scaling factors outside the loop
+    A12 /= 2.0
+    A22 /= 4.0
+    b3 /= 2.0
+
+    # Solve 2x2 system
+    D = A11 * A22 - A12^2
+    if abs(D) < 1e-14
+        return 0.0, 0.0
+    else
+        invD = 1.0 / D
+        res1 = (A22 * b2 - A12 * b3) * invD
+        res2 = (A11 * b3 - A12 * b2) * invD
+        return res1, res2
+    end
+end
+
+function (interp::Interpolator{2, 1, 1})(
+    dxVec::Vector{Float64}, # Full Vector
+    dyVec::Vector{Float64}, # Full Vector
+    wVec::Vector{Float64},  # Full Vector
+    dfVec::Vector{Float64}, # Full Vector
+    n::Int                  # Number of elements to use (1:n)
+)
+    A11 = 0.0; A12 = 0.0; A22 = 0.0
+    b1 = 0.0; b2 = 0.0
+
+    # Loop explicitly from 1 to n
+    @inbounds for i in 1:n 
+        w = wVec[i]
+        dx = dxVec[i]
+        dy = dyVec[i]
+        df = dfVec[i]
+        
+        A11 += w * dx * dx
+        A22 += w * dy * dy
+        A12 += w * dx * dy
+        b1 += w * dx * df
+        b2 += w * dy * df
+    end
+    
+    # Solve 2x2 system (no changes needed here)
+    D = A11 * A22 - A12^2 # Corrected determinant calc
+    if abs(D) < 1e-14
+        return 0.0, 0.0
+    else
+        invD = 1.0 / D
+        res1 = (A22 * b1 - A12 * b2) * invD
+        res2 = (A11 * b2 - A12 * b1) * invD
+        return res1, res2
+    end
+end
+
+function (interp::Interpolator{2, 2, 1})(
+    dxVec::Vector{Float64}, # Full Vector
+    dyVec::Vector{Float64}, # Full Vector
+    wVec::Vector{Float64},  # Full Vector
+    dfVec::Vector{Float64}, # Full Vector
+    n::Int                  # Number of elements to use (1:n)
+)
+    # Use the fixed-size buffers directly from the struct
+    N_matrix = interp.A 
+    rhs_vec = interp.b
+    
+    fill!(N_matrix, 0.0)
+    fill!(rhs_vec, 0.0)
+
+    # --- Construct the 5x5 Normal Matrix and RHS in a single loop ---
+    # Loop explicitly from 1 to n
+    @inbounds for i in 1:n 
+        w = wVec[i]
+        dx = dxVec[i]
+        dy = dyVec[i]
+        df = dfVec[i]
+
+        # Precompute basis functions for the i-th point
+        dx2_2 = dx*dx / 2.0
+        dy2_2 = dy*dy / 2.0
+        dxdy = dx*dy
+        basis_i = (dx, dy, dx2_2, dy2_2, dxdy) # Use tuple directly
+        
+        # Update the right-hand side rhs = AᵀWb
+        rhs_vec[1] += w * dx * df
+        rhs_vec[2] += w * dy * df
+        rhs_vec[3] += w * dx2_2 * df
+        rhs_vec[4] += w * dy2_2 * df
+        rhs_vec[5] += w * dxdy * df
+        
+        # Update the upper triangle of the symmetric normal matrix N = AᵀWA
+        # Manually unroll for potential minor speedup (compiler might do this anyway)
+        N_matrix[1, 1] += w * basis_i[1] * basis_i[1]
+        N_matrix[1, 2] += w * basis_i[1] * basis_i[2]
+        N_matrix[1, 3] += w * basis_i[1] * basis_i[3]
+        N_matrix[1, 4] += w * basis_i[1] * basis_i[4]
+        N_matrix[1, 5] += w * basis_i[1] * basis_i[5]
+        
+        N_matrix[2, 2] += w * basis_i[2] * basis_i[2]
+        N_matrix[2, 3] += w * basis_i[2] * basis_i[3]
+        N_matrix[2, 4] += w * basis_i[2] * basis_i[4]
+        N_matrix[2, 5] += w * basis_i[2] * basis_i[5]
+        
+        N_matrix[3, 3] += w * basis_i[3] * basis_i[3]
+        N_matrix[3, 4] += w * basis_i[3] * basis_i[4]
+        N_matrix[3, 5] += w * basis_i[3] * basis_i[5]
+        
+        N_matrix[4, 4] += w * basis_i[4] * basis_i[4]
+        N_matrix[4, 5] += w * basis_i[4] * basis_i[5]
+        
+        N_matrix[5, 5] += w * basis_i[5] * basis_i[5]
+    end
+    
+    # Fill in the lower triangle of the symmetric matrix
+    N_matrix[2, 1] = N_matrix[1, 2]
+    N_matrix[3, 1] = N_matrix[1, 3]; N_matrix[3, 2] = N_matrix[2, 3]
+    N_matrix[4, 1] = N_matrix[1, 4]; N_matrix[4, 2] = N_matrix[2, 4]; N_matrix[4, 3] = N_matrix[3, 4]
+    N_matrix[5, 1] = N_matrix[1, 5]; N_matrix[5, 2] = N_matrix[2, 5]; N_matrix[5, 3] = N_matrix[3, 5]; N_matrix[5, 4] = N_matrix[4, 5]
+
+    # --- Fully Hardcoded 5x5 Cholesky Solver ---
+    # (Using N_matrix and rhs_vec directly)
+    N = N_matrix 
+    b = rhs_vec
+    
+    # 1. Cholesky Decomposition (N = LLᵀ), calculating L
+    # (Error checks remain crucial)
+    l11_sq = N[1,1]
+    if l11_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    l11 = sqrt(l11_sq)
+    inv_l11 = 1.0 / l11
+    l21 = N[2,1] * inv_l11
+    l31 = N[3,1] * inv_l11
+    l41 = N[4,1] * inv_l11
+    l51 = N[5,1] * inv_l11
+
+    l22_sq = N[2,2] - l21*l21
+    if l22_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    l22 = sqrt(l22_sq)
+    inv_l22 = 1.0 / l22
+    l32 = (N[3,2] - l31*l21) * inv_l22
+    l42 = (N[4,2] - l41*l21) * inv_l22
+    l52 = (N[5,2] - l51*l21) * inv_l22
+
+    l33_sq = N[3,3] - l31*l31 - l32*l32
+    if l33_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    l33 = sqrt(l33_sq)
+    inv_l33 = 1.0 / l33
+    l43 = (N[4,3] - l41*l31 - l42*l32) * inv_l33
+    l53 = (N[5,3] - l51*l31 - l52*l32) * inv_l33
+
+    l44_sq = N[4,4] - l41*l41 - l42*l42 - l43*l43
+    if l44_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    l44 = sqrt(l44_sq)
+    inv_l44 = 1.0 / l44
+    l54 = (N[5,4] - l51*l41 - l52*l42 - l53*l43) * inv_l44
+
+    l55_sq = N[5,5] - l51*l51 - l52*l52 - l53*l53 - l54*l54
+    if l55_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
+    l55 = sqrt(l55_sq)
+    inv_l55 = 1.0 / l55 # Compute inverse once
+    
+    # 2. Forward Substitution (solves Ly = b for y)
+    y1 = b[1] * inv_l11
+    y2 = (b[2] - l21*y1) * inv_l22
+    y3 = (b[3] - l31*y1 - l32*y2) * inv_l33
+    y4 = (b[4] - l41*y1 - l42*y2 - l43*y3) * inv_l44
+    y5 = (b[5] - l51*y1 - l52*y2 - l53*y3 - l54*y4) * inv_l55
+
+    # 3. Backward Substitution (solves Lᵀx = y for x)
+    # Reusing inv_lXX variables calculated during forward pass
+    res5 = y5 * inv_l55
+    res4 = (y4 - l54*res5) * inv_l44
+    res3 = (y3 - l43*res4 - l53*res5) * inv_l33
+    res2 = (y2 - l32*res3 - l42*res4 - l52*res5) * inv_l22
+    res1 = (y1 - l21*res2 - l31*res3 - l41*res4 - l51*res5) * inv_l11
 
     return (res1, res2, res3, res4, res5)
 end

@@ -61,28 +61,108 @@ function initTS!(ts::MeshfreeTimeStepper, i, f_i, fVec, pg::ParticleGrid)
         neighbor_dfs[k] = f_j - f_i
     end
 end
-# A simple example for EulerUpwind
+# A simple example for EulerUpwind adapted to the new structure
 struct EulerUpwind{G <: GradientInterpolator} <: MeshfreeTimeStepper
     gradientInterpolator::G
-    rho_buffer::Vector{Float64}
+    
+    # Buffers are now part of the struct to be reused
+    rhoInit::Vector{Float64}      # Stores the state at the beginning of the step
+    neighbor_fs::Vector{Float64}  # Pre-gathered neighbor values
+    neighbor_dfs::Vector{Float64} # Pre-gathered neighbor differences
 
     function EulerUpwind(gradientInterpolator::G) where {G <: GradientInterpolator}
-        new{G}(gradientInterpolator, Float64[])
+        # Initialize with empty buffers
+        new{G}(gradientInterpolator, Float64[], Float64[], Float64[])
     end
 end
 
-function (eu::EulerUpwind)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
+"""
+Functor for the EulerUpwind time stepper using the fused-loop structure.
+"""
+function (eu::EulerUpwind)(
+    eq::ScalarHyperbolicPDE, 
+    particleGrid::ParticleGrid, 
+    settings::SimSetting, 
+    time::Real, 
+    dt::Real
+)
     N = particleGrid.N
-    if N > length(eu.rho_buffer); resize!(eu.rho_buffer, N) end
-    eu.rho_buffer[1:N] .= particleGrid.rhos # Store initial state for the step
     
-    initTimeStep(eu.gradientInterpolator, particleGrid)
+    # --- 1. Preparation ---
+    # Ensure buffers are correctly sized (only resizes if needed)
+    # initGIBuffers!(eu.gradientInterpolator, particleGrid) # Called once in initTimeStepper
+    initTSBuffer!(eu, particleGrid) 
 
-    for p_idx in 1:N
-        if particleGrid.is_boundary[p_idx]; return; end
-        div = eu.gradientInterpolator(particleGrid, p_idx, eu.rho_buffer, eq, settings)
-        particleGrid.rhos[p_idx] = eu.rho_buffer[p_idx] - dt * div
+    # Copy initial state for the step
+    eu.rhoInit[1:N] .= particleGrid.rhos 
+    # apply_boundary_conditions!(particleGrid, eu.rhoInit) # Apply BCs *before* pre-gather
+
+    # Define chunks for parallel loops
+    chunk_size = 100 # Adjust as needed
+    chunks = collect(Iterators.partition(1:N, chunk_size))
+
+    # --- 2. Fused Pre-Gather and Slope/Coefficient Calculation ---
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            fi = eu.rhoInit[p_idx]
+            
+            # Pre-gather neighbor data into ts.neighbor_fs/dfs
+            # NOTE: Pass the correct rho vector (eu.rhoInit)
+            initTS!(eu, p_idx, fi, eu.rhoInit, particleGrid) 
+            
+            # Calculate slopes/coefficients needed by the gradient interpolator
+            # NOTE: Pass the correct rho vector (eu.rhoInit)
+            initGI!(eu.gradientInterpolator, p_idx, fi, particleGrid, eu.neighbor_fs, eu.neighbor_dfs)
+        end
     end
+    
+    # --- 3. Fused Divergence Calculation and Update ---
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            
+            # Get initial state for this particle
+            rho_initial = eu.rhoInit[p_idx]
+
+            # Handle boundary particles: just keep initial state
+            if particleGrid.is_boundary[p_idx]
+                continue 
+            end
+            
+            # --- This code now only runs for INTERIOR particles ---
+            
+            # Get neighbor slice
+            nb_slice = getNBSlice(particleGrid, p_idx)
+
+            # Calculate divergence using the local signature and pre-gathered data
+            div = eu.gradientInterpolator(
+                eq, 
+                p_idx, 
+                rho_initial, # Pass f_i from the start of the step 
+                nb_slice, 
+                particleGrid, 
+                eu.neighbor_fs, 
+                eu.neighbor_dfs
+            )
+            
+            # Update particle state directly in the grid
+            particleGrid.rhos[p_idx] = rho_initial - dt * div
+        end
+    end
+
+    # --- 4. Final Boundary Conditions ---
+    apply_boundary_conditions!(particleGrid, particleGrid.rhos)
+end
+
+"""
+Initializes buffers specific to the EulerUpwind time stepper.
+"""
+function initTSBuffer!(eu::EulerUpwind, pg::ParticleGrid)
+    N = pg.N
+    M = length(pg.neighbor_indices) # Total number of interactions
+
+    _ensure_capacity!(eu.rhoInit, N)
+    _ensure_capacity!(eu.neighbor_fs, M)
+    _ensure_capacity!(eu.neighbor_dfs, M)
 end
 
 function initTimeStepper(euler::EulerUpwind, particleGrid::ParticleGrid, settings::SimSetting)
