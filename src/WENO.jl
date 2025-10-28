@@ -27,27 +27,6 @@ struct WENOWorkspace1D <: WENOWorkspace
     end
 end
 
-struct WENOWorkspace2D <: WENOWorkspace
-    # Main buffers
-    dx_buffer::Vector{Float64}; dy_buffer::Vector{Float64}
-    df_buffer::Vector{Float64}; w_buffer::Vector{Float64}
-    left_window_buffer::BitVector; top_window_buffer::BitVector
-    
-    # Scratch space for stencil calculations
-    dx_scratch::Vector{Float64}; dy_scratch::Vector{Float64}
-    df_scratch::Vector{Float64}; w_scratch::Vector{Float64}
-
-    function WENOWorkspace2D(max_neighbors::Int=30)
-        new(
-            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors),
-            BitVector(undef, max_neighbors), BitVector(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors),
-            Vector{Float64}(undef, max_neighbors), Vector{Float64}(undef, max_neighbors)
-        )
-    end
-end
-
 function ensure_capacity!(ws::WENOWorkspace1D, n::Int)
     if n > length(ws.dx_buffer)
         new_capacity = n + n ÷ 4
@@ -58,29 +37,94 @@ function ensure_capacity!(ws::WENOWorkspace1D, n::Int)
     return nothing
 end
 
+"""
+A minimal, thread-local workspace for the 2D WENO algorithm.
+Holds a single set of "scratch" buffers to build stencils in.
+"""
+struct WENOWorkspace2D <: WENOWorkspace
+    # Scratch space for stencil calculations
+    dx_stencil::Vector{Float64}
+    dy_stencil::Vector{Float64}
+    df_stencil::Vector{Float64}
+    w_stencil::Vector{Float64}
+
+    function WENOWorkspace2D(max_neighbors::Int=30)
+        new(
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors),
+            Vector{Float64}(undef, max_neighbors)
+        )
+    end
+end
+
+
+
+"""
+Ensures the stencil buffers in WENOWorkspace2D are large enough.
+"""
 function ensure_capacity!(ws::WENOWorkspace2D, n::Int)
-    if n > length(ws.dx_buffer)
+    if n > length(ws.dx_stencil)
         new_capacity = n + n ÷ 4
-        resize!.((ws.dx_buffer, ws.dy_buffer, ws.df_buffer, ws.w_buffer,
-                  ws.dx_scratch, ws.dy_scratch, ws.df_scratch, ws.w_scratch), new_capacity)
-        resize!.((ws.left_window_buffer, ws.top_window_buffer), new_capacity)
+        resize!.((ws.dx_stencil, ws.dy_stencil, ws.df_stencil, ws.w_stencil), new_capacity)
     end
     return nothing
 end
 
+"""
+Refactored WENO struct to hold thread-local workspaces.
+"""
 struct WENO{D,WS <: WENOWorkspace, I <: Interpolator} <: GradientInterpolator
     order::Int
     weightFunction::MLSWeightFunction
-    workspace::WS
+    workspaces::Vector{WS}
     interpolator::I
 
-    function WENO(order::Int, dimension::Int; weightFunction=exponentialWeightFunction())
+    function WENO(order::Int, dimension::Int;
+                  weightFunction=exponentialWeightFunction())
         @assert order >= 2 "WENO requires order >= 2 for second derivatives."
-        ws = dimension == 1 ? WENOWorkspace1D() : WENOWorkspace2D()
+        
+        # Determine the workspace type based on dimension
+        WS_eltype = dimension == 1 ? WENOWorkspace1D : WENOWorkspace2D
+        
+        # --- NEW: Create a workspace for each thread ---
+        n_threads = Threads.nthreads()
+        workspaces = [WS_eltype() for _ in 1:n_threads]
+        # --- END NEW ---
+        
         interpolator = Interpolator{dimension, order, 1}() 
-        WS = typeof(ws)
         I = typeof(interpolator)
-        new{dimension,WS,I}(order, weightFunction, ws, interpolator)
+        
+        # Note: The struct parameter WS is WS_eltype (e.g., WENOWorkspace2D)
+        new{dimension, WS_eltype, I}(order, weightFunction, workspaces, interpolator)
+    end
+end
+
+"""
+Buffer initialization hook for WENO.
+Finds the max neighbors from the grid and resizes all thread-local buffers.
+(This is analogous to the initGIBuffers! for UpwindGradient).
+"""
+function initGIBuffers!(g::WENO, pg::ParticleGrid)
+    # 1. Find max neighbors
+    max_nb = 0
+    if !isempty(pg.num_neighbors)
+        max_nb = maximum(pg.num_neighbors)
+    end
+    
+    # 2. Check for thread-count changes
+    n_threads = Threads.nthreads()
+    if length(g.workspaces) != n_threads
+        WS_eltype = typeof(g.workspaces[1])
+        empty!(g.workspaces)
+        for _ in 1:n_threads
+            push!(g.workspaces, WS_eltype(max_nb)) 
+        end
+    end
+  
+    # 3. Ensure capacity for all workspaces
+    for ws in g.workspaces
+        ensure_capacity!(ws, max_nb) 
     end
 end
 

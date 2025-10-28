@@ -1,18 +1,6 @@
-# --- Module Imports ---
-using Meshfree4ScalarEq.HyperbolicPDEs
-using Meshfree4ScalarEq.ParticleGrids
-using Meshfree4ScalarEq.TimeIntegration 
-using Meshfree4ScalarEq.Interpolations 
-using Meshfree4ScalarEq.SimSettings
-using Meshfree4ScalarEq.FluxFunctions
-using Meshfree4ScalarEq.SourceTerms 
-using Meshfree4ScalarEq.ImplicitSolvers 
-using Meshfree4ScalarEq.InitialConditions
-using Meshfree4ScalarEq.MOOD
 using StaticArrays
 using Random
 using LinearAlgebra
-using IPlotPDESols
 
 function create_kinetic_map(num_kinetic_per_macro::Vector{<:Integer})
 

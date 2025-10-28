@@ -172,6 +172,7 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
         end
 
         n_threads = Threads.nthreads()
+        println(n_threads)
         workspaces = [WS_eltype(100) for _ in 1:n_threads] 
 
         interpolator = Interpolator{dimension, order, 1}()
@@ -318,26 +319,6 @@ function _init_buffers_internal!(workspaces::Vector{WS}, max_neighbors::Int) whe
     end
 end
 
-"""
-Buffer initialization hook for UpwindGradient. Finds the max neighbors
-from the grid and resizes all thread-local buffers.
-"""
-function initGIBuffers!(g::UpwindGradient, pg::ParticleGrid)
-    max_nb = 0
-    if !isempty(pg.num_neighbors)
-        # Find the maximum number of neighbors any particle has
-        max_nb = maximum(pg.num_neighbors)
-    end
-    
-    # Dispatch to the internal helper
-    _init_buffers_internal!(g.workspaces, max_nb)
-end
-
-"""
-Functor for UpwindGradient (ClassicAlgorithm) with the 'fused' signature.
-Calculates the upwind gradient for a single particle `i`.
-Uses pg.range_factor for scaling.
-"""
 function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm})(
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index
@@ -352,7 +333,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     vel = (eq::LinearAdvection{2}).vel
     
     # --- 1. Get thread-local workspace, interpolator, and scaling factor ---
-    thread_idx = Threads.threadid()
+    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
     ws = upwind.workspaces[thread_idx]
     interp = upwind.interpolator
 
@@ -372,7 +353,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     # This loop filters neighbors based on the *unscaled* distances
     # but stores the *scaled* distances in the workspace.
     count = 0
-    for global_idx in enumerate(nb_slice)
+    for global_idx in nb_slice
         dx_k_unscaled = dx_all_full[global_idx]
         dy_k_unscaled = dy_all_full[global_idx]
 
@@ -413,10 +394,6 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     return (vel[1] * ddx + vel[2] * ddy)
 end
 
-"""
-Functor for UpwindGradient (TiwariAlgorithm) using a 'filter-and-compact'
-loop structure, removing the need for `partition_workspace!` or BitVectors.
-"""
 function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm})(
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index
@@ -515,11 +492,6 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
     return ddx * vel[1] + ddy * vel[2] 
 end
 
-
-"""
-Functor for UpwindGradient (PraveenAlgorithm) using minimal workspace
-and precalculated weights.
-"""
 function (upwind::UpwindGradient{2, <:UpwindWorkspacePA, <:Any, PraveenAlgorithm})(
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index

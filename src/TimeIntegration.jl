@@ -191,7 +191,7 @@ function mainTimeIntegrator!(
     # --- Main Time Loop ---
     t = 0.0
     k_step = 0
-    p = Progress(convert(Int, ceil(settings.tmax / settings.dt)), "Running Scalar Simulation...")
+    p = Progress(convert(Int, ceil(settings.tmax / settings.dt)); desc = "Running Scalar Simulation...")
     
     elapsed_time = @elapsed while t < settings.tmax && snap_counter <= snapshots
         actual_dt = min(settings.dt, settings.tmax - t)

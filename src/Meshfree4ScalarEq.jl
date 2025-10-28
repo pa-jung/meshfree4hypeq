@@ -1,5 +1,7 @@
 module Meshfree4ScalarEq
 
+export runScalarSimulation, runSystemSimulation
+
 # Imports
 using Random
 using Logging
@@ -56,5 +58,10 @@ using .ParticleGridStability
 
 include("InitialConditions.jl")
 using .InitialConditions
+
+using IPlotPDESols
+
+include("../SimulationFunctions/runScalarSimulation.jl")
+include("../SimulationFunctions/runSystemSimulation.jl")
 
 end  # module 

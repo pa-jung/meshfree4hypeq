@@ -1,6 +1,6 @@
-using IPlotPDESols # or just `const ParamDict = Dict{String, Any}` if not using the package
-include("../SimulationFunctions/runScalarSimulation.jl")
-# This combined ParamDict contains all the necessary keys to run a single
+using Meshfree4ScalarEq
+using IPlotPDESols
+
 # 2D simulation using your `runScalar2DSim` function.
 function main()
     params = ParamDict(
@@ -33,7 +33,7 @@ function main()
         "timestepper" => "RalstonRK2",
         "main_gradient" => "Upwind",
         "order" => 1,
-        "upwind_alg_2d" => "Praveen",
+        "upwind_alg_2d" => "Classic",
         "main_flux" => "Rusanov",
         #"MOOD" => "U2", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
         #"mood" => "none", # No MOOD for this run
@@ -86,6 +86,7 @@ function main()
     # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.
     #
     test_config = SimulationConfig(
+        runScalarSimulation,
         params,
         MethodDict(
             "Test(MOOD)" => ParamDict("MOOD" => "U2", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",),
@@ -100,7 +101,7 @@ function main()
 #show1DSolutionFig(test_config)
 scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
 #show2DCutFig(test_config;scene_options = scene_options)
-show2DSolutionFig(test_config)
+#show2DSolutionFig(test_config)
 end
 
 main()

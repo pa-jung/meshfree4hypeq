@@ -1,17 +1,4 @@
-# --- Module Imports ---
-using Meshfree4ScalarEq.HyperbolicPDEs
-using Meshfree4ScalarEq.ParticleGrids
-using Meshfree4ScalarEq.TimeIntegration 
-using Meshfree4ScalarEq.Interpolations 
-using Meshfree4ScalarEq.SimSettings
-using Meshfree4ScalarEq.FluxFunctions
-using Meshfree4ScalarEq.SourceTerms 
-using Meshfree4ScalarEq.ImplicitSolvers 
-using Meshfree4ScalarEq.InitialConditions
-using Meshfree4ScalarEq.MLSWeightFunctions
-using Meshfree4ScalarEq.MOOD
 using Random
-using IPlotPDESols
 
 """
     runScalarSimulation(params::ParamDictType) -> Union{AbstractSimData, Nothing}
