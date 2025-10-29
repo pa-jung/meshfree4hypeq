@@ -232,13 +232,13 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             upwind_alg_2d = "nothing"
         end
         MainGrad = if main_grad_name == "MUSCL"
-                    MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
+                    MUSCL(order-1, dimension; numericalFlux = MainFlux, limiter = limiter)
                     elseif main_grad_name == "WENO"
-                        WENO(order, dimension; weightFunction = weight_func)
+                        WENO(order, dimension;)
                 elseif main_grad_name == "Upwind"
-                    UpwindGradient(order, dimension; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
+                    UpwindGradient(order, dimension; numericalFlux=MainFlux, algType=upwind_alg_2d)
                 else error("Unknown MainGrad: $main_grad_name"); end
-        FallbackGrad = if fallback_grad_name == "Upwind" UpwindGradient(1, dimension; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
+        FallbackGrad = if fallback_grad_name == "Upwind" UpwindGradient(1, dimension; numericalFlux=FallbackFlux, algType=upwind_alg_2d)
                         elseif isnothing(fallback_grad_name) NoFallbackGrad()
                        else error("Only Upwind implemented as Fallback!") end
         implicit_solver = LinearizedRelaxationImplicitSolver()

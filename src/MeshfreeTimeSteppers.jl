@@ -9,38 +9,27 @@ using Base.Threads
 # mutable fields `neighbor_fs::Vector{Float64}` and `neighbor_dfs::Vector{Float64}`.
 
 
+function initTS!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
+    updateNeighbors!(pg)
+end
 
+function initTSBuffer!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
+    # `num_interactions` is the total length of the flat neighbor lists (M)
+    num_interactions = length(pg.neighbor_indices) 
+    # --- 3. Resize Per-Interaction Buffers (Size M) ---
+    _ensure_capacity!(ts.neighbor_fs, num_interactions)
+    _ensure_capacity!(ts.neighbor_dfs, num_interactions)
+    initAddTSBuffer!(ts, pg)
+    return nothing
+end
 """
-    initTS!(ts::MeshfreeTimeStepper, pg::ParticleGrid, fVec::AbstractVector)
+    initFs!(ts::MeshfreeTimeStepper, pg::ParticleGrid, fVec::AbstractVector)
 
 Initializes all buffers within the timestepper `ts` based on the particle grid `pg`.
 It then runs a parallel "pre-gather" loop to fill the `neighbor_fs` and 
 `neighbor_dfs` buffers using data from `fVec`.
 """
-function initTSBuffer!(
-    ts::T,
-    pg, # Keep it generic, just need to access its fields
-) where {T <: MeshfreeTimeStepper}
-
-    # --- 1. Get Required Buffer Sizes ---
-    # `num_particles` is the number of particles (N)
-    num_particles = length(pg.num_neighbors) 
-    # `num_interactions` is the total length of the flat neighbor lists (M)
-    num_interactions = length(pg.neighbor_indices) 
-
-    # --- 2. Resize Per-Particle Buffers (Size N) ---
-    _ensure_capacity!(ts.rhoInit, num_particles)
-    _ensure_capacity!(ts.rhos, num_particles)
-    _ensure_capacity!(ts.div1, num_particles)
-    
-    # --- 3. Resize Per-Interaction Buffers (Size M) ---
-    _ensure_capacity!(ts.neighbor_fs, num_interactions)
-    _ensure_capacity!(ts.neighbor_dfs, num_interactions)
-    
-    return nothing
-end
-
-function initTS!(ts::MeshfreeTimeStepper, i, f_i, fVec, pg::ParticleGrid)
+function initFs!(ts::MeshfreeTimeStepper, i, f_i, fVec, pg::ParticleGrid)
     # --- 4. Parallel Pre-Gather Loop ---
     # Get local aliases to the buffers for cleaner code in the loop
     neighbor_fs  = ts.neighbor_fs
@@ -76,6 +65,13 @@ struct EulerUpwind{G <: GradientInterpolator} <: MeshfreeTimeStepper
     end
 end
 
+function initAddTSBuffer!(eu::EulerUpwind, pg::ParticleGrid)
+    num_particles = length(pg.num_neighbors) 
+        # --- 2. Resize Per-Particle Buffers (Size N) ---
+    _ensure_capacity!(eu.rhoInit, num_particles)
+end
+
+
 """
 Functor for the EulerUpwind time stepper using the fused-loop structure.
 """
@@ -87,10 +83,10 @@ function (eu::EulerUpwind)(
     dt::Real
 )
     N = particleGrid.N
-    
+    #initTS!(eu.particleGrid)
     # --- 1. Preparation ---
     # Ensure buffers are correctly sized (only resizes if needed)
-    # initGIBuffers!(eu.gradientInterpolator, particleGrid) # Called once in initTimeStepper
+    initGIBuffers!(eu.gradientInterpolator, particleGrid)
     initTSBuffer!(eu, particleGrid) 
 
     # Copy initial state for the step
@@ -108,7 +104,7 @@ function (eu::EulerUpwind)(
             
             # Pre-gather neighbor data into ts.neighbor_fs/dfs
             # NOTE: Pass the correct rho vector (eu.rhoInit)
-            initTS!(eu, p_idx, fi, eu.rhoInit, particleGrid) 
+            initFs!(eu, p_idx, fi, eu.rhoInit, particleGrid) 
             
             # Calculate slopes/coefficients needed by the gradient interpolator
             # NOTE: Pass the correct rho vector (eu.rhoInit)
@@ -398,17 +394,27 @@ struct RalstonRK2{G1, G2, MOOD} <: MeshfreeTimeStepper
     end
 end
 
+function initAddTSBuffer!(ralston::RalstonRK2, pg::ParticleGrid)
+    # `num_particles` is the number of particles (N)
+    num_particles = length(pg.num_neighbors) 
+        # --- 2. Resize Per-Particle Buffers (Size N) ---
+    _ensure_capacity!(ralston.rhoInit, num_particles)
+    _ensure_capacity!(ralston.rhos, num_particles)
+    _ensure_capacity!(ralston.div1, num_particles)
+end
+
 # User-friendly constructor
 function RalstonRK2(gradientInterpolator::G1; fallbackInterpolator::G2 = NoFallbackGrad(), mood::M = NoMOOD()) where {G1, G2, M}
     RalstonRK2(gradientInterpolator, fallbackInterpolator, mood)
 end
 
-function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid, settings::SimSetting)
-    updateNeighbors!(particleGrid, ralston.gradientInterpolator.weightFunction)
+function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid)
+    updateNeighbors!(particleGrid)
 end
 
 function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
+    #initTS!(ralston.particleGrid)
     # --- Resize buffers only if necessary, using N ---
     counter = Atomic{Int}(0)
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
@@ -425,14 +431,14 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
 
 
     # Define a chunk size. 100 is a good starting point.
-    chunk_size = 100
+    chunk_size = 50
     chunks = collect(Iterators.partition(1:N, chunk_size))
 
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
     Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             fi = ralston.rhoInit[p_idx]
-            initTS!(ralston, p_idx, fi, ralston.rhoInit, particleGrid)
+            initFs!(ralston, p_idx, fi, ralston.rhoInit, particleGrid)
             initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
         end
@@ -458,12 +464,17 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     end
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     apply_boundary_conditions!(particleGrid, ralston.rhos)
-    
+
+    #initTS!(ralston.particleGrid)    
+    initGIBuffers!(ralston.gradientInterpolator, particleGrid)
+    initGIBuffers!(ralston.fallbackInterpolator, particleGrid)
+    initTSBuffer!(ralston, particleGrid)
+
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
     Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             fi = ralston.rhos[p_idx]
-            initTS!(ralston, p_idx, fi, ralston.rhos, particleGrid)
+            initFs!(ralston, p_idx, fi, ralston.rhos, particleGrid)
             initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
         end
@@ -474,7 +485,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
         for p_idx in particle_range
             if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
         
-            fi = ralston.rhoInit[p_idx]
+            fi = ralston.rhos[p_idx]
             nb_slice = getNBSlice(particleGrid, p_idx)
             # Pass the intermediate state (ralston.rhos) to the gradient calculation
             div2 = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
@@ -492,7 +503,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     
 end
 
-
+# Not usable anymore because no access to volumes. Can be easily fixed in 1D.
 struct RalstonRK2SmoothSwitch{G1, G2, MOOD} <: MeshfreeTimeStepper
     gradientInterpolator::G1
     fallbackInterpolator::G2

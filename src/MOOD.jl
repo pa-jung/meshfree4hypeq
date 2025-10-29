@@ -70,7 +70,7 @@ mutable struct MOODu2 <: MOODCriterion
 end
 
 # Helper to check for curvature remains the same
-function _has_curvature(g::MUSCL{D, O, L, WF, NFF, WS}) where {D, O<:Union{MUSCLORDER2, MUSCLORDER3, MUSCLORDER4}, L, WF, NFF, WS}
+function _has_curvature(g::MUSCL{D, O, L, NFF, WS}) where {D, O<:Union{MUSCLORDER2, MUSCLORDER3, MUSCLORDER4}, L, NFF, WS}
     return hasproperty(g.workspace, :curves_xx) &&
            hasproperty(g.workspace, :curves_yy) 
 end

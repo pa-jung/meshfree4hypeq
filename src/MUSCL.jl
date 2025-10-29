@@ -133,7 +133,7 @@ abstract type MUSCLWorkspace2D <: MUSCLWorkspace end
 Workspace for 2D, 1st Order MUSCL.
 Contains flat buffers for coefficients and per-particle slope storage.
 """
-mutable struct MUSCLWorkspace2D1O <: MUSCLWorkspace2D
+struct MUSCLWorkspace2D1O <: MUSCLWorkspace2D
     # --- FLATTENED per-interaction coefficient storage ---
     alfaijs::Vector{Float64}
     betaijs::Vector{Float64}
@@ -141,7 +141,7 @@ mutable struct MUSCLWorkspace2D1O <: MUSCLWorkspace2D
     # --- PER-PARTICLE slope storage (already flat) ---
     slopes_x::Vector{Float64}
     
-slopes_y::Vector{Float64}
+    slopes_y::Vector{Float64}
 
     function MUSCLWorkspace2D1O(
         initial_particle_cap::Int = 100, 
@@ -160,7 +160,7 @@ Workspace for 2D, 2nd Order MUSCL.
 Contains extended flat buffers for coefficients, per-particle derivative storage,
 and a temporary matrix buffer for the pseudo-inverse calculation.
 """
-mutable struct MUSCLWorkspace2D2O <: MUSCLWorkspace2D
+struct MUSCLWorkspace2D2O <: MUSCLWorkspace2D
     # --- FLATTENED per-interaction coefficient storage ---
     alfaijs::Vector{Float64}     # for fx
     betaijs::Vector{Float64}     # for fy
@@ -174,10 +174,6 @@ mutable struct MUSCLWorkspace2D2O <: MUSCLWorkspace2D
     curves_xx::Vector{Float64} 
     curves_yy::Vector{Float64} 
     curves_xy::Vector{Float64} 
-
-# --- Temporary buffers for a single particle's neighbors ---
-    # This is now a vector of matrices, one for each thread.
-    A_buffers::Vector{Matrix{Float64}}
 
     function MUSCLWorkspace2D2O(
         initial_particle_cap::Int = 100, 
@@ -198,7 +194,6 @@ new(
             zeros(initial_particle_cap), zeros(initial_particle_cap), # slopes_x, slopes_y
             zeros(initial_particle_cap), zeros(initial_particle_cap), # curves_xx, curves_yy
             zeros(initial_particle_cap), # curves_xy
-        thread_buffers # A_buffers
         )
     end
 end
@@ -341,26 +336,11 @@ function ensure_capacity!(ws::MUSCLWorkspace2D1O, n::Int)
     return nothing # No temp buffers to resize
 end
 
-# For 2nd Order, we need to resize all thread-local A_buffers
-function ensure_capacity!(ws::MUSCLWorkspace2D2O, n::Int)
-    # Check the size of the first buffer (all should be the same)
-    if n > size(ws.A_buffers[1], 1)
-        new_capacity = n + n ÷ 4
-        
-        # Resize all matrices in the vector
-        for i in 1:length(ws.A_buffers)
-            ws.A_buffers[i] = Matrix{Float64}(undef, new_capacity, 5)
-        end
-    end
-    return nothing
-end
 
-
-struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, WF <: MLSWeightFunction, NFF <: NumericalFluxFunction, WS<:MUSCLWorkspace} <: GradientInterpolator
+struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, NFF <: NumericalFluxFunction, WS<:MUSCLWorkspace} <: GradientInterpolator
     order::ORDER
     limiter::L
     res::Vector{Float64}
-    weightFunction::WF
     numericalFlux::NFF
     workspace::WS
 end
@@ -371,7 +351,6 @@ function MUSCL(
    
  dimension::Int; 
     limiter::L=NoLimiter(), 
-    weightFunction=exponentialWeightFunction(), 
     numericalFlux=RusanovFlux()
 ) where {L<:AbstractSlopeLimiter}
     
@@ -403,13 +382,13 @@ order : (order == 1 ? 2 : 5) # Determine size of result buffer
     WS = typeof(ws)
     
 if order == 1
-        return MUSCL{dimension, MUSCLORDER1, L, typeof(weightFunction), typeof(numericalFlux), WS}(MUSCLORDER1(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER1, L, typeof(numericalFlux), WS}(MUSCLORDER1(), limiter, zeros(res_size), numericalFlux, ws)
     elseif order == 2
-        return MUSCL{dimension, MUSCLORDER2, L, typeof(weightFunction), typeof(numericalFlux), WS}(MUSCLORDER2(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER2, L, typeof(numericalFlux), WS}(MUSCLORDER2(), limiter, zeros(res_size), numericalFlux, ws)
     elseif order == 3
-        return MUSCL{dimension, MUSCLORDER3, L, typeof(weightFunction), typeof(numericalFlux), WS}(MUSCLORDER3(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER3, L, typeof(numericalFlux), WS}(MUSCLORDER3(), limiter, zeros(res_size), numericalFlux, ws)
     elseif order == 4
-        return MUSCL{dimension, MUSCLORDER4, L, typeof(weightFunction), typeof(numericalFlux), WS}(MUSCLORDER4(), limiter, zeros(res_size), weightFunction, numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER4, L, typeof(numericalFlux), WS}(MUSCLORDER4(), limiter, zeros(res_size), numericalFlux, ws)
     else
         error("Order must be 1, 2, 3, or 4.")
     end
@@ -431,39 +410,13 @@ function initGIBuffers!(g::MUSCL, pg)
 end
 
 """
-(1D Implementation) Ensures 1D workspace buffers are sized.
-- Resizes per-particle arrays (slopes, etc.) to size N[cite: 19].
-- Resizes temporary buffers (dx_buffer, etc.) based on the maximum 
-  number of neighbors any particle has, plus a 25% buffer[cite: 16].
-"""
-function initGIBuffers!(ws::MUSCLWorkspace1D, pg::ParticleGrid1D)
-    N = pg.N
-    
-    # 1. Ensure capacity for per-particle buffers (size N)
-    ensure_particle_capacity!(ws, N)
-    
-    # 2. Find the maximum number of neighbors for temporary buffers
-    # (This can be a bit slow if N is huge, but only happens once)
-    max_nb = 0
-    if !isempty(pg.neighbour_indices)
-        max_nb = maximum(length, pg.neighbour_indices)
-    end
-    
-    # 3. Ensure capacity for temporary buffers (size max_nb + 25%)
-    # This existing function already adds the 25% buffer [cite: 16]
-    ensure_capacity!(ws, max_nb)
-    
-    return nothing
-end
-
-"""
 (2D, Order 1 Implementation) Ensures 2D1O workspace buffers are sized.
 - Resizes per-particle arrays (slopes_x, slopes_y) to size N[cite: 21].
 - Resizes flat coefficient arrays (alfaijs, betaijs) based on the 
   total number of interactions, plus a 25% buffer[cite: 22].
 """
-function initGIBuffers!(ws::MUSCLWorkspace2D1O, pg::ParticleGrid2D)
-    N = length(pg.num_neighbors)
+function initGIBuffers!(ws::MUSCLWorkspace, pg::ParticleGrid)
+    N = pg.N
     
     # 1. Ensure capacity for per-particle buffers (size N)
     ensure_particle_capacity!(ws, N)
@@ -473,37 +426,6 @@ function initGIBuffers!(ws::MUSCLWorkspace2D1O, pg::ParticleGrid2D)
     ensure_coefficients_capacity!(ws, pg)
 
     # 3. Temporary buffers: Not needed for 2D1O [cite: 24]
-    
-    return nothing
-end
-
-"""
-(2D, Order 2 Implementation) Ensures 2D2O workspace buffers are sized.
-- Resizes per-particle arrays (slopes_x, curves_xx, etc.) to size N[cite: 21].
-- Resizes flat coefficient arrays (alfaijs, gammaijs, etc.) based on the 
-  total number of interactions, plus a 25% buffer[cite: 22].
-- Resizes thread-local temporary 'A_buffers' based on the maximum 
-  number of neighbors, plus a 25% buffer[cite: 24].
-"""
-function initGIBuffers!(ws::MUSCLWorkspace2D2O, pg::ParticleGrid2D)
-    N = length(pg.num_neighbors)
-
-    # 1. Ensure capacity for per-particle buffers (size N)
-    ensure_particle_capacity!(ws, N)
-    
-    # 2. Ensure capacity for flat coefficient buffers (size M + 25%)
-    # This existing function already adds the 25% buffer [cite: 22]
-    ensure_coefficients_capacity!(ws, pg)
-    
-    # 3. Find max neighbors for temporary A_buffers
-    max_nb = 0
-    if !isempty(pg.num_neighbors)
-        max_nb = maximum(pg.num_neighbors)
-    end
-    
-    # 4. Ensure capacity for temporary buffers (size max_nb + 25%)
-    # This existing function already adds the 25% buffer [cite: 24]
-    ensure_capacity!(ws, max_nb)
     
     return nothing
 end
@@ -788,7 +710,7 @@ end
 # --- Reconstruction Helpers for fij and fji (2D) ---
 # These are kept as they are called by the new functor
 # It uses pre-calculated slopes.
-function reconstruct_interface_states(::MUSCLORDER1, ws, fi, fj, p_idx, nb_idx, deltaX, deltaY)
+function reconstruct_interface_states(::MUSCLORDER1, ws::MUSCLWorkspace2D1O, fi, fj, p_idx, nb_idx, deltaX, deltaY)
     fij = fi  + 0.5 * (deltaX * ws.slopes_x[p_idx]  + deltaY * ws.slopes_y[p_idx])
     fji = fj - 0.5 * (deltaX * ws.slopes_x[nb_idx] + deltaY * ws.slopes_y[nb_idx])
     return fij, fji
@@ -796,7 +718,7 @@ end
 
 
 # --- REFACTORED: Order 2 now just fetches pre-calculated values ---
-function reconstruct_interface_states(::MUSCLORDER2, ws, f_i, f_j, p_idx, nb_idx, deltaX, deltaY)
+function reconstruct_interface_states(::MUSCLORDER2, ws::MUSCLWorkspace2D2O, f_i, f_j, p_idx, nb_idx, deltaX, deltaY)
     # Fetch derivatives for particle i
     slope_ix   = ws.slopes_x[p_idx]
     slope_iy   = ws.slopes_y[p_idx]
@@ -849,9 +771,8 @@ function (muscl::MUSCL{2, ORDER})(
     nb_indices = pg.neighbor_indices
 
     fx, fy = flux(eq, f_i)
-
     # Loop over neighbors using the local index `k_local`
-    @inbounds for k_global in neighbor_slice
+    for k_global in neighbor_slice
         # Get global index for coefficient arrays
         
         # Get data from views
@@ -888,11 +809,11 @@ This is the internal logic from the old `_compute_muscl_coeffs!(::MUSCLORDER1, .
 @inline function _compute_coeffs!(
     ::MUSCLORDER1,
     nb_slice::UnitRange{Int},
-    alfaij::AbstractVector, # View into ws.alfaijs
-    betaij::AbstractVector, # View into ws.betaijs
-    dx::AbstractVector,            # View of neighbor x-distances
-    dy::AbstractVector,            # View of neighbor y-distances
-    w::AbstractVector              # View of neighbor weights
+    alfaij::AbstractVector, 
+    betaij::AbstractVector, 
+    dx::AbstractVector,         
+    dy::AbstractVector,       
+    w::AbstractVector
 )
     # --- 1. Calculate A-matrix components ---
     
@@ -906,12 +827,14 @@ This is the internal logic from the old `_compute_muscl_coeffs!(::MUSCLORDER1, .
         A12 += w_k * dx_k * dy_k
     end
     
-D = A11 * A22 - A12^2
+    D = A11 * A22 - A12^2
 
     # --- Handle singular matrix case ---
     if abs(D) < 1e-14
-        fill!(alfaij, 0.0)
-        fill!(betaij, 0.0)
+        @inbounds for k in nb_slice
+            alfaij[k] = 0.
+            betaij[k] = 0.
+        end
         return
     end
 
@@ -953,14 +876,7 @@ end
 Local slope limiting function (NoLimiter dispatch).
 Directly returns the unlimited slopes.
 """
-function _limit_slopes(
-    limiter::NoLimiter,
-    slope_x::Real, slope_y::Real,
-    f_i::Real,
-    f_neighbors::AbstractVector,
-    dx::AbstractVector,
-    dy::AbstractVector
-)
+function _limit_slopes(slope_x::Real, slope_y::Real, kwargs...)
     return slope_x, slope_y
 end
 
@@ -969,8 +885,9 @@ Local slope limiting function (RealSlopeLimiter dispatch).
 Applies geometric limiting logic from the old `limit_slopes!(...)`
 """
 function _limit_slopes(
-    strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter},
     slope_x::Real, slope_y::Real,
+    nb_slice::UnitRange{Int},
+    strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter},
     f_i::Real,
     f_neighbors::AbstractVector, # View of neighbor f-values
     dx::AbstractVector,          # View of neighbor x-distances
@@ -984,7 +901,7 @@ function _limit_slopes(
     # Find min/max among neighbors
     u_max = ui
     u_min = ui
-    @inbounds for k in eachindex(f_neighbors)
+    @inbounds for k in nb_slice
         f_neighbor = f_neighbors[k]
      
         u_max = max(u_max, f_neighbor)
@@ -993,7 +910,7 @@ function _limit_slopes(
 
     phi_i = 1.0
     
-    @inbounds for k in eachindex(dx)
+    @inbounds for k in nb_slice
      
         delta_recon = slope_x * dx[k] + slope_y * dy[k]
         
@@ -1059,7 +976,7 @@ function initGI!(
     slope_x, slope_y = _calculate_slopes(neighbor_slice, neighbor_dfs, ws.alfaijs, ws.betaijs)
 
     # Note: _limit_slopes was not provided, but assuming it has the same signature
-    slope_x, slope_y = _limit_slopes(muscl.limiter, slope_x, slope_y, f_i, neighbor_fs, dx, dy)
+    slope_x, slope_y = _limit_slopes(slope_x, slope_y, neighbor_slice, muscl.limiter, f_i, neighbor_fs, dx, dy)
     
     if isnan(slope_y) || isnan(slope_x)
         error("Found NaN while calculating slopes for a particle!")
@@ -1081,14 +998,11 @@ function initGI!(
     muscl::MUSCL{2,MUSCLORDER2},
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    pg::ParticleGrid, 
+    pg::ParticleGrid2D, 
     f_neighbors::AbstractVector,    # View of neighbor f-values
     df_neighbors::AbstractVector,   # View of neighbor df-values
 )
     ws = muscl.workspace
-    thread_idx = Threads.threadid() - 1
-    # --- Fetch the correct thread-local buffer ---
-    A_buffer_threadlocal = ws.A_buffers[thread_idx] # <--- This now works
 
     # Get views into the correct slice of the global coefficient buffers
     alfaij      = ws.alfaijs
@@ -1120,14 +1034,11 @@ function initGI!(
         return
     end
 
-    # --- 1. Compute Coefficients ---
-    A_view = @view A_buffer_threadlocal[1:num_nb, 1:5]
     
     _compute_coeffs!(
         muscl.order, nb_slice,
         alfaij, betaij, alfaij_bar,
-        betaij_bar, gammaij,
-        A_view, dx, dy, w
+        betaij_bar, gammaij, dx, dy, w
     )
     
     # --- 2. Calculate Derivatives ---
@@ -1161,7 +1072,8 @@ end
 
 """
 Calculates 2nd-order MUSCL coefficients for a single particle.
-This is the internal logic from the old `_compute_muscl_coeffs!(::MUSCLORDER2, ...)`
+This version uses a hard-coded Cholesky decomposition to solve
+for the coefficients for each neighbor, avoiding `pinv` or `inv`.
 """
 function _compute_coeffs!(
     ::MUSCLORDER2,
@@ -1171,41 +1083,149 @@ function _compute_coeffs!(
     alfaij_bar::AbstractVector, # View into ws.alfaij_bars
     betaij_bar::AbstractVector, # View into ws.betaij_bars
     gammaij::AbstractVector,    # View into ws.gammaijs
-    A_view::AbstractMatrix,            # View of thread-local temp matrix
     dx::AbstractVector,                # View of neighbor x-distances
     dy::AbstractVector,                # View of neighbor y-distances
     w::AbstractVector                  # View of neighbor weights
 )
-    count = 0
-    # --- 1. Populate the temporary A matrix ---
-    @inbounds for k in nb_slice
-        count += 1
+    num_nb = length(nb_slice)
 
+    # --- 1. Build the 5x5 Normal Matrix N = A^T W A ---
+    # (Using local variables, same as Interpolator{2,2,1})
+    N11 = 0.0; N12 = 0.0; N13 = 0.0; N14 = 0.0; N15 = 0.0
+    N22 = 0.0; N23 = 0.0; N24 = 0.0; N25 = 0.0
+    N33 = 0.0; N34 = 0.0; N35 = 0.0
+    N44 = 0.0; N45 = 0.0
+    N55 = 0.0
+    
+    @inbounds for k in nb_slice
+        w_k = w[k]
+        if w_k == 0.0; continue; end
+        
         dx_k = dx[k]
         dy_k = dy[k]
-        w_k  = w[k]
+        
+        # Basis functions
+        b1 = dx_k
+        b2 = dy_k
+        b3 = 0.5 * dx_k^2
+        b4 = 0.5 * dy_k^2
+        b5 = dx_k * dy_k
 
-        A_view[count, 1] = dx_k * w_k
-        A_view[count, 2] = dy_k * w_k
-        A_view[count, 3] = (dx_k^2) * w_k * 0.5
-        A_view[count, 4] = (dy_k^2) * w_k * 0.5
-        A_view[count, 5] = dx_k * dy_k * w_k
+        # Add contribution to upper triangle of N = A^T W A
+        N11 += w_k * b1 * b1; N12 += w_k * b1 * b2; N13 += w_k * b1 * b3
+        N14 += w_k * b1 * b4; N15 += w_k * b1 * b5
+
+        N22 += w_k * b2 * b2; N23 += w_k * b2 * b3; N24 += w_k * b2 * b4
+        N25 += w_k * b2 * b5
+
+        N33 += w_k * b3 * b3; N34 += w_k * b3 * b4; N35 += w_k * b3 * b5
+
+        N44 += w_k * b4 * b4; N45 += w_k * b4 * b5
+
+        N55 += w_k * b5 * b5
     end
 
-    # --- 2. Perform the pseudo-inverse (this is a necessary allocation) ---
-    coeff = pinv(A_view, rtol=sqrt(eps(real(float(oneunit(eltype(A_view)))))))
+    # --- 2. Hardcoded Cholesky Decomposition (N = LLᵀ) ---
+    l11_sq = N11
+    if l11_sq < 1e-14
+        _zero_coeffs!(nb_slice, alfaij, betaij, alfaij_bar, betaij_bar, gammaij)
+        return
+    end
+    l11 = sqrt(l11_sq)
+    inv_l11 = 1.0 / l11
+    l21 = N12 * inv_l11
+    l31 = N13 * inv_l11
+    l41 = N14 * inv_l11
+    l51 = N15 * inv_l11
+
+    l22_sq = N22 - l21*l21
+    if l22_sq < 1e-14
+        _zero_coeffs!(nb_slice, alfaij, betaij, alfaij_bar, betaij_bar, gammaij)
+        return
+    end
+    l22 = sqrt(l22_sq)
+    inv_l22 = 1.0 / l22
+    l32 = (N23 - l31*l21) * inv_l22
+    l42 = (N24 - l41*l21) * inv_l22
+    l52 = (N25 - l51*l21) * inv_l22
+
+    l33_sq = N33 - l31*l31 - l32*l32
+    if l33_sq < 1e-14
+        _zero_coeffs!(nb_slice, alfaij, betaij, alfaij_bar, betaij_bar, gammaij)
+        return
+    end
+    l33 = sqrt(l33_sq)
+    inv_l33 = 1.0 / l33
+    l43 = (N34 - l41*l31 - l42*l32) * inv_l33
+    l53 = (N35 - l51*l31 - l52*l32) * inv_l33
+
+    l44_sq = N44 - l41*l41 - l42*l42 - l43*l43
+    if l44_sq < 1e-14
+        _zero_coeffs!(nb_slice, alfaij, betaij, alfaij_bar, betaij_bar, gammaij)
+        return
+    end
+    l44 = sqrt(l44_sq)
+    inv_l44 = 1.0 / l44
+    l54 = (N45 - l51*l41 - l52*l42 - l53*l43) * inv_l44
+
+    l55_sq = N55 - l51*l51 - l52*l52 - l53*l53 - l54*l54
+    if l55_sq < 1e-14
+        _zero_coeffs!(nb_slice, alfaij, betaij, alfaij_bar, betaij_bar, gammaij)
+        return
+    end
+    l55 = sqrt(l55_sq)
+    inv_l55 = 1.0 / l55
     
-    # --- 3. Write final coefficients ---
-    count = 0
+    # --- 3. Solve for Coefficients for EACH neighbor ---
     @inbounds for k in nb_slice
-        count += 1
         w_k = w[k]
-        alfaij[k]     = coeff[1, count] * w_k
-        betaij[k]     = coeff[2, count] * w_k
-        alfaij_bar[k] = coeff[3, count] * w_k
-        betaij_bar[k] = coeff[4, count] * w_k
-        gammaij[k]    = coeff[5, count] * w_k
+        
+        # Build the RHS vector b_k = (A^T W)_k = A_k^T * w_k
+        dx_k = dx[k]
+        dy_k = dy[k]
+        
+        b1 = dx_k * w_k
+        b2 = dy_k * w_k
+        b3 = (0.5 * dx_k^2) * w_k
+        b4 = (0.5 * dy_k^2) * w_k
+        b5 = (dx_k * dy_k) * w_k
+
+        # Solve N*c = b  (where N=LL^T)
+        
+        # a) Forward Substitution (solves Ly = b for y)
+        y1 = b1 * inv_l11
+        y2 = (b2 - l21*y1) * inv_l22
+        y3 = (b3 - l31*y1 - l32*y2) * inv_l33
+        y4 = (b4 - l41*y1 - l42*y2 - l43*y3) * inv_l44
+        y5 = (b5 - l51*y1 - l52*y2 - l53*y3 - l54*y4) * inv_l55
+
+        # b) Backward Substitution (solves Lᵀc = y for c)
+        # (c is the coefficient vector for this neighbor)
+        gammaij[k]    = y5 * inv_l55
+        betaij_bar[k] = (y4 - l54*gammaij[k]) * inv_l44
+        alfaij_bar[k] = (y3 - l43*betaij_bar[k] - l53*gammaij[k]) * inv_l33
+        betaij[k]     = (y2 - l32*alfaij_bar[k] - l42*betaij_bar[k] - l52*gammaij[k]) * inv_l22
+        alfaij[k]     = (y1 - l21*betaij[k] - l31*alfaij_bar[k] - l41*betaij_bar[k] - l51*gammaij[k]) * inv_l11
     end
+end
+
+"""
+Helper function to zero out coefficients in case of a singular matrix.
+"""
+@inline function _zero_coeffs!(
+    nb_slice::UnitRange{Int},
+    alfaij::AbstractVector, betaij::AbstractVector,
+    alfaij_bar::AbstractVector, betaij_bar::AbstractVector,
+    gammaij::AbstractVector
+)
+    @inbounds for k in nb_slice
+        alfaij[k] = 0.0
+        betaij[k] = 0.0
+        alfaij_bar[k] = 0.0
+        betaij_bar[k] = 0.0
+        gammaij[k] = 0.0
+    end
+    return
 end
 
 """

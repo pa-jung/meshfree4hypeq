@@ -98,15 +98,14 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         # --- 5. Grid Creation (Dimension-Aware) ---
         N_ghost::Int = bc == :periodic ? 0 : get(run_params, "N_ghost", ceil(Int, interp_range_factor) + 1)
         rng = MersenneTwister(seed_val)
-        local particleGrid, interp_range, upwind_alg_2d
 
         if dimension == 1
             Nx = run_params["N"]
             dx_nominal = (xmax - xmin) / Nx
             randomness = randomness_factor * dx_nominal
-            particleGrid = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc; rng=rng, randomness=randomness)
-            interp_range = interp_range_factor * particleGrid.dx
-            delta_relax = particleGrid.dx * delta_relax_factor
+            
+            interp_range = interp_range_factor * dx_nominal
+            delta_relax = dx_nominal * delta_relax_factor
             upwind_alg_2d = "Classic"
         else # dimension == 2
             Nx, Ny = run_params["Nx"], run_params["Ny"]
@@ -114,18 +113,21 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             dx_nominal = (xmax - xmin) / Nx
             dy_nominal = (ymax - ymin) / Ny
             randomness = (randomness_factor[1] * dx_nominal, randomness_factor[2] * dy_nominal)
-            particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc, interp_range_factor; rng=rng, randomness=randomness)
-            interp_range = interp_range_factor * max(particleGrid.dx, particleGrid.dy)
-            delta_relax = particleGrid.dx * particleGrid.dy * delta_relax_factor         
+            interp_range = interp_range_factor * max(dx_nominal, dy_nominal)
+            delta_relax = dx_nominal * dy_nominal * delta_relax_factor         
             upwind_alg_2d = main_grad_name == "Upwind" || fallback_grad_name == "Upwind" ? run_params["upwind_alg_2d"] : nothing
+        end
+        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction(interp_alpha, interp_range)
+                      elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
+        local particleGrid
+        if dimension == 1
+            particleGrid = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc, interp_range_factor; rng=rng, randomness=randomness, weight_func = weight_func)
+        else
+            particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc, interp_range_factor; weight_func = weight_func, rng=rng, randomness=randomness)
         end
         N_total_particles = particleGrid.N
         #determineVolumes!(particleGrid)
         setInitialConditions!(particleGrid, IC)
-
-        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction(interp_alpha, interp_range)
-                      elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
-        updateNeighbors!(particleGrid, weight_func)
         
         # --- 6. Time Step and Settings ---
         if !isnothing(cfl)
@@ -166,16 +168,16 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                          end
         
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
-        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension; weightFunction = weight_func, numericalFlux = MainFlux, limiter = limiter)
-                     elseif main_grad_name == "Upwind"; UpwindGradient(order, dimension; numericalFlux=MainFlux, algType=upwind_alg_2d, weightFunction=weight_func)
-                     elseif main_grad_name == "Central"; CentralGradient(order, dimension; weightFunction=weight_func)
-                     elseif main_grad_name == "WENO"; WENO(order, dimension; weightFunction = weight_func)
-                     elseif main_grad_name == "DumbserWENO"; @assert dimension == 2 "DumbserWENO can only be used for 2D, for 1D use WENO instead!"; DumbserWENO(order; weightFunction = weight_func)
+        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension;numericalFlux = MainFlux, limiter = limiter)
+                     elseif main_grad_name == "Upwind"; UpwindGradient(order, dimension; numericalFlux=MainFlux, algType=upwind_alg_2d)
+                     elseif main_grad_name == "Central"; CentralGradient(order, dimension;)
+                     elseif main_grad_name == "WENO"; WENO(order, dimension;)
+                     elseif main_grad_name == "DumbserWENO"; @assert dimension == 2 "DumbserWENO can only be used for 2D, for 1D use WENO instead!"; DumbserWENO(order)
                      elseif !is_classic; error("Main Gradient '$main_grad_name' not implemented for 2D.")
                      end
 
         FallbackGrad = if isnothing(fallback_grad_name); NoFallbackGrad()
-                         elseif fallback_grad_name == "Upwind"; UpwindGradient(1, dimension; numericalFlux=FallbackFlux, algType=upwind_alg_2d, weightFunction=weight_func)
+                         elseif fallback_grad_name == "Upwind"; UpwindGradient(1, dimension; numericalFlux=FallbackFlux, algType=upwind_alg_2d)
                          elseif !isnothing(fallback_grad_name); error("Fallback Gradient '$fallback_grad_name' not implemented for 2D.")
                          end
         

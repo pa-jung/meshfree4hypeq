@@ -11,25 +11,6 @@ abstract type UpwindWorkspace end
 using InteractiveUtils
 
 
-# function populate_buffers!(dxVec, dyVec, dfVec, neighbors, xdist, ydist, fVec, vel, particleIndex)
-#     count = 0
-#     # Note: If your buffers aren't cleared, you'll need to manage count differently
-#     @inbounds for i in 1:length(neighbors)
-#         d1 = xdist[i]
-#         d2 = ydist[i]
-        
-#         if d1 * vel[1] + d2 * vel[2] < 0
-#             count += 1
-#             nbIndex = neighbors[i]
-            
-#             dxVec[count] = d1
-#             dyVec[count] = d2
-#             dfVec[count] = fVec[nbIndex] - fVec[particleIndex]
-#         end
-#     end
-#     return count # Return the number of items added
-# end
-
 function populate_buffers!(dxVec, dyVec, dfVec, neighbors, xdist, ydist, fVec, vel, particleIndex)
     
     # --- STEP 1: Vectorized Calculation (Branchless) ---
@@ -145,12 +126,11 @@ function ensure_capacity!(ws::UpwindWorkspaceCA, n::Int)
 end
 struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: UpwindAlgorithm} <: GradientInterpolator
     order::Int
-    weightFunction::MLSWeightFunction
     numericalFlux::NumericalFluxFunction
     workspaces::Vector{WS}
     interpolator::I
     # --- Modify the UpwindGradient Constructor ---
-    function UpwindGradient(order, dimension; numericalFlux::NumericalFluxFunction=UpwindFlux(), algType::String="Classic", weightFunction::MLSWeightFunction=exponentialWeightFunction())
+    function UpwindGradient(order, dimension; numericalFlux::NumericalFluxFunction=UpwindFlux(), algType::String="Classic")
         @assert order >= 1 "Order must be larger or equal to one."
         @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen"]
         
@@ -178,7 +158,7 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
         interpolator = Interpolator{dimension, order, 1}()
         I = typeof(interpolator)
 
-        new{dimension, WS_eltype, I, alg_type}(order, weightFunction, numericalFlux, workspaces, interpolator)
+        new{dimension, WS_eltype, I, alg_type}(order, numericalFlux, workspaces, interpolator)
     end
 end
 
@@ -236,10 +216,7 @@ Buffer initialization hook for UpwindGradient. Finds the max neighbors
 [cite_start]from the grid and resizes all thread-local buffers. [cite: 30, 35]
 """
 function initGIBuffers!(g::UpwindGradient, pg::ParticleGrid)
-    max_nb = 0
-    if !isempty(pg.num_neighbors)
-        max_nb = maximum(pg.num_neighbors)
-    end
+    max_nb = pg.max_nb
     _init_buffers_internal!(g.workspaces, max_nb)
 end
 
@@ -247,56 +224,84 @@ end
 function initGI!(g::UpwindGradient, kwargs...)
     return
 end
-
-
-
-function initTimeStep(pg::ParticleGrid, weightFunc::MLSWeightFunction)
-    updateNeighbors!(pg, weightFunc)
-end
 # ... (keep all other content in Interpolations.jl) ...
 
 #==============================================================================
   UPWIND GRADIENT (Optimized for SoA Grids)
 ==============================================================================#
 
-# --- REFACTORED 1D Upwind Functor ---
-function (upwind::UpwindGradient{1,WS,I,A})(
-    particleGrid::ParticleGrid1D,
-    particleIndex::Integer,
-    fVec::AbstractVector{<:Real},
-    eq::ScalarHyperbolicPDE,
-    settings::SimSetting;
-    setCurvature::Bool=true
-)::Real where {WS <: UpwindWorkspace, I <: Interpolator, A <: UpwindAlgorithm}
+# --- REFACTORED 1D Upwind Functor (ClassicAlgorithm) ---
+
+"""
+Functor for 1D UpwindGradient (ClassicAlgorithm) using the 'fused' signature.
+Calculates the upwind gradient for a single particle `i`.
+"""
+function (upwind::UpwindGradient{1, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm})(
+    eq::PDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid1D,             # Grid object
+    f_neighbors::AbstractVector,    # (Not used)
+    df_neighbors::AbstractVector    # Pre-gathered diffs
+)::Real where {PDE <: HyperbolicPDE}
     
-    neighbors = particleGrid.neighbor_indices[particleIndex]
-    num_neighbors = length(neighbors)
-    ws = upwind.workspace
+    # Cast equation type to access velocity
+    vel = velocity(eq,f_i)
+    
+    # --- 1. Get thread-local workspace, interpolator ---
+    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
+    ws = upwind.workspaces[thread_idx]
     interp = upwind.interpolator
-    ensure_capacity!(ws, num_neighbors)
-    ensure_capacity!(interp, num_neighbors)
 
-    # Use zero-cost views into the workspace buffers
-    dxVec = @view ws.dxVec[1:num_neighbors]
-    dfVec = @view ws.dfVec[1:num_neighbors]
-    wVec = @view ws.wVec[1:num_neighbors]
+    # Get references to GLOBAL grid data arrays
+    dx_all_full = pg.neighbor_xdistance
+    w_all_full = pg.neighbor_weights # Use pre-gathered weights
 
-    for (i, nbIndex) in enumerate(neighbors)
-        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
-        fm, fp = sortFlux(fVec[particleIndex], fVec[nbIndex], deltaPos)
-        
-        dxVec[i] = deltaPos / settings.interpRange
-        dfVec[i] = upwind.numericalFlux(fm, fp, eq) - flux(eq, fVec[particleIndex])
+    num_nb = length(nb_slice)
+    
+    if num_nb == 0; return 0.0; end
+    
+    # Ensure the *internal* buffers are large enough
+    ensure_capacity!(ws, num_nb)
+
+    # --- 2. The Filter & Compact Loop ---
+    count = 0
+    @inbounds for global_idx in nb_slice
+        dx_k_unscaled = dx_all_full[global_idx]
+
+        # 1D Upwind check (dot product is just multiplication)
+        if dx_k_unscaled * vel < 0
+            count += 1
+            # Store unscaled distances in the workspace
+            ws.dxVec[count] = dx_k_unscaled
+            # Store pre-gathered difference and weight
+            ws.dfVec[count] = df_neighbors[global_idx]
+            ws.wVec[count]  = w_all_full[global_idx]
+        end
+    end
+
+    num_upwind = count
+
+    if num_upwind < upwind.order; return 0.0; end
+    
+    local res1
+    # The interpolator works with the unscaled distances
+    if upwind.order == 1
+        # Interpolator{1, 1, 1} returns 1 value (df/dx)
+        res1 = interp(ws.dxVec, ws.wVec, ws.dfVec, num_upwind)
+    elseif upwind.order == 2
+        # Interpolator{1, 2, 1} returns 2 values (df/dx, d2f/dx2)
+        res_tuple = interp(ws.dxVec, ws.wVec, ws.dfVec, num_upwind)
+        res1 = res_tuple[1]
+        # res_tuple[2] is the curvature, which we ignore in the functor
     end
     
-    upwind.weightFunction(wVec, dxVec; param=settings.interpAlpha, normalisation=1.0)
-    res1 = interp(dxVec, wVec, dfVec)
-
-    if setCurvature
-        particleGrid.curvatures[particleIndex] = 0.0
-    end
+    # --- NO SCALING ---
+    ddx = res1
     
-    return 2 * res1 / settings.interpRange
+    # Return the final divergence (v * df/dx)
+    return vel * ddx
 end
 
 """
@@ -320,17 +325,17 @@ function _init_buffers_internal!(workspaces::Vector{WS}, max_neighbors::Int) whe
 end
 
 function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm})(
-    eq::ScalarHyperbolicPDE,
+    eq::PDE,
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
     nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
     pg::ParticleGrid2D,             # Grid object to access global arrays and range_factor
     f_neighbors::AbstractVector,    # (Not used by ClassicAlgorithm)
     df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
-)::Real
+)::Real where {PDE <: ScalarHyperbolicPDE}
     
     # Cast equation type to access velocity
-    vel = (eq::LinearAdvection{2}).vel
+    vel = velocity(eq,f_i)
     
     # --- 1. Get thread-local workspace, interpolator, and scaling factor ---
     thread_idx = mod1(Threads.threadid(),Threads.nthreads())
@@ -395,16 +400,16 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
 end
 
 function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm})(
-    eq::ScalarHyperbolicPDE,
+    eq::PDE,
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
     nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
     pg::ParticleGrid2D,             # Grid object
     f_neighbors::AbstractVector,    # (Not used)
     df_neighbors::AbstractVector,   # Pre-gathered diffs
-)::Real
+)::Real where {PDE <: ScalarHyperbolicPDE}
     
-    vel = (eq::LinearAdvection{2}).vel 
+    vel = velocity(eq,f_i)
     
     # --- 1. Get workspace, interpolator, and global refs ---
     thread_idx = Threads.threadid()
@@ -493,16 +498,16 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
 end
 
 function (upwind::UpwindGradient{2, <:UpwindWorkspacePA, <:Any, PraveenAlgorithm})(
-    eq::ScalarHyperbolicPDE,
+    eq::PDE,
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
     nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
     pg::ParticleGrid2D,             # Grid object to access global arrays and range_factor
     f_neighbors::AbstractVector,    # (Not used directly by Praveen)
     df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
-)::Real
+)::Real where {PDE <: ScalarHyperbolicPDE}
     
-    vel = (eq::LinearAdvection{2}).vel 
+    vel = velocity(eq,f_i)
     
     # --- 1. Get workspace, scaling factor, and refs to global data ---
     thread_idx = Threads.threadid()

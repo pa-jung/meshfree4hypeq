@@ -579,114 +579,110 @@ function (interp::Interpolator{2, 2, 1})(
     dfVec::Vector{Float64}, # Full Vector
     n::Int                  # Number of elements to use (1:n)
 )
-    # Use the fixed-size buffers directly from the struct
-    N_matrix = interp.A 
-    rhs_vec = interp.b
+    # --- 1. Declare local variables for the 5x5 matrix (upper triangle) ---
+    N11 = 0.0; N12 = 0.0; N13 = 0.0; N14 = 0.0; N15 = 0.0
+    N22 = 0.0; N23 = 0.0; N24 = 0.0; N25 = 0.0
+    N33 = 0.0; N34 = 0.0; N35 = 0.0
+    N44 = 0.0; N45 = 0.0
+    N55 = 0.0
     
-    fill!(N_matrix, 0.0)
-    fill!(rhs_vec, 0.0)
+    # --- 2. Declare local variables for the 5-element RHS vector ---
+    b1 = 0.0; b2 = 0.0; b3 = 0.0; b4 = 0.0; b5 = 0.0
 
-    # --- Construct the 5x5 Normal Matrix and RHS in a single loop ---
-    # Loop explicitly from 1 to n
+    # --- 3. Construct the Normal Matrix and RHS in a single loop ---
     @inbounds for i in 1:n 
         w = wVec[i]
         dx = dxVec[i]
         dy = dyVec[i]
         df = dfVec[i]
 
-        # Precompute basis functions for the i-th point
+        # Precompute basis functions
         dx2_2 = dx*dx / 2.0
         dy2_2 = dy*dy / 2.0
         dxdy = dx*dy
-        basis_i = (dx, dy, dx2_2, dy2_2, dxdy) # Use tuple directly
         
-        # Update the right-hand side rhs = AᵀWb
-        rhs_vec[1] += w * dx * df
-        rhs_vec[2] += w * dy * df
-        rhs_vec[3] += w * dx2_2 * df
-        rhs_vec[4] += w * dy2_2 * df
-        rhs_vec[5] += w * dxdy * df
+        # Basis vector: (dx, dy, dx2_2, dy2_2, dxdy)
+        basis_1 = dx
+        basis_2 = dy
+        basis_3 = dx2_2
+        basis_4 = dy2_2
+        basis_5 = dxdy
+        
+        # Update the right-hand side b = AᵀWb
+        b1 += w * basis_1 * df
+        b2 += w * basis_2 * df
+        b3 += w * basis_3 * df
+        b4 += w * basis_4 * df
+        b5 += w * basis_5 * df
         
         # Update the upper triangle of the symmetric normal matrix N = AᵀWA
-        # Manually unroll for potential minor speedup (compiler might do this anyway)
-        N_matrix[1, 1] += w * basis_i[1] * basis_i[1]
-        N_matrix[1, 2] += w * basis_i[1] * basis_i[2]
-        N_matrix[1, 3] += w * basis_i[1] * basis_i[3]
-        N_matrix[1, 4] += w * basis_i[1] * basis_i[4]
-        N_matrix[1, 5] += w * basis_i[1] * basis_i[5]
+        N11 += w * basis_1 * basis_1
+        N12 += w * basis_1 * basis_2
+        N13 += w * basis_1 * basis_3
+        N14 += w * basis_1 * basis_4
+        N15 += w * basis_1 * basis_5
         
-        N_matrix[2, 2] += w * basis_i[2] * basis_i[2]
-        N_matrix[2, 3] += w * basis_i[2] * basis_i[3]
-        N_matrix[2, 4] += w * basis_i[2] * basis_i[4]
-        N_matrix[2, 5] += w * basis_i[2] * basis_i[5]
+        N22 += w * basis_2 * basis_2
+        N23 += w * basis_2 * basis_3
+        N24 += w * basis_2 * basis_4
+        N25 += w * basis_2 * basis_5
         
-        N_matrix[3, 3] += w * basis_i[3] * basis_i[3]
-        N_matrix[3, 4] += w * basis_i[3] * basis_i[4]
-        N_matrix[3, 5] += w * basis_i[3] * basis_i[5]
+        N33 += w * basis_3 * basis_3
+        N34 += w * basis_3 * basis_4
+        N35 += w * basis_3 * basis_5
         
-        N_matrix[4, 4] += w * basis_i[4] * basis_i[4]
-        N_matrix[4, 5] += w * basis_i[4] * basis_i[5]
+        N44 += w * basis_4 * basis_4
+        N45 += w * basis_4 * basis_5
         
-        N_matrix[5, 5] += w * basis_i[5] * basis_i[5]
+        N55 += w * basis_5 * basis_5
     end
     
-    # Fill in the lower triangle of the symmetric matrix
-    N_matrix[2, 1] = N_matrix[1, 2]
-    N_matrix[3, 1] = N_matrix[1, 3]; N_matrix[3, 2] = N_matrix[2, 3]
-    N_matrix[4, 1] = N_matrix[1, 4]; N_matrix[4, 2] = N_matrix[2, 4]; N_matrix[4, 3] = N_matrix[3, 4]
-    N_matrix[5, 1] = N_matrix[1, 5]; N_matrix[5, 2] = N_matrix[2, 5]; N_matrix[5, 3] = N_matrix[3, 5]; N_matrix[5, 4] = N_matrix[4, 5]
-
-    # --- Fully Hardcoded 5x5 Cholesky Solver ---
-    # (Using N_matrix and rhs_vec directly)
-    N = N_matrix 
-    b = rhs_vec
+    # --- 4. Fully Hardcoded 5x5 Cholesky Solver (using local variables) ---
     
-    # 1. Cholesky Decomposition (N = LLᵀ), calculating L
-    # (Error checks remain crucial)
-    l11_sq = N[1,1]
+    # 1. Cholesky Decomposition (N = LLᵀ)
+    l11_sq = N11
     if l11_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
     l11 = sqrt(l11_sq)
     inv_l11 = 1.0 / l11
-    l21 = N[2,1] * inv_l11
-    l31 = N[3,1] * inv_l11
-    l41 = N[4,1] * inv_l11
-    l51 = N[5,1] * inv_l11
+    l21 = N12 * inv_l11
+    l31 = N13 * inv_l11
+    l41 = N14 * inv_l11
+    l51 = N15 * inv_l11
 
-    l22_sq = N[2,2] - l21*l21
+    l22_sq = N22 - l21*l21
     if l22_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
     l22 = sqrt(l22_sq)
     inv_l22 = 1.0 / l22
-    l32 = (N[3,2] - l31*l21) * inv_l22
-    l42 = (N[4,2] - l41*l21) * inv_l22
-    l52 = (N[5,2] - l51*l21) * inv_l22
+    l32 = (N23 - l31*l21) * inv_l22
+    l42 = (N24 - l41*l21) * inv_l22
+    l52 = (N25 - l51*l21) * inv_l22
 
-    l33_sq = N[3,3] - l31*l31 - l32*l32
+    l33_sq = N33 - l31*l31 - l32*l32
     if l33_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
     l33 = sqrt(l33_sq)
     inv_l33 = 1.0 / l33
-    l43 = (N[4,3] - l41*l31 - l42*l32) * inv_l33
-    l53 = (N[5,3] - l51*l31 - l52*l32) * inv_l33
+    l43 = (N34 - l41*l31 - l42*l32) * inv_l33
+    l53 = (N35 - l51*l31 - l52*l32) * inv_l33
 
-    l44_sq = N[4,4] - l41*l41 - l42*l42 - l43*l43
+    l44_sq = N44 - l41*l41 - l42*l42 - l43*l43
     if l44_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
     l44 = sqrt(l44_sq)
     inv_l44 = 1.0 / l44
-    l54 = (N[5,4] - l51*l41 - l52*l42 - l53*l43) * inv_l44
+    l54 = (N45 - l51*l41 - l52*l42 - l53*l43) * inv_l44
 
-    l55_sq = N[5,5] - l51*l51 - l52*l52 - l53*l53 - l54*l54
+    l55_sq = N55 - l51*l51 - l52*l52 - l53*l53 - l54*l54
     if l55_sq < 1e-14; return (0.0, 0.0, 0.0, 0.0, 0.0); end
     l55 = sqrt(l55_sq)
-    inv_l55 = 1.0 / l55 # Compute inverse once
+    inv_l55 = 1.0 / l55 
     
     # 2. Forward Substitution (solves Ly = b for y)
-    y1 = b[1] * inv_l11
-    y2 = (b[2] - l21*y1) * inv_l22
-    y3 = (b[3] - l31*y1 - l32*y2) * inv_l33
-    y4 = (b[4] - l41*y1 - l42*y2 - l43*y3) * inv_l44
-    y5 = (b[5] - l51*y1 - l52*y2 - l53*y3 - l54*y4) * inv_l55
+    y1 = b1 * inv_l11
+    y2 = (b2 - l21*y1) * inv_l22
+    y3 = (b3 - l31*y1 - l32*y2) * inv_l33
+    y4 = (b4 - l41*y1 - l42*y2 - l43*y3) * inv_l44
+    y5 = (b5 - l51*y1 - l52*y2 - l53*y3 - l54*y4) * inv_l55
 
     # 3. Backward Substitution (solves Lᵀx = y for x)
-    # Reusing inv_lXX variables calculated during forward pass
     res5 = y5 * inv_l55
     res4 = (y4 - l54*res5) * inv_l44
     res3 = (y3 - l43*res4 - l53*res5) * inv_l33

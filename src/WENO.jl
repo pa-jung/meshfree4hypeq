@@ -1,5 +1,10 @@
 
 abstract type WENOWorkspace end
+abstract type WENOGI <:GradientInterpolator end
+
+function initGI!(weno::WENOGI, kwargs...)
+    return
+end
 
 struct WENOWorkspace1D <: WENOWorkspace
     # Main buffers for all neighbors
@@ -74,14 +79,12 @@ end
 """
 Refactored WENO struct to hold thread-local workspaces.
 """
-struct WENO{D,WS <: WENOWorkspace, I <: Interpolator} <: GradientInterpolator
+struct WENO{D,WS <: WENOWorkspace, I <: Interpolator} <: WENOGI
     order::Int
-    weightFunction::MLSWeightFunction
     workspaces::Vector{WS}
     interpolator::I
 
-    function WENO(order::Int, dimension::Int;
-                  weightFunction=exponentialWeightFunction())
+    function WENO(order::Int, dimension::Int;)
         @assert order >= 2 "WENO requires order >= 2 for second derivatives."
         
         # Determine the workspace type based on dimension
@@ -96,7 +99,7 @@ struct WENO{D,WS <: WENOWorkspace, I <: Interpolator} <: GradientInterpolator
         I = typeof(interpolator)
         
         # Note: The struct parameter WS is WS_eltype (e.g., WENOWorkspace2D)
-        new{dimension, WS_eltype, I}(order, weightFunction, workspaces, interpolator)
+        new{dimension, WS_eltype, I}(order, workspaces, interpolator)
     end
 end
 
@@ -107,10 +110,7 @@ Finds the max neighbors from the grid and resizes all thread-local buffers.
 """
 function initGIBuffers!(g::WENO, pg::ParticleGrid)
     # 1. Find max neighbors
-    max_nb = 0
-    if !isempty(pg.num_neighbors)
-        max_nb = maximum(pg.num_neighbors)
-    end
+    max_nb = pg.max_nb[]
     
     # 2. Check for thread-count changes
     n_threads = Threads.nthreads()
@@ -127,7 +127,6 @@ function initGIBuffers!(g::WENO, pg::ParticleGrid)
         ensure_capacity!(ws, max_nb) 
     end
 end
-
 # --- 2. Refactored WENO Functors (Dispatched for 1D and 2D) ---
 
 function (weno::WENO{1})(
@@ -211,132 +210,145 @@ function (weno::WENO{1})(
 end
 
 
+"""
+Functor for 2D WENO using the 'fused' signature.
+This is called ONCE per particle and calculates the full divergence.
+"""
 function (weno::WENO{2})(
-    particleGrid::ParticleGrid2D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector, 
-    eq::LinearAdvection{2}, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
+    eq::ScalarHyperbolicPDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid,               # Grid object
+    f_neighbors::AbstractVector,    # (Not used)
+    df_neighbors::AbstractVector    # Pre-gathered diffs (GLOBAL view)
 )::Real
     
-    ws = weno.workspace::WENOWorkspace2D
+    vel = (eq::LinearAdvection{2}).vel
+    
+    # --- 1. Get thread-local workspace, interpolator, and global refs ---
+    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
+    ws = weno.workspaces[thread_idx]
     interp = weno.interpolator
-    neighbors = particleGrid.neighbour_indices[particleIndex]
-    num_neighbors = length(neighbors)
+    
+    dx_all_full = pg.neighbor_xdistance
+    dy_all_full = pg.neighbor_ydistance
+    w_all_full = pg.neighbor_weights 
+
+    num_neighbors = length(nb_slice)
     
     if num_neighbors < weno.order
-        if setCurvature; particleGrid.curvatures[particleIndex, :] .= 0.0; end
-        return 0.0
+        return 0.0 # Not enough points for any interpolation
     end
-
-    ensure_capacity!(ws, num_neighbors)
-    ensure_capacity!(interp, num_neighbors)
-    dxVec = @view ws.dx_buffer[1:num_neighbors]
-    dyVec = @view ws.dy_buffer[1:num_neighbors]
-    dfVec = @view ws.df_buffer[1:num_neighbors]
-    wVec  = @view ws.w_buffer[1:num_neighbors]
-    leftWindow = @view ws.left_window_buffer[1:num_neighbors]
-    topWindow = @view ws.top_window_buffer[1:num_neighbors]
-
-    # --- Populate Main Buffers ---
-    for (i, nbIndex) in enumerate(neighbors)
-        dx, dy = getDistance(particleGrid, particleIndex, nbIndex)
-        dxVec[i], dyVec[i] = dx / settings.interpRange, dy / settings.interpRange
-        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-        leftWindow[i] = dx < 0.0
-        topWindow[i] = dy > 0.0
-    end
-    weno.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
-    vel = velocity(eq, 0.0)
-
-    # --- Horizontal Stencil (Using Scratch Buffers) ---
-    stencil_size_h = 0
-    if vel[1] > 0.0 # Left-sided
-        for i in 1:num_neighbors
-            if leftWindow[i]
-                stencil_size_h += 1
-                ws.dx_scratch[stencil_size_h] = dxVec[i]
-                ws.dy_scratch[stencil_size_h] = dyVec[i]
-                ws.w_scratch[stencil_size_h] = wVec[i]
-                ws.df_scratch[stencil_size_h] = dfVec[i]
-            end
-        end
-    else # Right-sided
-        for i in 1:num_neighbors
-            if !leftWindow[i]
-                stencil_size_h += 1
-                ws.dx_scratch[stencil_size_h] = dxVec[i]
-                ws.dy_scratch[stencil_size_h] = dyVec[i]
-                ws.w_scratch[stencil_size_h] = wVec[i]
-                ws.df_scratch[stencil_size_h] = dfVec[i]
-            end
-        end
-    end
-
-    if stencil_size_h < weno.order; return 0.0; end
-    dx_stencil_h = @view ws.dx_scratch[1:stencil_size_h]
-    dy_stencil_h = @view ws.dy_scratch[1:stencil_size_h]
-    w_stencil_h  = @view ws.w_scratch[1:stencil_size_h]
-    df_stencil_h = @view ws.df_scratch[1:stencil_size_h]
     
-    resHx, resHy, resHxx, resHyy, resHxy = interp(dx_stencil_h, dy_stencil_h, w_stencil_h, df_stencil_h)
-    range = settings.interpRange
-    resHx /= range; resHy /= range; resHxx /= range^2; resHyy /= range^2; resHxy /= range^2
-    # --- Vertical Stencil (Using Scratch Buffers) ---
-    stencil_size_v = 0
-    if vel[2] < 0.0 # Top-sided
-        for i in 1:num_neighbors
-            if topWindow[i]
-                stencil_size_v += 1
-                ws.dx_scratch[stencil_size_v] = dxVec[i]
-                ws.dy_scratch[stencil_size_v] = dyVec[i]
-                ws.w_scratch[stencil_size_v] = wVec[i]
-                ws.df_scratch[stencil_size_v] = dfVec[i]
-            end
-        end
-    else # Bottom-sided
-        for i in 1:num_neighbors
-            if !topWindow[i]
-                stencil_size_v += 1
-                ws.dx_scratch[stencil_size_v] = dxVec[i]
-                ws.dy_scratch[stencil_size_v] = dyVec[i]
-                ws.w_scratch[stencil_size_v] = wVec[i]
-                ws.df_scratch[stencil_size_v] = dfVec[i]
-            end
+    # Get local handles to the stencil buffers
+    dx_s = ws.dx_stencil
+    dy_s = ws.dy_stencil
+    df_s = ws.df_stencil
+    w_s  = ws.w_stencil
+
+    # --- 2. Central Stencil (C-stencil) Calculation ---
+    # This is a "filter-and-compact" loop that copies *all* neighbors.
+    stencil_size_c = 0
+    @inbounds for global_idx in nb_slice
+        stencil_size_c += 1
+        dx_s[stencil_size_c] = dx_all_full[global_idx]
+        dy_s[stencil_size_c] = dy_all_full[global_idx]
+        df_s[stencil_size_c] = df_neighbors[global_idx]
+        w_s[stencil_size_c]  = w_all_full[global_idx]
+    end
+
+    # Call interpolator (assumes it returns a 5-tuple for order 2)
+    resC_tuple = interp(dx_s, dy_s, w_s, df_s, stencil_size_c)
+    resCx, resCy, resCxx, resCyy, resCxy = resC_tuple
+
+    # --- 3. Horizontal Stencil (H-stencil) Calculation ---
+    stencil_size_h = 0
+    use_left_stencil = vel[1] > 0.0
+    
+    @inbounds for global_idx in nb_slice
+        dx_k = dx_all_full[global_idx]
+        
+        # Check if neighbor is in the horizontal upwind direction
+        if (use_left_stencil && dx_k < 0.0) || (!use_left_stencil && dx_k >= 0.0)
+            stencil_size_h += 1
+            dx_s[stencil_size_h] = dx_k
+            dy_s[stencil_size_h] = dy_all_full[global_idx]
+            df_s[stencil_size_h] = df_neighbors[global_idx]
+            w_s[stencil_size_h]  = w_all_full[global_idx]
         end
     end
 
-    if stencil_size_v < weno.order; return 0.0; end
-    dx_stencil_v = @view ws.dx_scratch[1:stencil_size_v]
-    dy_stencil_v = @view ws.dy_scratch[1:stencil_size_v]
-    w_stencil_v  = @view ws.w_scratch[1:stencil_size_v]
-    df_stencil_v = @view ws.df_scratch[1:stencil_size_v]
-    interp(dx_stencil_v, dy_stencil_v, w_stencil_v, df_stencil_v)
-    resVx, resVy, resVxx, resVyy, resVxy = interp.res[1]/settings.interpRange, interp.res[2]/settings.interpRange, interp.res[3]/(settings.interpRange^2), interp.res[4]/(settings.interpRange^2), interp.res[5]/(settings.interpRange^2)
+    local resHx, resHy, resHxx, resHyy, resHxy, betaH
+    if stencil_size_h < weno.order
+        betaH = 0.0 # Not enough points, disable this stencil
+        resHx = 0.0; resHy = 0.0 # Set to zero
+    else
+        resH_tuple = interp(dx_s, dy_s, w_s, df_s, stencil_size_h)
+        resHx, resHy, resHxx, resHyy, resHxy = resH_tuple
+        
+        # Calculate beta (smoothness)
+        e = 1e-12
+        dx2 = pg.dx^2; dx4 = dx2^2 
+        betaH = 0.5 / ((resHx^2 + resHy^2)*dx2 + (resHxx^2 + resHyy^2 + resHxy^2)*dx4 + e)^2
+    end
 
-    # --- Central Stencil (Uses the original, unmodified buffers) ---
-    interp(dxVec, dyVec, wVec, dfVec)
-    resCx, resCy, resCxx, resCyy, resCxy = interp.res[1]/settings.interpRange, interp.res[2]/settings.interpRange, interp.res[3]/(settings.interpRange^2), interp.res[4]/(settings.interpRange^2), interp.res[5]/(settings.interpRange^2)
+    # --- 4. Vertical Stencil (V-stencil) Calculation ---
+    stencil_size_v = 0
+    use_top_stencil = vel[2] < 0.0 # vel[2] < 0 (down) -> use top (dy > 0)
+    
+    @inbounds for global_idx in nb_slice
+        dy_k = dy_all_full[global_idx]
+        
+        # Check if neighbor is in the vertical upwind direction
+        if (use_top_stencil && dy_k > 0.0) || (!use_top_stencil && dy_k <= 0.0)
+            stencil_size_v += 1
+            dx_s[stencil_size_v] = dx_all_full[global_idx]
+            dy_s[stencil_size_v] = dy_k
+            df_s[stencil_size_v] = df_neighbors[global_idx]
+            w_s[stencil_size_v]  = w_all_full[global_idx]
+        end
+    end
 
-    # --- Non-linear Weights (Logic is unchanged) ---
+    local resVx, resVy, resVxx, resVyy, resVxy, betaV
+    if stencil_size_v < weno.order
+        betaV = 0.0 # Not enough points, disable this stencil
+        resVx = 0.0; resVy = 0.0 # Set to zero
+    else
+        resV_tuple = interp(dx_s, dy_s, w_s, df_s, stencil_size_v)
+        resVx, resVy, resVxx, resVyy, resVxy = resV_tuple
+        
+        # Calculate beta (smoothness)
+        e = 1e-12
+        dx2 = pg.dx^2; dx4 = dx2^2 
+        betaV = 0.5 / ((resVx^2 + resVy^2)*dx2 + (resVxx^2 + resVyy^2 + resVxy^2)*dx4 + e)^2
+    end
+
+    # --- 5. Non-linear Weights ---
     e = 1e-12
-    dx2 = particleGrid.dx^2; dx4 = dx2^2 
-    betaH = 0.5 / ((resHx^2 + resHy^2)*dx2 + (resHxx^2 + resHyy^2 + resHxy^2)*dx4 + e)^2
-    betaV = 0.5 / ((resVx^2 + resVy^2)*dx2 + (resVxx^2 + resVyy^2 + resVxy^2)*dx4 + e)^2
+    dx2 = pg.dx^2; dx4 = dx2^2 
     betaC = 0.5 / ((resCx^2 + resCy^2)*dx2 + (resCxx^2 + resCyy^2 + resCxy^2)*dx4 + e)^2
     
-    sum_beta_h = betaH + betaC; sum_beta_v = betaV + betaC;
-    if sum_beta_h < 1e-14 || sum_beta_v < 1e-14; return 0.0; end
-
-    wH = betaH/sum_beta_h; wCx = betaC/sum_beta_h
-    wV = betaV/sum_beta_v; wCy = betaC/sum_beta_v
-
-    if setCurvature
-        particleGrid.curvatures[particleIndex, 1] = wH*resHxx + wCx*resCxx
-        particleGrid.curvatures[particleIndex, 2] = wV*resVyy + wCy*resCyy
+    sum_beta_h = betaH + betaC
+    sum_beta_v = betaV + betaC
+    
+    local wH, wCx, wV, wCy
+    if sum_beta_h < 1e-14
+        wH = 0.0; wCx = 1.0 # Fallback to central
+    else
+        wH = betaH / sum_beta_h; wCx = betaC / sum_beta_h
+    end
+    
+    if sum_beta_v < 1e-14
+        wV = 0.0; wCy = 1.0 # Fallback to central
+    else
+        wV = betaV / sum_beta_v; wCy = betaC / sum_beta_v
     end
 
+    # --- 6. Final Divergence Calculation ---
+    # No setCurvature logic, as this is now handled by initGI!
+    
+    # Return the combined divergence
     return (wH*resHx + wCx*resCx)*vel[1] + (wV*resVy + wCy*resCy)*vel[2]
 end
 
@@ -345,9 +357,7 @@ end
 #==============================================================================
   Dumbser WENO Scheme (Optimized for SoA Grids & Workspace)
 ==============================================================================#
-
-# --- 1. Define Helper and Workspace ---
-
+# --- In WENO.jl, replace the old DumbserWENO struct and constructor ---
 function getStencil(deltaX::Real, deltaY::Real, s::Int)
     # This robust version maps the angle from atan to an integer sector [0, s-1]
     angle = atan(deltaY, deltaX)
@@ -360,14 +370,14 @@ function getStencil(deltaX::Real, deltaY::Real, s::Int)
     # Clamp to ensure it's in the range [0, s-1] due to floating point nuances
     return clamp(stencil, 0, s - 1)
 end
+# --- In WENO.jl ---
 
-
-mutable struct DumbserWENOWorkspace <: MUSCLWorkspace
-    # Buffers for neighbor-specific calculations
-    dx_buffer::Vector{Float64}
-    dy_buffer::Vector{Float64}
-    df_buffer::Vector{Float64}
-    w_buffer::Vector{Float64}
+mutable struct DumbserWENOWorkspace
+    # Scratch buffers for building a single stencil
+    dx_stencil::Vector{Float64}
+    dy_stencil::Vector{Float64}
+    df_stencil::Vector{Float64}
+    w_stencil::Vector{Float64}
     
     # Buffers specific to Dumbser WENO logic
     window_matrix::Matrix{Bool}
@@ -378,8 +388,10 @@ mutable struct DumbserWENOWorkspace <: MUSCLWorkspace
     
     function DumbserWENOWorkspace(s::Int=8, initial_capacity::Int=40)
         new(
-            zeros(initial_capacity), zeros(initial_capacity), zeros(initial_capacity),
-            zeros(initial_capacity),
+            Vector{Float64}(undef, initial_capacity), # dx_stencil
+            Vector{Float64}(undef, initial_capacity), # dy_stencil
+            Vector{Float64}(undef, initial_capacity), # df_stencil
+            Vector{Float64}(undef, initial_capacity), # w_stencil
             falses(initial_capacity, s + 1), # s one-sided stencils + 1 central
             zeros(5, s + 1), # 5 derivatives (x, y, xx, yy, xy) for each stencil
             zeros(s + 1),
@@ -392,84 +404,147 @@ end
 function ensure_capacity!(ws::DumbserWENOWorkspace, n::Int)
     if n > ws.max_neighbors
         ws.max_neighbors = n
-        resize!(ws.dx_buffer, n); resize!(ws.dy_buffer, n);
-        resize!(ws.df_buffer, n); resize!(ws.w_buffer, n);
+        # Resize stencil buffers
+        resize!(ws.dx_stencil, n); resize!(ws.dy_stencil, n);
+        resize!(ws.df_stencil, n); resize!(ws.w_stencil, n);
+        # Recreate window_matrix
         ws.window_matrix = falses(n, size(ws.window_matrix, 2))
     end
 end
 
-# --- 2. Refactored DumbserWENO Struct and Constructor ---
+# --- In WENO.jl ---
 
-mutable struct DumbserWENO <: GradientInterpolator
+mutable struct DumbserWENO{I <: Interpolator} <: WENOGI
     order::Int
-    res::Vector{Float64}
-    weightFunction::MLSWeightFunction
     s::Int # amount of one-sided stencils
-    workspace::DumbserWENOWorkspace
+    workspaces::Vector{DumbserWENOWorkspace} # <-- CHANGED
+    interpolator::I                          # <-- ADDED
 
-    function DumbserWENO(order::Int=2; weightFunction::MLSWeightFunction=exponentialWeightFunction(), s::Int=8)
+    function DumbserWENO(order::Int=2; s::Int=8) # <-- weightFunction removed
         @assert order == 2 "DumbserWENO currently only supports order=2."
-        ws = DumbserWENOWorkspace(s)
-        # res buffer is for the result of a single gradInterpolation! call
-        new(order, zeros(5), weightFunction, s, ws)
+        
+        n_threads = Threads.nthreads()
+        workspaces = [DumbserWENOWorkspace(s) for _ in 1:n_threads]
+        
+        # DumbserWENO is 2D, so we hardcode dimension 2
+        interpolator = Interpolator{2, order, 1}()
+        I = typeof(interpolator)
+        
+        # --- `weightFunction` removed from new() call ---
+        new{I}(order, s, workspaces, interpolator)
     end
 end
 
+# --- In WENO.jl, add these new functions ---
 
-# --- 2. Refactored and Corrected DumbserWENO Functor for 2D ---
+"""
+Buffer initialization hook for DumbserWENO.
+Finds the max neighbors from the grid and resizes all thread-local buffers.
+"""
+function initGIBuffers!(g::DumbserWENO, pg::ParticleGrid)
+    # 1. Find max neighbors
+    max_nb = pg.max_nb
+    
+    # 2. Check for thread-count changes
+    n_threads = Threads.nthreads()
+    if length(g.workspaces) != n_threads
+        empty!(g.workspaces)
+        for _ in 1:n_threads
+            # Recreate with correct stencil count and max_nb
+            push!(g.workspaces, DumbserWENOWorkspace(g.s, max_nb)) 
+        end
+    end
+  
+    # 3. Ensure capacity for all workspaces
+    for ws in g.workspaces
+        ensure_capacity!(ws, max_nb) 
+    end
+end
+
+# --- In WENO.jl ---
+
+"""
+Functor for 2D DumbserWENO using the 'fused' signature.
+It filters pre-calculated weights for each stencil.
+"""
 function (weno::DumbserWENO)(
-    particleGrid::ParticleGrid2D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector, 
-    eq::LinearAdvection{2}, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
+    eq::ScalarHyperbolicPDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid,               # Grid object
+    f_neighbors::AbstractVector,    # (Not used)
+    df_neighbors::AbstractVector    # Pre-gathered diffs (GLOBAL view)
 )::Real
     
-    ws = weno.workspace
-    neighbors = particleGrid.neighbour_indices[particleIndex]
-    num_neighbors = length(neighbors)
+    # --- 1. Get thread-local workspace, interpolator, and global refs ---
+    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
+    ws = weno.workspaces[thread_idx]
+    interp = weno.interpolator
+    vel = (eq::LinearAdvection{2}).vel
     
-    #if num_neighbors < 10; return 0.0; end # Heuristic check
+    num_neighbors = length(nb_slice)
+    
+    # Min points for 2nd order 2D is 5
+    if num_neighbors < 5; return 0.0; end 
 
-    ensure_capacity!(ws, num_neighbors)
-    dxVec = @view ws.dx_buffer[1:num_neighbors]
-    dyVec = @view ws.dy_buffer[1:num_neighbors]
-    dfVec = @view ws.df_buffer[1:num_neighbors]
+    # --- 2. Get global data and workspace buffers ---
+    dx_all_full = pg.neighbor_xdistance
+    dy_all_full = pg.neighbor_ydistance
+    w_all_full = pg.neighbor_weights # <-- USE PRE-CALCULATED WEIGHTS
+
+    # Get workspace buffers
+    dx_s = ws.dx_stencil
+    dy_s = ws.dy_stencil
+    df_s = ws.df_stencil
+    w_s  = ws.w_stencil
     windowMatrix = @view ws.window_matrix[1:num_neighbors, :]
 
     fill!(windowMatrix, false)
-    windowMatrix[:, 1] .= true
+    windowMatrix[:, 1] .= true # Central stencil
 
-    for i in 1:num_neighbors
-        nbIndex = neighbors[i]
-        deltaX, deltaY = getDistance(particleGrid, particleIndex, nbIndex)
-        dxVec[i] = deltaX / settings.interpRange
-        dyVec[i] = deltaY / settings.interpRange
-        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
+    # --- 3. Populate Stencil Map ---
+    # This loop is now very light, just doing stencil checks.
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        deltaX = dx_all_full[global_idx]
+        deltaY = dy_all_full[global_idx]
+        
         stencil = getStencil(deltaX, deltaY, weno.s)
-        windowMatrix[i, stencil + 2] = true
+        windowMatrix[local_idx, stencil + 2] = true # +1 for central, +1 for 1-based index
     end
 
-    # --- Calculate Gradients for Each Stencil ---
+    # --- 4. Calculate Gradients for Each Stencil ---
     for stencil_idx in 1:(weno.s + 1)
         stencil_view = @view windowMatrix[:, stencil_idx]
         
-        if count(stencil_view) < 5
+        # --- NEW: Filter-and-Compact Loop ---
+        num_stencil_points = 0
+        @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+            if stencil_view[local_idx] # Check if this neighbor is in the stencil
+                num_stencil_points += 1
+                dx_s[num_stencil_points] = dx_all_full[global_idx]
+                dy_s[num_stencil_points] = dy_all_full[global_idx]
+                df_s[num_stencil_points] = df_neighbors[global_idx]
+                w_s[num_stencil_points]  = w_all_full[global_idx] # <-- THE FIX
+            end
+        end
+        # --- End Filter-and-Compact ---
+        
+        if num_stencil_points < 5
             ws.gradients[:, stencil_idx] .= 1e10 
             continue
         end
-
-        weno.weightFunction(wVec_stencil, (@view dxVec[stencil_view]), (@view dyVec[stencil_view]); param=settings.interpAlpha, normalisation=1.0)
         
         try
-            gradInterpolation!((@view dxVec[stencil_view]), (@view dyVec[stencil_view]), wVec_stencil, (@view dfVec[stencil_view]), weno.res; order=weno.order)
+            # Call the bufferless interpolator
+            res_tuple = interp(dx_s, dy_s, w_s, df_s, num_stencil_points)
             
-            ws.gradients[1, stencil_idx] = weno.res[1] / settings.interpRange
-            ws.gradients[2, stencil_idx] = weno.res[2] / settings.interpRange
-            ws.gradients[3, stencil_idx] = weno.res[3] / (settings.interpRange^2)
-            ws.gradients[4, stencil_idx] = weno.res[4] / (settings.interpRange^2)
-            ws.gradients[5, stencil_idx] = weno.res[5] / (settings.interpRange^2)
+            # Store results (no scaling)
+            ws.gradients[1, stencil_idx] = res_tuple[1]
+            ws.gradients[2, stencil_idx] = res_tuple[2]
+            ws.gradients[3, stencil_idx] = res_tuple[3]
+            ws.gradients[4, stencil_idx] = res_tuple[4]
+            ws.gradients[5, stencil_idx] = res_tuple[5]
         catch e
             if e isa SingularException
                 ws.gradients[:, stencil_idx] .= 1e10
@@ -479,17 +554,14 @@ function (weno::DumbserWENO)(
         end
     end
 
-    # --- Compute Non-Linear Weights (Corrected and Stabilized) ---
+    # --- 5. Compute Non-Linear Weights ---
     r = 4
     eps = 1e-14
     
-    for i in 1:(weno.s + 1)
-        lambda = (i == 1) ? 1e5 : 1.0 # High weight for central stencil
-        
-        # A more robust smoothness indicator that is less sensitive to scaling
-        smoothness = sum(ws.gradients[k, i]^2 for k in 1:5)
-        
-        ws.weights[i] = lambda / ((eps + smoothness)^r)
+    for k in 1:(weno.s + 1)
+        lambda = (k == 1) ? 1e5 : 1.0 # High weight for central stencil
+        smoothness = sum(ws.gradients[j, k]^2 for j in 1:5)
+        ws.weights[k] = lambda / ((eps + smoothness)^r)
     end
 
     # Normalize weights
@@ -497,12 +569,7 @@ function (weno::DumbserWENO)(
     if sum_weights < 1e-14; return 0.0; end
     ws.weights ./= sum_weights
     
-    if setCurvature 
-        particleGrid.curvatures[particleIndex, 1] = dot(ws.weights, @view ws.gradients[3, :])
-        particleGrid.curvatures[particleIndex, 2] = dot(ws.weights, @view ws.gradients[4, :])
-    end
-
-    vel = velocity(eq, 0.0)
+    # --- 6. Calculate Final Divergence ---
     div_x = dot(ws.weights, @view ws.gradients[1, :])
     div_y = dot(ws.weights, @view ws.gradients[2, :])
     
