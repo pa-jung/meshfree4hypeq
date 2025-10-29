@@ -1,0 +1,138 @@
+function _limit_slopes(::NoLimiter, xslope, kwargs...)
+    return xslope
+end
+
+function _limit_slopes(::NoLimiter, xslope, yslope, kwargs...)
+    return xslope, yslope
+end
+
+function _limit_slopes(::RealSlopeLimiter, kwargs...)
+    error("Slope limiting not implemented for the requested order, dimension or method!")
+end
+
+function minmod_phi(r::Real)::Float64
+    if r <= 0.0
+        return 0.0
+    else
+        return min(1.0, r)
+    end
+end
+
+function superbee_phi(r::Real)::Float64
+    if r <= 0.0
+        return 0.0
+ 
+   else
+        return max(min(1.0, 2.0 * r), min(2.0, r))
+    end
+end
+
+function venkatakrishnan_psi(r::Real)::Float64
+    if r <= 0.0
+        return 0.0
+    end
+    return (r^2 + 2.0 * r) / (r^2 + r + 2.0)
+end
+
+"""
+    find_closest_lr_neighbors_1D(particleGrid, p_idx, fVec)
+
+Finds the closest neighbor to the left and right of a given particle `p_idx`.
+Optimized to work with the "Struct of Arrays" grid layout.
+# Returns
+- `(val_L, dist_L, val_R, dist_R)`: The solution value and signed distance for the
+  closest left and right neighbors.
+Returns `0.0` for values and distances if a 
+  neighbor is not found on a given side.
+"""
+function find_closest_lr_neighbors_1D(
+    particleGrid::ParticleGrid1D, 
+    p_idx::Integer, 
+    fVec::AbstractVector
+)
+    # Initialize return values
+    val_L, dist_L = 0.0, 0.0
+    val_R, dist_R = 0.0, 0.0
+    
+    # Initialize minimum distances found so far
+    min_abs_dist_L = Inf
+    min_dist_R = Inf
+
+    # Access the neighbor list directly from the grid's SoA field
+    for nb_idx in particleGrid.neighbour_indices[p_idx]
+        dx_ij = getDistance(particleGrid, p_idx, nb_idx)
+
+   
+     if dx_ij > 1e-9 # Potential right neighbor
+            if dx_ij < min_dist_R
+                min_dist_R = dx_ij
+                val_R = fVec[nb_idx]
+                dist_R = dx_ij
+            end
+       
+ elseif dx_ij < -1e-9 # Potential left neighbor
+            abs_dx_ij = abs(dx_ij)
+            if abs_dx_ij < min_abs_dist_L
+                min_abs_dist_L = abs_dx_ij
+                val_L = fVec[nb_idx]
+                dist_L = dx_ij # Keep its negative sign
+    
+        end
+        end
+    end
+    
+    return val_L, dist_L, val_R, dist_R
+end
+
+
+"""
+Local slope limiting function (RealSlopeLimiter dispatch).
+Applies geometric limiting logic from the old `limit_slopes!(...)`
+"""
+function _limit_slopes(
+    strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter},
+    slope_x::Real, slope_y::Real,
+    nb_slice::UnitRange{Int},
+    f_i::Real,
+    f_neighbors::AbstractVector, # View of neighbor f-values
+    dx::AbstractVector,          # View of neighbor x-distances
+    dy::AbstractVector           # View of neighbor y-distances
+)
+    ui = f_i
+    if slope_x^2 + slope_y^2 < 1e-12
+        return 0.0, 0.0
+    end
+
+    # Find min/max among neighbors
+    u_max = ui
+    u_min = ui
+    @inbounds for k in nb_slice
+        f_neighbor = f_neighbors[k]
+     
+        u_max = max(u_max, f_neighbor)
+        u_min = min(u_min, f_neighbor)
+    end
+
+    phi_i = 1.0
+    
+    @inbounds for k in nb_slice
+     
+        delta_recon = slope_x * dx[k] + slope_y * dy[k]
+        
+        if abs(delta_recon) < 1e-12; continue; end
+        
+        r = delta_recon > 0.0 ? (u_max - ui) / delta_recon : (u_min - ui) / delta_recon
+        phi_j = strategy isa BarthJespersenLimiter ? min(1.0, r) : venkatakrishnan_psi(r)
+        phi_i = min(phi_i, phi_j)
+    end
+
+    phi_i = clamp(phi_i, 0.0, 1.0)
+    
+    limited_slope_x = slope_x * phi_i
+    limited_slope_y = slope_y * phi_i
+
+    if isnan(limited_slope_y) ||
+    isnan(limited_slope_x); error("Found NaN while Limiting!"); end
+    
+    return limited_slope_x, limited_slope_y
+end

@@ -93,7 +93,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         weight_func_name = get(run_params, "weight_function", nothing)
         lim = get(run_params, "limiter", nothing)
 
-        @assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
+        #@assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
 
         # --- 5. Grid Creation (Dimension-Aware) ---
         N_ghost::Int = bc == :periodic ? 0 : get(run_params, "N_ghost", ceil(Int, interp_range_factor) + 1)

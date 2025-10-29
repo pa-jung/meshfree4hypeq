@@ -3,74 +3,74 @@ using IPlotPDESols
 
 # 2D simulation using your `runScalar2DSim` function.
 function main()
-    # params = ParamDict(
-    #     # --- Shared Parameters ---
-    #     "tmax" => 5.0,
-    #     "Nx" => 200,
-    #     "Ny" => 200,
-    #     "xmin" => -5.0,
-    #     "xmax" => 5.0,
-    #     "ymin" => -5.0,
-    #     "ymax" => 5.0,
-    #     "CFL" => 0.4,
-    #     #"dt" => .001,
-    #     "snapshots" => 20,
-    #     "interp_alpha" => 1.0,
-    #     "interp_range" => 3.5,
-    #     "init_func" => "box", # Using the unified struct
-    #     #"init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
-    #     "init_params" => (0.,1.,-2.,2.,-2.,2.),
-    #     "randomness_factor" => (0.2, 0.2), # (x_rand_factor, y_rand_factor)
-    #     "SEED_value" => 42,
-    #     "PDE" => "linear",
-    #     "PDE_params" => (2., 2.), # 2D velocity vector (vx, vy)
-    #     "bc" => :periodic,
-    #     "sim_function" => "runScalarSimulation",
-    #     "weight_function" => "exponential",
-    #     #"limiter" => "VK",
-
-    #     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
-    #     "timestepper" => "RalstonRK2",
-    #     "main_gradient" => "MUSCL",
-    #     "order" => 3,
-    #     "upwind_alg_2d" => "Classic",
-    #     "main_flux" => "Rusanov",
-    #     "MOOD" => "U2", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
-    #     #"mood" => "none", # No MOOD for this run
-    # )
-
     params = ParamDict(
         # --- Shared Parameters ---
-        "tmax" => 10.,
-        "N" => 10000,
+        "tmax" => 5.0,
+        "Nx" => 200,
+        "Ny" => 200,
         "xmin" => -5.0,
         "xmax" => 5.0,
-        "CFL" => .2,
-        #"dt" => .25,
+        "ymin" => -5.0,
+        "ymax" => 5.0,
+        "CFL" => 0.4,
+        #"dt" => .001,
         "snapshots" => 20,
         "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "box", # Using the unified struct
-        #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
-        "init_params" => (0.,1.,-2.,2.),
-        "randomness_factor" => 0.2, # (x_rand_factor, y_rand_factor)
+        #"init_params" => (1.0, (0.0, 0.0), 1.5), # (amplitude, (centerX, centerY), width)
+        "init_params" => (0.,1.,-2.,2.,-2.,2.),
+        "randomness_factor" => (0.2, 0.2), # (x_rand_factor, y_rand_factor)
         "SEED_value" => 42,
         "PDE" => "linear",
-        "weight_function" => "exponential",
-        "PDE_params" => 1.0, # 2D velocity vector (vx, vy)
+        "PDE_params" => (2., 2.), # 2D velocity vector (vx, vy)
         "bc" => :periodic,
         "sim_function" => "runScalarSimulation",
+        "weight_function" => "exponential",
+        "limiter" => "VK",
 
         # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
         "timestepper" => "RalstonRK2",
-        "main_gradient" => "Upwind",
-        "fallback_gradient" => "Upwind",
-        "fallback_flux" => "Rusanov",
-        "order" =>1,
+        "main_gradient" => "MUSCL",
+        "order" => 2,
+        "upwind_alg_2d" => "Classic",
         "main_flux" => "Rusanov",
-        #"limiter" => "minmod",
-        #"MOOD" => "U1", "delta_relax" => 0. # No MOOD for this run
+        #"MOOD" => "U2", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
+        #"mood" => "none", # No MOOD for this run
     )
+
+    # params = ParamDict(
+    #     # --- Shared Parameters ---
+    #     "tmax" => 10.,
+    #     "N" => 5000,
+    #     "xmin" => -5.0,
+    #     "xmax" => 5.0,
+    #     "CFL" => .2,
+    #     #"dt" => .25,
+    #     "snapshots" => 20,
+    #     "interp_alpha" => 1.0,
+    #     "interp_range" => 3.5,
+    #     "init_func" => "gauss", # Using the unified struct
+    #     "init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
+    #     #"init_params" => (0.,1.,-2.,2.),
+    #     "randomness_factor" => 0.2, # (x_rand_factor, y_rand_factor)
+    #     "SEED_value" => 42,
+    #     "PDE" => "linear",
+    #     "weight_function" => "exponential",
+    #     "PDE_params" => 1.0, # 2D velocity vector (vx, vy)
+    #     "bc" => :periodic,
+    #     "sim_function" => "runScalarSimulation",
+
+    #     # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
+    #     "timestepper" => "RalstonRK2",
+    #     "main_gradient" => "Upwind",
+    #     "fallback_gradient" => "Upwind",
+    #     "fallback_flux" => "Rusanov",
+    #     "order" =>2,
+    #     "main_flux" => "Rusanov",
+    #     #"limiter" => "minmod",
+    #     #"MOOD" => "U1", "delta_relax" => 0. # No MOOD for this run
+    # )
 
     # --- How to use this for testing ---
     #
@@ -104,7 +104,7 @@ end
 
 sim_data, test_config = main()
 
-show1DSolutionFig(test_config)
+#show1DSolutionFig(test_config)
 scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
 #show2DCutFig(test_config;scene_options = scene_options)
-#show2DSolutionFig(test_config)
+show2DSolutionFig(test_config)

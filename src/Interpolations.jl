@@ -483,57 +483,77 @@ function (interp::Interpolator{1, 2, 1})(
     dfVec::Vector{Float64}, # Full Vector
     n::Int                  # Number of elements to use (1:n)
 )
+    if n == 0
+        return 0.0, 0.0
+    end
 
+    # --- 1. Find a scaling factor L (characteristic length) ---
+    L = 1e-14 # Avoid division by zero
+    @inbounds for i in 1:n
+        L = max(L, abs(dxVec[i]))
+    end
+    invL = 1.0 / L
+    invL2 = invL * invL
+
+    # --- 2. Calculate scaled matrix and RHS components ---
+    # We are solving for c1, c2 in: df ~ c1*(dx/L) + c2*(dx/L)^2/2
+    # N = [A11, A12; A12, A22]
+    # b = [b1; b2]
     A11 = 0.0; A12 = 0.0; A22 = 0.0
-    b2 = 0.0; b3 = 0.0
+    b1 = 0.0; b2 = 0.0
 
-    # Calculate intermediate values and matrix/rhs components in one loop
     @inbounds for i in 1:n
         w = wVec[i]
-        dx = dxVec[i]
         df = dfVec[i]
-        
-        # Calculate w_buffer[i] = w * dx
-        wdx = w * dx 
-        # w_buffer[i] = wdx # Only store if needed later, maybe not
+        dx_scaled = dxVec[i] * invL # dx_s = dx/L
 
-        # Accumulate b2 = dot(w_buffer, dfVec)
-        b2 += wdx * df 
+        # Basis functions: p1 = dx_s, p2 = 0.5 * dx_s^2
+        p1 = dx_scaled
+        p2 = 0.5 * dx_scaled * dx_scaled
 
-        # Calculate term for A11 and b3
-        wdx2 = wdx * dx 
-        
-        # Accumulate A11 = sum(w_buffer .* dxVec) where w_buffer = wVec .* dxVec
-        A11 += wdx2
+        # RHS vector: R = A^T W b
+        b1 += w * p1 * df # R[1] = sum(w * p1 * df)
+        b2 += w * p2 * df # R[2] = sum(w * p2 * df)
 
-        # Accumulate b3 = dot(w_buffer, dfVec) / 2 where w_buffer = wVec .* dxVec .* dxVec
-        b3 += (wdx2 * df) # Will divide by 2 later
-
-        # Calculate term for A12 and A22
-        wdx3 = wdx2 * dx
-
-        # Accumulate A12 = sum(w_buffer .* dxVec) / 2 where w_buffer = wVec .* dxVec .* dxVec
-        A12 += wdx3 # Will divide by 2 later
-
-        # Accumulate A22 = dot(w_buffer, dxVec) / 4 where w_buffer = wVec .* dxVec .* dxVec
-        A22 += (wdx3 * dx) # Will divide by 4 later
+        # Normal Matrix: N = A^T W A
+        A11 += w * p1 * p1 # N[1,1]
+        A12 += w * p1 * p2 # N[1,2]
+        A22 += w * p2 * p2 # N[2,2]
     end
 
-    # Apply scaling factors outside the loop
-    A12 /= 2.0
-    A22 /= 4.0
-    b3 /= 2.0
+    # --- 3. Solve N*c = b using hard-coded Cholesky ---
+    
+    # a) Cholesky Decomposition (N = LL^T)
+    # L = [l11 0; l21 l22]
+    l11_sq = A11
+    if l11_sq < 1e-14; return 0.0, 0.0; end
+    l11 = sqrt(l11_sq)
+    inv_l11 = 1.0 / l11
+    
+    l21 = A12 * inv_l11
+    
+    # l22_sq = A22 - l21*l21
+    # This is (A11*A22 - A12^2) / A11, which is D / A11
+    l22_sq = A22 - l21*l21
+    if l22_sq < 1e-14; return 0.0, 0.0; end
+    l22 = sqrt(l22_sq)
+    inv_l22 = 1.0 / l22
 
-    # Solve 2x2 system
-    D = A11 * A22 - A12^2
-    if abs(D) < 1e-14
-        return 0.0, 0.0
-    else
-        invD = 1.0 / D
-        res1 = (A22 * b2 - A12 * b3) * invD
-        res2 = (A11 * b3 - A12 * b2) * invD
-        return res1, res2
-    end
+    # b) Forward Substitution (Ly = b)
+    # [l11 0; l21 l22] * [y1; y2] = [b1; b2]
+    y1 = b1 * inv_l11
+    y2 = (b2 - l21*y1) * inv_l22
+
+    # c) Backward Substitution (L^T c = y)
+    # [l11 l21; 0 l22] * [c1; c2] = [y1; y2]
+    res2_scaled = y2 * inv_l22
+    res1_scaled = (y1 - l21*res2_scaled) * inv_l11
+    
+    # --- 4. Return the unscaled, physical derivatives ---
+    # The true derivatives are:
+    # df/dx = c1 / L
+    # d2f/dx2 = c2 / L^2
+    return res1_scaled * invL, res2_scaled * invL2
 end
 
 function (interp::Interpolator{2, 1, 1})(

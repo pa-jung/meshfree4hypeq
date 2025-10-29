@@ -62,7 +62,6 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     regular::Bool
     bc::Symbol
     interior_indices::UnitRange{Int}
-    max_volume::Ref{Float64}
     range_factor::Float64 
     max_nb::Int           
 
@@ -132,7 +131,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             neighbor_xdistance, neighbor_weights,
             weight_func,
             xmin, xmax, N, dx, regular, bc, 
-            interior_indices, Ref(0.),
+            interior_indices,
             convert(Float64, interp_range_factor), 0 # max_nb starts at 0
         )
 
@@ -624,8 +623,26 @@ function updateNeighbors!(
 end
 # --- In ParticleGrids.jl ---
 
-function getDistance(pg::ParticleGrid1D, i, j)
-    return pg.positions[j] - pg.positions[i]
+# --- In ParticleGrids.jl, add this function ---
+
+"""
+    getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)
+
+Calculates the shortest distance between two 1D particles,
+correctly handling periodic boundary conditions.
+"""
+function getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)
+    # 1. Calculate the simple, non-periodic distance
+    dist = pg.positions[j] - pg.positions[i]
+
+    # 2. Apply periodic correction if necessary
+    if pg.bc == :periodic
+        domain_size = pg.xmax - pg.xmin
+        # Correct the distance by the shortest wrap-around
+        dist -= round(dist / domain_size) * domain_size
+    end
+    
+    return dist
 end
 
 """
@@ -767,7 +784,6 @@ function determineVolumes!(particleGrid::ParticleGrid1D)
             volumes[i] = (positions[i+1] - positions[i-1]) / 2.0
         end
     end
-    particleGrid.max_volume[] = maximum(volumes)
     return
 end
 

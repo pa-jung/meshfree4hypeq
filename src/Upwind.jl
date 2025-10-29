@@ -152,7 +152,6 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
         end
 
         n_threads = Threads.nthreads()
-        println(n_threads)
         workspaces = [WS_eltype(100) for _ in 1:n_threads] 
 
         interpolator = Interpolator{dimension, order, 1}()
