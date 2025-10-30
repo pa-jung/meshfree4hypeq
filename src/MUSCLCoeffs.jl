@@ -15,283 +15,195 @@ end
         ws.gammaijs[k] = 0.0
     end
 end
+# --- In MUSCLCoeffs.jl ---
 
-# --- ORDER 1 ---
+# --- 1D _zero_coeffs! ---
+@inline function _zero_coeffs(nb_slice::UnitRange{Int}, ws::Union{MUSCLWorkspace1D2O,MUSCLWorkspace1D1O})
+    @inbounds for k in nb_slice
+        ws.alfaij_bars[k] = 0.0
+        ws.betaijs[k] = 0.0
+    end
+end
+@inline function _zero_coeffs!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace1D3O)
+    @inbounds for k in nb_slice
+        ws.alfaijs[k] = 0.0
+        ws.alfaij_bars[k] = 0.0
+        ws.betaijs[k] = 0.0
+    end
+end
+@inline function _zero_coeffs!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace1D4O)
+    @inbounds for k in nb_slice
+        ws.alfaijs[k] = 0.0
+        ws.alfaij_bars[k] = 0.0
+        ws.betaijs[k] = 0.0
+        ws.gammaijs[k] = 0.0
+    end
+end
+
+# --- ORDER 1 (1D) ---
 function _compute_coeffs!(
     ::MUSCLORDER1,
     nb_slice::UnitRange{Int},
-    dx::AbstractVector, w::AbstractVector, L::Float64,
-    _a, alfaij_bar::AbstractVector, _b, _g # O1 only needs alfaij_bar
+    ws::MUSCLWorkspace1D1O,
+    pg::ParticleGrid1D
 )
-    invL = 1.0 / L
+    dx = pg.neighbor_xdistance
+    w = pg.neighbor_weights
+    # Get views into workspace coefficient arrays
+    alfaij_bar = @view ws.alfaij_bars[nb_slice]
     
     # 1. Build 1x1 Normal Matrix N = A^T W A
-    # Basis: p1 = dx/L
     N11 = 0.0
     @inbounds for k in nb_slice
         w_k = w[k]
-        dx_s = dx[k] * invL # dx_scaled
-        N11 += w_k * dx_s * dx_s
+        dx_k = dx[k]
+        N11 += w_k * dx_k * dx_k
     end
     
     if N11 < 1e-14
-        @inbounds for k in nb_slice; alfaij_bar[k] = 0.0; end
+        fill!(alfaij_bar, 0.0)
         return
     end
-    
     invN11 = 1.0 / N11
 
     # 2. Solve N*c = b for each neighbor
+    idx = 0
     @inbounds for k in nb_slice
-        # RHS b_k = (A^T W)_k = p1_k * w_k
-        b1 = (dx[k] * invL) * w[k]
-        
-        # Solve
-        c1_scaled = invN11 * b1
-        
-        # Unscale and store: c1_unscaled = c1_scaled / L
-        alfaij_bar[k] = c1_scaled * invL
+        idx += 1
+        b1 = dx[k] * w[k]
+        alfaij_bar[idx] = invN11 * b1
     end
 end
 
-# --- ORDER 2 ---
+# --- ORDER 2 (1D) ---
 function _compute_coeffs!(
     ::MUSCLORDER2,
     nb_slice::UnitRange{Int},
-    dx::AbstractVector, w::AbstractVector, L::Float64,
-    _a, alfaij_bar::AbstractVector, betaij::AbstractVector, _g
+    ws::MUSCLWorkspace1D2O,
+    pg::ParticleGrid1D
 )
-    invL = 1.0 / L
-    invL2 = invL * invL
+    dx = pg.neighbor_xdistance
+    w = pg.neighbor_weights
 
-    # 1. Build 2x2 Normal Matrix N = A^T W A
-    # Basis: p1 = dx/L, p2 = 0.5 * (dx/L)^2
+    alfaij_bar = @view ws.alfaij_bars[nb_slice]
+    betaij     = @view ws.betaijs[nb_slice]
+
     N11 = 0.0; N12 = 0.0; N22 = 0.0
-    
     @inbounds for k in nb_slice
         w_k = w[k]
-        dx_s = dx[k] * invL
-        
-        p1 = dx_s
-        p2 = 0.5 * dx_s * dx_s
-
-        N11 += w_k * p1 * p1
-        N12 += w_k * p1 * p2
-        N22 += w_k * p2 * p2
+        dx_k = dx[k]
+        p1 = dx_k; p2 = 0.5 * dx_k * dx_k
+        N11 += w_k*p1*p1; N12 += w_k*p1*p2; N22 += w_k*p2*p2
     end
     
-    # 2. Hardcoded 2x2 Cholesky Decomposition (N = LL^T)
     l11_sq = N11
-    if l11_sq < 1e-14
-        _zero_coeffs_1d!(nb_slice, _a, alfaij_bar, betaij, _g)
-        return
-    end
-    l11 = sqrt(l11_sq)
-    inv_l11 = 1.0 / l11
-    
+    if l11_sq < 1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l11 = sqrt(l11_sq); inv_l11 = 1.0 / l11
     l21 = N12 * inv_l11
-    
     l22_sq = N22 - l21*l21
-    if l22_sq < 1e-14
-        _zero_coeffs_1d!(nb_slice, _a, alfaij_bar, betaij, _g)
-        return
-    end
-    l22 = sqrt(l22_sq)
-    inv_l22 = 1.0 / l22
+    if l22_sq < 1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l22 = sqrt(l22_sq); inv_l22 = 1.0 / l22
 
-    # 3. Solve N*c = b for each neighbor
+    idx = 0
     @inbounds for k in nb_slice
+        idx += 1
         w_k = w[k]
-        dx_s = dx[k] * invL
-
-        # RHS b_k = (A^T W)_k
-        p1_k = dx_s
-        p2_k = 0.5 * dx_s * dx_s
-        b1 = p1_k * w_k
-        b2 = p2_k * w_k
-
-        # a) Forward Sub (Ly = b)
-        y1 = b1 * inv_l11
-        y2 = (b2 - l21*y1) * inv_l22
-
-        # b) Backward Sub (L^T c = y)
-        c2_scaled = y2 * inv_l22
-        c1_scaled = (y1 - l21*c2_scaled) * inv_l11
-        
-        # Unscale and store
-        alfaij_bar[k] = c1_scaled * invL  # c1 / L
-        betaij[k]     = c2_scaled * invL2 # c2 / L^2
+        dx_k = dx[k]
+        p1_k = dx_k; p2_k = 0.5 * dx_k * dx_k
+        b1 = p1_k * w_k; b2 = p2_k * w_k
+        y1 = b1 * inv_l11; y2 = (b2 - l21*y1) * inv_l22
+        c2 = y2 * inv_l22; c1 = (y1 - l21*c2) * inv_l11
+        alfaij_bar[idx] = c1
+        betaij[idx]     = c2
     end
 end
 
-# --- ORDER 3 ---
+# --- ORDER 3 (1D) ---
 function _compute_coeffs!(
     ::MUSCLORDER3,
     nb_slice::UnitRange{Int},
-    dx::AbstractVector, w::AbstractVector, L::Float64,
-    alfaij::AbstractVector, alfaij_bar::AbstractVector, betaij::AbstractVector, _g
+    ws::MUSCLWorkspace1D3O,
+    pg::ParticleGrid1D
 )
-    invL = 1.0 / L
-    invL2 = invL * invL
-    invL3 = invL2 * invL
+    dx = pg.neighbor_xdistance
+    w = pg.neighbor_weights
+    alfaij     = @view ws.alfaijs[nb_slice]
+    alfaij_bar = @view ws.alfaij_bars[nb_slice]
+    betaij     = @view ws.betaijs[nb_slice]
 
-    # 1. Build 3x3 Normal Matrix N = A^T W A
-    # Basis: p1 = dx/L, p2 = 0.5 * (dx/L)^2, p3 = (1/6) * (dx/L)^3
-    N11 = 0.0; N12 = 0.0; N13 = 0.0
-    N22 = 0.0; N23 = 0.0
-    N33 = 0.0
-    
+    N11=0.0; N12=0.0; N13=0.0; N22=0.0; N23=0.0; N33=0.0
     @inbounds for k in nb_slice
-        w_k = w[k]
-        dx_s = dx[k] * invL
-        
-        p1 = dx_s
-        p2 = 0.5 * dx_s * dx_s
-        p3 = (1.0/6.0) * dx_s * dx_s * dx_s
-
+        w_k = w[k]; dx_k = dx[k]; dx_k2 = dx_k*dx_k
+        p1 = dx_k; p2 = 0.5*dx_k2; p3 = (1/6)*dx_k2*dx_k
         N11 += w_k*p1*p1; N12 += w_k*p1*p2; N13 += w_k*p1*p3
-        N22 += w_k*p2*p2; N23 += w_k*p2*p3
-        N33 += w_k*p3*p3
+        N22 += w_k*p2*p2; N23 += w_k*p2*p3; N33 += w_k*p3*p3
     end
-    
-    # 2. Hardcoded 3x3 Cholesky Decomposition (N = LL^T)
-    l11_sq = N11
-    if l11_sq < 1e-14; _zero_coeffs_1d!(nb_slice, alfaij, alfaij_bar, betaij, _g); return; end
-    l11 = sqrt(l11_sq); inv_l11 = 1.0 / l11
-    l21 = N12 * inv_l11
-    l31 = N13 * inv_l11
 
-    l22_sq = N22 - l21*l21
-    if l22_sq < 1e-14; _zero_coeffs_1d!(nb_slice, alfaij, alfaij_bar, betaij, _g); return; end
-    l22 = sqrt(l22_sq); inv_l22 = 1.0 / l22
-    l32 = (N23 - l31*l21) * inv_l22
-    
-    l33_sq = N33 - l31*l31 - l32*l32
-    if l33_sq < 1e-14; _zero_coeffs_1d!(nb_slice, alfaij, alfaij_bar, betaij, _g); return; end
-    l33 = sqrt(l33_sq); inv_l33 = 1.0 / l33
+    l11_sq=N11; if l11_sq<1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l11 = sqrt(l11_sq); inv_l11 = 1/l11; l21 = N12*inv_l11; l31 = N13*inv_l11
+    l22_sq=N22-l21*l21; if l22_sq<1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l22 = sqrt(l22_sq); inv_l22 = 1/l22; l32 = (N23-l31*l21)*inv_l22
+    l33_sq=N33-l31*l31-l32*l32; if l33_sq<1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l33 = sqrt(l33_sq); inv_l33 = 1/l33
 
-    # 3. Solve N*c = b for each neighbor
+    idx = 0
     @inbounds for k in nb_slice
-        w_k = w[k]
-        dx_s = dx[k] * invL
-
-        # RHS b_k = (A^T W)_k
-        p1_k = dx_s
-        p2_k = 0.5 * dx_s * dx_s
-        p3_k = (1.0/6.0) * dx_s * dx_s * dx_s
-        b1 = p1_k * w_k
-        b2 = p2_k * w_k
-        b3 = p3_k * w_k
-
-        # a) Forward Sub (Ly = b)
-        y1 = b1 * inv_l11
-        y2 = (b2 - l21*y1) * inv_l22
-        y3 = (b3 - l31*y1 - l32*y2) * inv_l33
-
-        # b) Backward Sub (L^T c = y)
-        c3_scaled = y3 * inv_l33
-        c2_scaled = (y2 - l32*c3_scaled) * inv_l22
-        c1_scaled = (y1 - l21*c2_scaled - l31*c3_scaled) * inv_l11
-        
-        # Unscale and store (O3 div uses alfaij)
-        alfaij_bar[k] = c1_scaled * invL  # c1 / L
-        betaij[k]     = c2_scaled * invL2 # c2 / L^2
-        alfaij[k]     = c3_scaled * invL3 # c3 / L^3
+        idx += 1
+        w_k = w[k]; dx_k = dx[k]; dx_k2 = dx_k*dx_k
+        p1 = dx_k; p2 = 0.5*dx_k2; p3 = (1/6)*dx_k2*dx_k
+        b1 = p1*w_k; b2 = p2*w_k; b3 = p3*w_k
+        y1 = b1*inv_l11; y2 = (b2-l21*y1)*inv_l22; y3 = (b3-l31*y1-l32*y2)*inv_l33
+        c3 = y3*inv_l33; c2 = (y2-l32*c3)*inv_l22; c1 = (y1-l21*c2-l31*c3)*inv_l11
+        alfaij_bar[idx] = c1
+        betaij[idx]     = c2
+        alfaij[idx]     = c3
     end
 end
 
-# --- ORDER 4 ---
+# --- ORDER 4 (1D) ---
 function _compute_coeffs!(
     ::MUSCLORDER4,
     nb_slice::UnitRange{Int},
-    dx::AbstractVector, w::AbstractVector, L::Float64,
-    alfaij::AbstractVector, alfaij_bar::AbstractVector, 
-    betaij::AbstractVector, gammaij::AbstractVector
+    ws::MUSCLWorkspace1D4O,
+    pg::ParticleGrid1D
 )
-    invL = 1.0 / L
-    invL2 = invL * invL
-    invL3 = invL2 * invL
-    invL4 = invL3 * invL
+    dx = pg.neighbor_xdistance
+    w = pg.neighbor_weights
+    alfaij     = @view ws.alfaijs[nb_slice]
+    alfaij_bar = @view ws.alfaij_bars[nb_slice]
+    betaij     = @view ws.betaijs[nb_slice]
+    gammaij    = @view ws.gammaijs[nb_slice]
 
-    # 1. Build 4x4 Normal Matrix N = A^T W A
-    # Basis: p1 = dx/L, p2 = 0.5(dx/L)^2, p3 = (1/6)(dx/L)^3, p4 = (1/24)(dx/L)^4
-    N11 = 0.0; N12 = 0.0; N13 = 0.0; N14 = 0.0
-    N22 = 0.0; N23 = 0.0; N24 = 0.0
-    N33 = 0.0; N34 = 0.0
-    N44 = 0.0
-    
+    N11=0.0; N12=0.0; N13=0.0; N14=0.0; N22=0.0; N23=0.0; N24=0.0; N33=0.0; N34=0.0; N44=0.0
     @inbounds for k in nb_slice
-        w_k = w[k]
-        dx_s = dx[k] * invL
-        dx_s2 = dx_s * dx_s
-        
-        p1 = dx_s
-        p2 = 0.5 * dx_s2
-        p3 = (1.0/6.0) * dx_s2 * dx_s
-        p4 = (1.0/24.0) * dx_s2 * dx_s2
-
+        w_k = w[k]; dx_k = dx[k]; dx_k2 = dx_k*dx_k
+        p1 = dx_k; p2 = 0.5*dx_k2; p3 = (1/6)*dx_k2*dx_k; p4 = (1/24)*dx_k2*dx_k2
         N11 += w_k*p1*p1; N12 += w_k*p1*p2; N13 += w_k*p1*p3; N14 += w_k*p1*p4
         N22 += w_k*p2*p2; N23 += w_k*p2*p3; N24 += w_k*p2*p4
-        N33 += w_k*p3*p3; N34 += w_k*p3*p4
-        N44 += w_k*p4*p4
+        N33 += w_k*p3*p3; N34 += w_k*p3*p4; N44 += w_k*p4*p4
     end
-    
-    # 2. Hardcoded 4x4 Cholesky Decomposition (N = LL^T)
-    l11_sq = N11
-    if l11_sq < 1e-14; _zero_coeffs_1d!(nb_slice, alfaij, alfaij_bar, betaij, gammaij); return; end
-    l11 = sqrt(l11_sq); inv_l11 = 1.0 / l11
-    l21 = N12 * inv_l11
-    l31 = N13 * inv_l11
-    l41 = N14 * inv_l11
 
-    l22_sq = N22 - l21*l21
-    if l22_sq < 1e-14; _zero_coeffs_1d!(nb_slice, alfaij, alfaij_bar, betaij, gammaij); return; end
-    l22 = sqrt(l22_sq); inv_l22 = 1.0 / l22
-    l32 = (N23 - l31*l21) * inv_l22
-    l42 = (N24 - l41*l21) * inv_l22
-    
-    l33_sq = N33 - l31*l31 - l32*l32
-    if l33_sq < 1e-14; _zero_coeffs_1d!(nb_slice, alfaij, alfaij_bar, betaij, gammaij); return; end
-    l33 = sqrt(l33_sq); inv_l33 = 1.0 / l33
-    l43 = (N34 - l41*l31 - l42*l32) * inv_l33
-    
-    l44_sq = N44 - l41*l41 - l42*l42 - l43*l43
-    if l44_sq < 1e-14; _zero_coeffs_1d!(nb_slice, alfaij, alfaij_bar, betaij, gammaij); return; end
-    l44 = sqrt(l44_sq); inv_l44 = 1.0 / l44
+    l11_sq=N11; if l11_sq<1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l11 = sqrt(l11_sq); inv_l11 = 1/l11; l21=N12*inv_l11; l31=N13*inv_l11; l41=N14*inv_l11
+    l22_sq=N22-l21*l21; if l22_sq<1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l22 = sqrt(l22_sq); inv_l22 = 1/l22; l32=(N23-l31*l21)*inv_l22; l42=(N24-l41*l21)*inv_l22
+    l33_sq=N33-l31*l31-l32*l32; if l33_sq<1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l33 = sqrt(l33_sq); inv_l33 = 1/l33; l43=(N34-l41*l31-l42*l32)*inv_l33
+    l44_sq=N44-l41*l41-l42*l42-l43*l43; if l44_sq<1e-14; _zero_coeffs!(nb_slice, ws); return; end
+    l44 = sqrt(l44_sq); inv_l44 = 1/l44
 
-    # 3. Solve N*c = b for each neighbor
+    idx = 0
     @inbounds for k in nb_slice
-        w_k = w[k]
-        dx_s = dx[k] * invL
-        dx_s2 = dx_s * dx_s
-
-        # RHS b_k = (A^T W)_k
-        p1_k = dx_s
-        p2_k = 0.5 * dx_s2
-        p3_k = (1.0/6.0) * dx_s2 * dx_s
-        p4_k = (1.0/24.0) * dx_s2 * dx_s2
-        b1 = p1_k * w_k
-        b2 = p2_k * w_k
-        b3 = p3_k * w_k
-        b4 = p4_k * w_k
-
-        # a) Forward Sub (Ly = b)
-        y1 = b1 * inv_l11
-        y2 = (b2 - l21*y1) * inv_l22
-        y3 = (b3 - l31*y1 - l32*y2) * inv_l33
-        y4 = (b4 - l41*y1 - l42*y2 - l43*y3) * inv_l44
-
-        # b) Backward Sub (L^T c = y)
-        c4_scaled = y4 * inv_l44
-        c3_scaled = (y3 - l43*c4_scaled) * inv_l33
-        c2_scaled = (y2 - l32*c3_scaled - l42*c4_scaled) * inv_l22
-        c1_scaled = (y1 - l21*c2_scaled - l31*c3_scaled - l41*c4_scaled) * inv_l11
-        
-        # Unscale and store (O4 div uses... alfaij?)
-        alfaij_bar[k] = c1_scaled * invL  # c1 / L
-        betaij[k]     = c2_scaled * invL2 # c2 / L^2
-        alfaij[k]     = c3_scaled * invL3 # c3 / L^3
-        gammaij[k]    = c4_scaled * invL4 # c4 / L^4
+        idx += 1
+        w_k = w[k]; dx_k = dx[k]; dx_k2 = dx_k*dx_k
+        p1 = dx_k; p2 = 0.5*dx_k2; p3 = (1/6)*dx_k2*dx_k; p4 = (1/24)*dx_k2*dx_k2
+        b1=p1*w_k; b2=p2*w_k; b3=p3*w_k; b4=p4*w_k
+        y1=b1*inv_l11; y2=(b2-l21*y1)*inv_l22; y3=(b3-l31*y1-l32*y2)*inv_l33; y4=(b4-l41*y1-l42*y2-l43*y3)*inv_l44
+        c4=y4*inv_l44; c3=(y3-l43*c4)*inv_l33; c2=(y2-l32*c3-l42*c4)*inv_l22; c1=(y1-l21*c2-l31*c3-l41*c4)*inv_l11
+        alfaij_bar[idx] = c1
+        betaij[idx]     = c2
+        alfaij[idx]     = c3
+        gammaij[idx]    = c4
     end
 end
 
@@ -305,10 +217,11 @@ function _compute_coeffs!(
     ::MUSCLORDER1,
     nb_slice::UnitRange{Int},
     ws::MUSCLWorkspace2D1O, # <-- Takes workspace
-    dx::AbstractVector,
-    dy::AbstractVector,
-    w::AbstractVector
+    pg::ParticleGrid2D
 )
+    dx = pg.neighbor_xdistance
+    dy = pg.neighbor_ydistance
+    w = pg.neighbor_weights
     # Get views into workspace coefficient arrays
     alfaij = ws.alfaijs
     betaij = ws.betaijs
@@ -353,10 +266,11 @@ function _compute_coeffs!(
     ::MUSCLORDER2,
     nb_slice::UnitRange{Int},
     ws::MUSCLWorkspace2D2O, # <-- Takes workspace
-    dx::AbstractVector,
-    dy::AbstractVector,
-    w::AbstractVector
+    pg::ParticleGrid2D
 )
+    dx = pg.neighbor_xdistance
+    dy = pg.neighbor_ydistance
+    w = pg.neighbor_weights
     # Get views into workspace coefficient arrays
     alfaij      = ws.alfaijs
     betaij      = ws.betaijs
@@ -397,7 +311,7 @@ function _compute_coeffs!(
 
     # --- 2. Hardcoded Cholesky Decomposition (N = LLᵀ) ---
     l11_sq = N11
-    if l11_sq < 1e-14; _zero_coeffs_2d!(nb_slice, ws); return; end
+    if l11_sq < 1e-14; _zero_coeffs!(nb_slice, ws); return; end
     l11 = sqrt(l11_sq); inv_l11 = 1.0 / l11
     l21 = N12 * inv_l11
     l31 = N13 * inv_l11
@@ -405,25 +319,25 @@ function _compute_coeffs!(
     l51 = N15 * inv_l11
 
     l22_sq = N22 - l21*l21
-    if l22_sq < 1e-14; _zero_coeffs_2d!(nb_slice, ws); return; end
+    if l22_sq < 1e-14; _zero_coeffs!(nb_slice, ws); return; end
     l22 = sqrt(l22_sq); inv_l22 = 1.0 / l22
     l32 = (N23 - l31*l21) * inv_l22
     l42 = (N24 - l41*l21) * inv_l22
     l52 = (N25 - l51*l21) * inv_l22
 
     l33_sq = N33 - l31*l31 - l32*l32
-    if l33_sq < 1e-14; _zero_coeffs_2d!(nb_slice, ws); return; end
+    if l33_sq < 1e-14; _zero_coeffs!(nb_slice, ws); return; end
     l33 = sqrt(l33_sq); inv_l33 = 1.0 / l33
     l43 = (N34 - l41*l31 - l42*l32) * inv_l33
     l53 = (N35 - l51*l31 - l52*l32) * inv_l33
 
     l44_sq = N44 - l41*l41 - l42*l42 - l43*l43
-    if l44_sq < 1e-14; _zero_coeffs_2d!(nb_slice, ws); return; end
+    if l44_sq < 1e-14; _zero_coeffs!(nb_slice, ws); return; end
     l44 = sqrt(l44_sq); inv_l44 = 1.0 / l44
     l54 = (N45 - l51*l41 - l52*l42 - l53*l43) * inv_l44
 
     l55_sq = N55 - l51*l51 - l52*l52 - l53*l53 - l54*l54
-    if l55_sq < 1e-14; _zero_coeffs_2d!(nb_slice, ws); return; end
+    if l55_sq < 1e-14; _zero_coeffs!(nb_slice, ws); return; end
     l55 = sqrt(l55_sq); inv_l55 = 1.0 / l55
 
     # --- 3. Solve for Coefficients for EACH neighbor ---
@@ -467,17 +381,13 @@ end
 """
 (2D Helper) Helper function to zero out 2D coefficients.
 """
-@inline function _zero_coeffs_2d!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace2D)
-    # This needs dispatch based on the concrete workspace type
-    _zero_coeffs_2d!(nb_slice, ws)
-end
-@inline function _zero_coeffs_2d!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace2D1O)
+@inline function _zero_coeffs!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace2D1O)
     @inbounds for k in nb_slice
         ws.alfaijs[k] = 0.0
         ws.betaijs[k] = 0.0
     end
 end
-@inline function _zero_coeffs_2d!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace2D2O)
+@inline function _zero_coeffs!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace2D2O)
     @inbounds for k in nb_slice
         ws.alfaijs[k] = 0.0
         ws.betaijs[k] = 0.0

@@ -22,41 +22,111 @@ abstract type MUSCLWorkspace end
 
 # --- In MUSCL.jl ---
 
-# (Keep abstract types, limiter funcs, find_closest_lr_neighbors_1D)
+# (Keep 2D Workspaces)
 
-# --- REFACTORED: 1D Workspace with flat buffers ---
-mutable struct MUSCLWorkspace1D <: MUSCLWorkspace
+# --- NEW: 1D Workspaces split by order ---
+abstract type MUSCLWorkspace1D <: MUSCLWorkspace end
+
+"""
+Workspace for 1D, 1st/2nd Order MUSCL.
+Stores 1st/2nd order coefficients and derivatives.
+(O1 and O2 are combined, as O1 slope limiting (MOOD) needs curvature).
+"""
+struct MUSCLWorkspace1D1O <: MUSCLWorkspace1D
     # --- FLATTENED per-interaction coefficient storage ---
-    alfaijs::Vector{Float64}     # for 1st-order slope / 3rd-order div
-    alfaij_bars::Vector{Float64} # for 2nd-order slope / 1st-order div
-    betaijs::Vector{Float64}     # for 2nd-order curve / 2nd-order div
-    gammaijs::Vector{Float64}    # for 4th-order
+    alfaij_bars::Vector{Float64} # for 1st-order slope
+    betaijs::Vector{Float64}     # for 2nd-order curve
 
     # --- PER-PARTICLE derivative storage (already flat) ---
     slopes::Vector{Float64}
     curves_xx::Vector{Float64}
-    # (curves_yy is not needed for 1D)
 
-    # --- Temporary buffers for a single particle's calculation ---
-    # (These are small and can be re-used by each thread)
-    dx_buffer::Vector{Float64}
-    w_buffer::Vector{Float64}
-    A_buffer::Matrix{Float64} # For pinv
-    
-    max_neighbors_local::Int # Max neighbors for a single particle
-
-    function MUSCLWorkspace1D(
-        initial_particle_cap::Int = 100,
-        initial_neighbor_cap::Int = 20, # Max neighbors for temp buffers
-        initial_flat_cap::Int = 1000  # Capacity for total interactions
+    function MUSCLWorkspace1D1O(
+        initial_particle_cap::Int = 100, 
+        initial_flat_cap::Int = 1000
     )
         new(
-            zeros(initial_flat_cap), zeros(initial_flat_cap), # alfaijs, alfaij_bars
-            zeros(initial_flat_cap), zeros(initial_flat_cap), # betaijs, gammaijs
-            zeros(initial_particle_cap), zeros(initial_particle_cap), # slopes, curves_xx
-            zeros(initial_neighbor_cap), zeros(initial_neighbor_cap), # dx_buffer, w_buffer
-            zeros(initial_neighbor_cap, 4), # A_buffer
-            initial_neighbor_cap
+            zeros(initial_flat_cap), zeros(initial_flat_cap), # alfaij_bars, betaijs
+            zeros(initial_particle_cap), zeros(initial_particle_cap)  # slopes, curves_xx
+        )
+    end
+end
+
+"""
+Workspace for 1D, 1st/2nd Order MUSCL.
+Stores 1st/2nd order coefficients and derivatives.
+(O1 and O2 are combined, as O1 slope limiting (MOOD) needs curvature).
+"""
+struct MUSCLWorkspace1D2O <: MUSCLWorkspace1D
+    # --- FLATTENED per-interaction coefficient storage ---
+    alfaij_bars::Vector{Float64} # for 1st-order slope
+    betaijs::Vector{Float64}     # for 2nd-order curve
+
+    # --- PER-PARTICLE derivative storage (already flat) ---
+    slopes::Vector{Float64}
+    curves_xx::Vector{Float64}
+
+    function MUSCLWorkspace1D2O(
+        initial_particle_cap::Int = 100, 
+        initial_flat_cap::Int = 1000
+    )
+        new(
+            zeros(initial_flat_cap), zeros(initial_flat_cap), # alfaij_bars, betaijs
+            zeros(initial_particle_cap), zeros(initial_particle_cap)  # slopes, curves_xx
+        )
+    end
+end
+
+"""
+Workspace for 1D, 3rd Order MUSCL.
+"""
+struct MUSCLWorkspace1D3O <: MUSCLWorkspace1D
+    # --- Coeffs ---
+    alfaijs::Vector{Float64}     # for d3
+    alfaij_bars::Vector{Float64} # for d1
+    betaijs::Vector{Float64}     # for d2
+    
+    # --- Derivatives ---
+    slopes::Vector{Float64}
+    curves_xx::Vector{Float64}
+    d3fdx3::Vector{Float64} # Field for 3rd derivative
+
+    function MUSCLWorkspace1D3O(
+        initial_particle_cap::Int = 100, 
+        initial_flat_cap::Int = 1000
+    )
+        new(
+            zeros(initial_flat_cap), zeros(initial_flat_cap), zeros(initial_flat_cap),
+            zeros(initial_particle_cap), zeros(initial_particle_cap), zeros(initial_particle_cap)
+        )
+    end
+end
+
+"""
+Workspace for 1D, 4th Order MUSCL.
+"""
+struct MUSCLWorkspace1D4O <: MUSCLWorkspace1D
+    # --- Coeffs ---
+    alfaijs::Vector{Float64}     # for d3
+    alfaij_bars::Vector{Float64} # for d1
+    betaijs::Vector{Float64}     # for d2
+    gammaijs::Vector{Float64}    # for d4
+    
+    # --- Derivatives ---
+    slopes::Vector{Float64}
+    curves_xx::Vector{Float64}
+    d3fdx3::Vector{Float64}
+    d4fdx4::Vector{Float64} # Field for 4th derivative
+
+    function MUSCLWorkspace1D4O(
+        initial_particle_cap::Int = 100, 
+        initial_flat_cap::Int = 1000
+    )
+        new(
+            zeros(initial_flat_cap), zeros(initial_flat_cap), 
+            zeros(initial_flat_cap), zeros(initial_flat_cap),
+            zeros(initial_particle_cap), zeros(initial_particle_cap), 
+            zeros(initial_particle_cap), zeros(initial_particle_cap)
         )
     end
 end
@@ -279,40 +349,45 @@ struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, NFF <: NumericalFluxF
     numericalFlux::NFF
     workspace::WS
 end
+# --- In MUSCL.jl, replace the old Constructor ---
 
-# --- NEW: Updated MUSCL Constructor ---
 function MUSCL(
     order::Int, 
-   
- dimension::Int; 
+    dimension::Int; 
     limiter::L=NoLimiter(), 
     numericalFlux=RusanovFlux()
 ) where {L<:AbstractSlopeLimiter}
-
-    # --- Workspace Selection ---
+    
+    local ws::MUSCLWorkspace # Declare ws with abstract type
+    
     if dimension == 1
-        ws = MUSCLWorkspace1D()
-
+        if order == 1
+            ws = MUSCLWorkspace1D1O()
+        elseif order == 2
+            ws = MUSCLWorkspace1D2O()
+        elseif order == 3
+            ws = MUSCLWorkspace1D3O()
+        elseif order == 4
+            ws = MUSCLWorkspace1D4O()
+        else
+            error("Order $order not supported for 1D workspace.")
+        end
     elseif dimension == 2
         if order == 1
             ws = MUSCLWorkspace2D1O()
         elseif order == 2
             ws = MUSCLWorkspace2D2O()
         else
-             # Default to 2O for orders 3, 4 for now, or error
             error("Order $order not fully supported for 2D workspace yet.")
-            # ws = MUSCLWorkspace2D2O() 
         end
     else
         error("Dimension $dimension not supported.")
     end
     
-    res_size = (dimension == 1) ?
-order : (order == 1 ? 2 : 5) # Determine size of result buffer
-    
+    res_size = (dimension == 1) ? order : (order == 1 ? 2 : 5)
     WS = typeof(ws)
     
-if order == 1
+    if order == 1
         return MUSCL{dimension, MUSCLORDER1, L, typeof(numericalFlux), WS}(MUSCLORDER1(), limiter, zeros(res_size), numericalFlux, ws)
     elseif order == 2
         return MUSCL{dimension, MUSCLORDER2, L, typeof(numericalFlux), WS}(MUSCLORDER2(), limiter, zeros(res_size), numericalFlux, ws)
@@ -361,6 +436,43 @@ function initGIBuffers!(ws::MUSCLWorkspace, pg::ParticleGrid)
     return nothing
 end
 
+# --- NEW: initGIBuffers! for 1D workspaces ---
+function initGIBuffers!(ws::Union{MUSCLWorkspace1D1O,MUSCLWorkspace1D2O}, pg::ParticleGrid1D)
+    N = pg.N
+    M = length(pg.neighbor_indices) # Total interactions
+    
+    if length(ws.slopes) < N
+        resize!.((ws.slopes, ws.curves_xx), N)
+    end
+    if length(ws.alfaij_bars) < M
+        resize!.((ws.alfaij_bars, ws.betaijs), M)
+    end
+end
+
+function initGIBuffers!(ws::MUSCLWorkspace1D3O, pg::ParticleGrid1D)
+    N = pg.N
+    M = length(pg.neighbor_indices)
+    
+    if length(ws.slopes) < N
+        resize!.((ws.slopes, ws.curves_xx, ws.d3fdx3), N)
+    end
+    if length(ws.alfaijs) < M
+        resize!.((ws.alfaijs, ws.alfaij_bars, ws.betaijs), M)
+    end
+end
+
+function initGIBuffers!(ws::MUSCLWorkspace1D4O, pg::ParticleGrid1D)
+    N = pg.N
+    M = length(pg.neighbor_indices)
+    
+    if length(ws.slopes) < N
+        resize!.((ws.slopes, ws.curves_xx, ws.d3fdx3, ws.d4fdx4), N)
+    end
+    if length(ws.alfaijs) < M
+        resize!.((ws.alfaijs, ws.alfaij_bars, ws.betaijs, ws.gammaijs), M)
+    end
+end
+
 # --- NEW: Localized Helper Functions for initGI! (2D, Order 1) ---
 
 
@@ -368,95 +480,21 @@ include("MUSCLCoeffs.jl")
 include("MUSCLUtils.jl")
 include("MUSCLLimiter.jl")
 
-# --- In MUSCL.jl, replace the 1D initGI! function ---
-
-"""
-    initGI!(muscl::MUSCL{1, ORDER}, ...)
-
-(1D Main) Orchestrator function to calculate and store derivatives.
-Dispatches calculation based on muscl.order.
-"""
-function initGI!(
-    muscl::MUSCL{1, ORDER},
-    i::Int,                         # Current particle index
-    f_i::Real,                      # Value of f at particle i
-    pg::ParticleGrid,               # Grid object (will be 1D)
-    neighbor_fs::AbstractVector,    # The flat neighbor-value buffer
-    neighbor_dfs::AbstractVector    # The flat neighbor-difference buffer
-) where {ORDER <: MUSCLORDER}
-    
-    ws = muscl.workspace::MUSCLWorkspace1D
-    nb_slice = getNBSlice(pg, i)
-    num_nb = length(nb_slice)
-
-    # --- Handle zero-neighbor case ---
-    if num_nb == 0
-        _zero_coeffs_1d!(nb_slice, ws) # Zero coefficients
-        # Calculate returns 0.0 or (0.0, 0.0)
-        slope_x, _ = _calculate_slopes(muscl.order, nb_slice, neighbor_dfs, ws) 
-        higher_derivatives = _calculate_higher_derivatives(muscl.order, nb_slice, neighbor_dfs, ws)
-        # Save zero derivatives
-        _save_derivatives!(ws, i, 0.0, higher_derivatives) 
-        return
-    end
-
-    # Get refs to global buffers needed by helpers
-    dx = pg.neighbor_xdistance
-    w  = pg.neighbor_weights
-    
-    # --- 1. Find Scaling Factor L ---
-    L = 1e-14
-    @inbounds for k in nb_slice
-        L = max(L, abs(dx[k]))
-    end
-
-    # --- 2. Compute Coefficients ---
-    # Dispatches based on muscl.order
-    _compute_coeffs!(
-        muscl.order, nb_slice, dx, w, L,
-        ws.alfaijs, ws.alfaij_bars, ws.betaijs, ws.gammaijs
-    )
-
-    # --- 3. Calculate Slopes (and potentially Curve for ORDER2+) ---
-    # Dispatches based on muscl.order
-    slope_x, curve_for_limit = _calculate_slopes(muscl.order, nb_slice, neighbor_dfs, ws)
-
-    # --- 4. Limit Slopes ---
-    # Dispatches based on muscl.limiter type
-    # (Uses the _limit_slopes helper functions, requires renaming _limit_slopes_1d)
-    slope_x = _limit_slopes(muscl.limiter, slope_x, i, f_i, pg, neighbor_fs)
-
-    # --- 5. Calculate Higher Derivatives (if any) ---
-    # Dispatches based on muscl.order
-    higher_derivatives = _calculate_higher_derivatives(muscl.order, nb_slice, neighbor_dfs, ws)
-
-    # --- 6. Store Final Derivatives ---
-    if isnan(slope_x) # Basic NaN check
-        error("Found NaN while calculating derivatives for particle $i!")
-    end
-    # Add checks for higher_derivatives if needed (e.g., check curve_xx)
-
-    # Dispatches based on muscl.order implicitly via tuple type
-    _save_derivatives!(ws, i, slope_x, higher_derivatives)
-    return
-end
-
-# --- In MUSCL.jl, replace the 2D initGI! functions ---
 
 """
     initGI!(muscl::MUSCL{2}, ...)
 
-(2D Main) Orchestrator function to calculate and store derivatives.
+Main Orchestrator function to calculate and store derivatives.
 Dispatches calculation based on muscl.order and ws type.
 """
 function initGI!(
-    muscl::MUSCL{2},
+    muscl::MUSCL{D},
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    pg::ParticleGrid,               # Grid object (will be 2D)
+    pg::ParticleGrid{D},               # Grid object (will be 2D)
     neighbor_fs::AbstractVector,    # The flat neighbor-value buffer
     neighbor_dfs::AbstractVector    # The flat neighbor-difference buffer
-)
+) where D
     ws = muscl.workspace # ws will be MUSCLWorkspace2D1O or MUSCLWorkspace2D2O
     nb_slice = getNBSlice(pg, i)
     num_nb = length(nb_slice)
@@ -464,82 +502,104 @@ function initGI!(
     # --- Handle zero-neighbor case ---
     if num_nb == 0
         _zero_coeffs!(nb_slice, ws) # Zero coefficients
+        slopes = D == 1 ? 0. : ntuple(x -> 0., D)
         higher_derivatives = _calculate_higher_derivatives(muscl.order, nb_slice, neighbor_dfs, ws) # Returns () or (0,0,0)
-        _save_derivatives!(ws, i, 0.0, 0.0, higher_derivatives) # Save zero derivatives
+        _save_derivatives!(ws, i, slopes, higher_derivatives) # Save zero derivatives
         return
     end
 
-    # Get refs to global buffers needed by helpers
-    dx = pg.neighbor_xdistance
-    dy = pg.neighbor_ydistance
-    w  = pg.neighbor_weights
-
     # --- 1. Compute Coefficients ---
     # Dispatches based on muscl.order AND ws type implicitly
-    _compute_coeffs!(muscl.order, nb_slice, ws, dx, dy, w)
+    _compute_coeffs!(muscl.order, nb_slice, ws, pg)
 
-    # --- 2. Calculate Slopes ---
-    # (Uses the existing _calculate_slopes helper, which expects alfaij/betaij views)
-    # NOTE: We need views here, matching the required arguments
-    alfaij = ws.alfaijs
-    betaij = ws.betaijs
-    slope_x, slope_y = _calculate_slopes(nb_slice, neighbor_dfs, alfaij, betaij)
-
+    slopes = _calculate_slopes(nb_slice, neighbor_dfs, ws)
     # --- 3. Limit Slopes ---
     # (Uses the existing _limit_slopes helpers)
-    slope_x, slope_y = _limit_slopes(muscl.limiter, slope_x, slope_y, nb_slice, f_i, neighbor_fs, dx, dy)
+    slopes = _limit_slopes(muscl.limiter, slopes, nb_slice, f_i, neighbor_fs, pg)
 
     # --- 4. Calculate Higher Derivatives ---
     # Dispatches based on muscl.order and ws type
     higher_derivatives = _calculate_higher_derivatives(muscl.order, nb_slice, neighbor_dfs, ws)
 
-    # --- 5. Store Final Derivatives ---
-    if isnan(slope_y) || isnan(slope_x) # Basic NaN check
-        error("Found NaN while calculating derivatives for particle $i!")
-    end
+    # # --- 5. Store Final Derivatives ---
+    # if isnan(slope_y) || isnan(slope_x) # Basic NaN check
+    #     error("Found NaN while calculating derivatives for particle $i!")
+    # end
     # Add checks for higher_derivatives if needed
 
     # Dispatches based on ws type
-    _save_derivatives!(ws, i, slope_x, slope_y, higher_derivatives)
+    _save_derivatives!(ws, i, slopes, higher_derivatives)
     return
 end
 
-# --- 4. Refactored 1D MUSCL Functor ---
-function (muscl::MUSCL{D,ORDER,L})(
-    particleGrid::ParticleGrid1D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector{<:Real}, 
-    eq::ScalarHyperbolicPDE, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
-)::Real where {D,ORDER<:MUSCLORDER,L<:AbstractSlopeLimiter}
+# --- In MUSCL.jl, replace the old 1D functor ---
+
+"""
+    (muscl::MUSCL{1, ORDER})(...)
+
+(1D Implementation) Calculates the divergence for a single particle `i`
+using pre-calculated slopes and neighbor data.
+"""
+function (muscl::MUSCL{1, ORDER})(
+    eq::ScalarHyperbolicPDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    neighbor_slice::UnitRange{Int}, # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid,               # Grid object (will be 1D)
+    f_neighbors::AbstractVector,    # View of neighbor f-values
+    df_neighbors::AbstractVector    # View of neighbor df-values (not used by functor)
+)::Real where {ORDER<:MUSCLORDER}
     
     div = 0.0
-    ws = muscl.workspace
-    neighbors_i = particleGrid.neighbour_indices[particleIndex]
+    # Assert that the workspace is the 1D abstract type
+    ws = muscl.workspace::MUSCLWorkspace1D 
+    nFlux = muscl.numericalFlux
     
-    # Retrieve the correct coefficients for the divergence sum based on order
-    div_coeffs = (ORDER == MUSCLORDER1) ? ws.alfaijs[particleIndex] : ws.alfaij_bars[particleIndex]
+    if pg.num_neighbors[i] == 0; return 0.0; end
 
-    for (index_in_list, nbIndex) in enumerate(neighbors_i)
-        deltaPos = getDistance(particleGrid, particleIndex, nbIndex)
+    # Get refs to global 1D buffers
+    dx = pg.neighbor_xdistance
+    nb_indices = pg.neighbor_indices
+
+    # 1D flux
+    fx = flux(eq, f_i)
+
+    # --- Select the correct coefficient buffer based on order ---
+    # This logic matches your previous 1D implementation and initGI! setup.
+    local div_coeffs
+    if ORDER == MUSCLORDER1
+        div_coeffs = ws.alfaij_bars # O1 divergence uses 1st deriv coeff
+    elseif ORDER == MUSCLORDER2
+        div_coeffs = ws.alfaij_bars # O2 divergence also uses 1st deriv coeff
+    elseif ORDER == MUSCLORDER3
+        div_coeffs = ws.alfaijs     # O3 divergence uses 3rd deriv coeff
+    else # ORDER4
+        div_coeffs = ws.alfaijs     # O4 div coeff (can be changed to gammaijs if needed)
+    end
+
+    # Loop over neighbors using the global index
+    @inbounds for k_global in neighbor_slice
         
-        fij, fji = reconstruct_interface_states(muscl.order, particleGrid, fVec, ws, particleIndex, nbIndex, deltaPos)
+        # Get data
+        nbIndex = nb_indices[k_global]
+        deltaPos = dx[k_global]
+        f_j = f_neighbors[k_global]
         
+        # Get pre-calculated coefficient from flat buffer
+        coeff = div_coeffs[k_global]
+        
+        # This call uses pre-calculated slopes/curves from the workspace
+        # It dispatches on ws's concrete type (e.g., MUSCLWorkspace1D2O)
+        fij, fji = reconstruct_interface_states(muscl.order, ws, f_i, f_j, i, nbIndex, deltaPos)
+
+        # 1D sortFlux
         fm, fp = sortFlux(fij, fji, deltaPos)
-        div += div_coeffs[index_in_list] * (muscl.numericalFlux(fm, fp, eq) - flux(eq, fVec[particleIndex]))
-    end
-
-    if setCurvature
- 
-       if ORDER == MUSCLORDER1
-            particleGrid.curvatures[particleIndex] = 0.0
-        else
-            betaij_i = ws.betaijs[particleIndex]
-            particleGrid.curvatures[particleIndex] = sum(betaij_i[k]*(fVec[nb_k] - fVec[particleIndex]) for (k, nb_k) in enumerate(neighbors_i))
-        end
+        
+        # 1D divergence sum
+        div += coeff * (nFlux(fm, fp, eq) - fx)
     end
     
+    # The factor of 2 is part of the 1D scheme derivation
     return 2 * div
 end
 

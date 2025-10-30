@@ -1,5 +1,130 @@
 # --- In MUSCL.jl ---
 
+# --- In MUSCLUtils.jl ---
+
+# --- _calculate_slopes (1D) ---
+
+"""
+(1D Order 1-4) Calculate only slope_x using alfaij_bar.
+Returns (slope_x, 0.0) to match the 2D signature.
+"""
+@inline function _calculate_slopes(
+    nb_slice::UnitRange{Int},
+    df_neighbors::AbstractVector,
+    ws::MUSCLWorkspace1D
+)
+    slope_x = 0.0
+    @inbounds for k in nb_slice
+        # 1D slope always comes from alfaij_bar (the c1 coefficient)
+        slope_x += ws.alfaij_bars[k] * df_neighbors[k]
+    end
+    return slope_x
+end
+
+# --- _calculate_higher_derivatives (1D) ---
+
+"""
+(1D Order 1) No higher derivatives. Returns empty tuple.
+"""
+@inline function _calculate_higher_derivatives(
+    ::MUSCLORDER1,
+    nb_slice::UnitRange{Int},
+    df_neighbors::AbstractVector,
+    ws::MUSCLWorkspace1D1O
+)
+    return () # Return empty tuple
+end
+
+"""
+(1D Order 2) Calculate curve_xx (betaij).
+"""
+@inline function _calculate_higher_derivatives(
+    ::MUSCLORDER2,
+    nb_slice::UnitRange{Int},
+    df_neighbors::AbstractVector,
+    ws::MUSCLWorkspace1D2O
+)
+    curve_xx = 0.0
+    @inbounds for k in nb_slice
+        curve_xx += ws.betaijs[k] * df_neighbors[k]
+    end
+    return (curve_xx,) # Return tuple (curve_xx,)
+end
+
+"""
+(1D Order 3) Calculate curve_xx (betaij) and d3f/dx3 (alfaij).
+"""
+@inline function _calculate_higher_derivatives(
+    ::MUSCLORDER3,
+    nb_slice::UnitRange{Int},
+    df_neighbors::AbstractVector,
+    ws::MUSCLWorkspace1D3O
+)
+    curve_xx = 0.0
+    d3fdx3 = 0.0
+    @inbounds for k in nb_slice
+        df = df_neighbors[k]
+        curve_xx += ws.betaijs[k] * df # Curve uses betaij
+        d3fdx3   += ws.alfaijs[k] * df # 3rd deriv uses alfaij
+    end
+    return (curve_xx, d3fdx3)
+end
+
+"""
+(1D Order 4) Calculate curve_xx, d3f/dx3, and d4f/dx4.
+"""
+@inline function _calculate_higher_derivatives(
+    ::MUSCLORDER4,
+    nb_slice::UnitRange{Int},
+    df_neighbors::AbstractVector,
+    ws::MUSCLWorkspace1D4O
+)
+    curve_xx = 0.0
+    d3fdx3 = 0.0
+    d4fdx4 = 0.0
+    @inbounds for k in nb_slice
+        df = df_neighbors[k]
+        curve_xx += ws.betaijs[k] * df # Curve uses betaij
+        d3fdx3   += ws.alfaijs[k] * df # 3rd deriv uses alfaij
+        d4fdx4   += ws.gammaijs[k]* df # 4th deriv uses gammaij
+    end
+    return (curve_xx, d3fdx3, d4fdx4)
+end
+
+
+# --- _save_derivatives! (1D) ---
+@inline function _save_derivatives!(
+    ws::MUSCLWorkspace1D1O, i::Int, slope_x::Real, higher_derivatives::Tuple{}
+)
+    ws.slopes[i] = slope_x
+    ws.curves_xx[i] = 0.
+end
+# --- _save_derivatives! (1D) ---
+@inline function _save_derivatives!(
+    ws::MUSCLWorkspace1D2O, i::Int, slope_x::Real, higher_derivatives
+)
+    curve_xx = higher_derivatives[1]
+    ws.slopes[i] = slope_x
+    ws.curves_xx[i] = curve_xx # Save curve_xx (even if 0.0 for O1)
+end
+
+@inline function _save_derivatives!(
+    ws::MUSCLWorkspace1D3O, i::Int, slope_x::Real, higher_derivatives
+)
+    ws.slopes[i] = slope_x
+    ws.curves_xx[i] = higher_derivatives[1]
+    ws.d3fdx3[i] = higher_derivatives[2]
+end
+
+@inline function _save_derivatives!(
+    ws::MUSCLWorkspace1D4O, i::Int, slope_x::Real, higher_derivatives
+)
+    ws.slopes[i] = slope_x
+    ws.curves_xx[i] = higher_derivatives[1]
+    ws.d3fdx3[i] = higher_derivatives[2]
+    ws.d4fdx4[i] = higher_derivatives[3]
+end
+
 """
 Calculates the unlimited slopes for a single particle.
 This is the internal logic from the old `calculate_slopes!(::MUSCLORDER1, ...)`
@@ -7,9 +132,10 @@ This is the internal logic from the old `calculate_slopes!(::MUSCLORDER1, ...)`
 function _calculate_slopes(
     nb_slice::UnitRange{Int64},
     df_neighbors::AbstractVector,   # View of neighbor df-values
-    alfaij::AbstractVector, # View of alfaij coefficients
-    betaij::AbstractVector  # View of betaij coefficients
+    ws::MUSCLWorkspace2D
 )
+    alfaij = ws.alfaijs
+    betaij = ws.betaijs
     slope_x = 0.0
     slope_y = 0.0
     @inbounds for k in nb_slice
@@ -23,7 +149,7 @@ end
 """
 (Order 1) No higher derivatives to calculate.
 """
-@inline function _calculate_higher_derivatives(::MUSCLORDER1, nb_slice, df_neighbors, ws)
+@inline function _calculate_higher_derivatives(::MUSCLORDER1, nb_slice, df_neighbors, ws::MUSCLWorkspace2D1O)
     return () # Return empty tuple
 end
 
@@ -58,11 +184,11 @@ end
 @inline function _save_derivatives!(
     ws::MUSCLWorkspace2D1O, # Dispatches on O1 workspace
     i::Int,
-    slope_x::Real, slope_y::Real,
+    slopes::NTuple{2,Real},
     higher_derivatives::Tuple{} # Expects empty tuple
 )
-    ws.slopes_x[i] = slope_x
-    ws.slopes_y[i] = slope_y
+    ws.slopes_x[i] = slopes[1]
+    ws.slopes_y[i] = slopes[2]
 end
 
 """
@@ -71,11 +197,11 @@ end
 @inline function _save_derivatives!(
     ws::MUSCLWorkspace2D2O, # Dispatches on O2 workspace
     i::Int,
-    slope_x::Real, slope_y::Real,
+    slopes::NTuple{2,Real},
     higher_derivatives::NTuple{3, Real} # Expects (cxx, cyy, cxy)
 )
-    ws.slopes_x[i]  = slope_x
-    ws.slopes_y[i]  = slope_y
+    ws.slopes_x[i]  = slopes[1]
+    ws.slopes_y[i]  = slopes[2]
     ws.curves_xx[i] = higher_derivatives[1]
     ws.curves_yy[i] = higher_derivatives[2]
     ws.curves_xy[i] = higher_derivatives[3]
@@ -115,47 +241,71 @@ function reconstruct_interface_states(::MUSCLORDER2, ws::MUSCLWorkspace2D2O, f_i
     
     return fij, fji
 end
+# --- In MUSCLUtils.jl, replace all 1D reconstruct_interface_states ---
 
-function reconstruct_interface_states(::MUSCLORDER1, particleGrid, fVec, ws, p_idx, nb_idx, deltaPos)
-    fij = fVec[p_idx] + 0.5 * deltaPos * ws.slopes[p_idx]
-    fji = fVec[nb_idx] - 0.5 * deltaPos * ws.slopes[nb_idx]
+# --- Reconstruction Helpers for fij and fji (1D) ---
+
+function reconstruct_interface_states(::MUSCLORDER1, ws::MUSCLWorkspace1D1O, f_i, f_j, p_idx, nb_idx, deltaPos)
+    fij = f_i + 0.5 * deltaPos * ws.slopes[p_idx]
+    fji = f_j - 0.5 * deltaPos * ws.slopes[nb_idx]
     return fij, fji
 end
 
-function reconstruct_interface_states(::MUSCLORDER2, particleGrid, fVec, ws, p_idx, nb_idx, deltaPos)
-    neighbors_i = particleGrid.neighbour_indices[p_idx]
-    neighbors_j = particleGrid.neighbour_indices[nb_idx]
+function reconstruct_interface_states(::MUSCLORDER2, ws::MUSCLWorkspace1D2O, f_i, f_j, p_idx, nb_idx, deltaPos)
+    # Read pre-calculated derivatives
+    slope_i = ws.slopes[p_idx]
+    curve_i = ws.curves_xx[p_idx]
+    slope_j = ws.slopes[nb_idx]
+    curve_j = ws.curves_xx[nb_idx]
+
+    # Taylor expansion
+    h = 0.5 * deltaPos
+    h2 = h*h
+    fij = f_i + h * slope_i + 0.5 * h2 * curve_i
+    fji = f_j - h * slope_j + 0.5 * h2 * curve_j
     
-    recon_i = sum((deltaPos*ws.alfaij_bars[p_idx][k]/2 + (deltaPos^2)*ws.betaijs[p_idx][k]/8)*(fVec[nb_k] - fVec[p_idx]) for (k, nb_k) in enumerate(neighbors_i))
-    recon_j = sum((-deltaPos*ws.alfaij_bars[nb_idx][k]/2 + (deltaPos^2)*ws.betaijs[nb_idx][k]/8)*(fVec[nb_k] - fVec[nb_idx]) for (k, nb_k) in enumerate(neighbors_j))
-    
- 
-   fij = fVec[p_idx] + recon_i
-    fji = fVec[nb_idx] + recon_j
     return fij, fji
 end
 
-function reconstruct_interface_states(::MUSCLORDER3, particleGrid, fVec, ws, p_idx, nb_idx, deltaPos)
-    neighbors_i = particleGrid.neighbour_indices[p_idx]
-    neighbors_j = particleGrid.neighbour_indices[nb_idx]
-    
-    recon_i = sum((deltaPos*ws.alfaij_bars[p_idx][k]/2 + (deltaPos^2)*ws.betaijs[p_idx][k]/8 + (deltaPos^3)*ws.alfaijs[p_idx][k]/48)*(fVec[nb_k] - fVec[p_idx]) for (k, nb_k) in enumerate(neighbors_i))
-    recon_j = sum((-deltaPos*ws.alfaij_bars[nb_idx][k]/2 + (deltaPos^2)*ws.betaijs[nb_idx][k]/8 - (deltaPos^3)*ws.alfaijs[nb_idx][k]/48)*(fVec[nb_k] - fVec[nb_idx]) for (k, nb_k) in enumerate(neighbors_j))
+function reconstruct_interface_states(::MUSCLORDER3, ws::MUSCLWorkspace1D3O, f_i, f_j, p_idx, nb_idx, deltaPos)
+    # Read pre-calculated derivatives
+    slope_i = ws.slopes[p_idx]
+    curve_i = ws.curves_xx[p_idx]
+    d3_i    = ws.d3fdx3[p_idx]
+    slope_j = ws.slopes[nb_idx]
+    curve_j = ws.curves_xx[nb_idx]
+    d3_j    = ws.d3fdx3[nb_idx]
 
-    fij = fVec[p_idx] + recon_i
-    fji = fVec[nb_idx] + recon_j
-    return fij, 
-fji
+    h = 0.5 * deltaPos
+    h2 = h*h
+    h3 = h2*h
+    
+    # 3rd order Taylor expansion
+    fij = f_i + h * slope_i + 0.5 * h2 * curve_i + (1.0/6.0) * h3 * d3_i
+    fji = f_j - h * slope_j + 0.5 * h2 * curve_j - (1.0/6.0) * h3 * d3_j
+    
+    return fij, fji
 end
 
-function reconstruct_interface_states(::MUSCLORDER4, particleGrid, fVec, ws, p_idx, nb_idx, deltaPos)
-    neighbors_i = particleGrid.neighbour_indices[p_idx]
-    neighbors_j = particleGrid.neighbour_indices[nb_idx]
-    
-    recon_i = sum((deltaPos*ws.alfaij_bars[p_idx][k]/2 + (deltaPos^2)*ws.betaijs[p_idx][k]/8 + (deltaPos^3)*ws.alfaijs[p_idx][k]/48 + (deltaPos^4)*ws.gammaijs[p_idx][k]/384)*(fVec[nb_k] - fVec[p_idx]) for (k, nb_k) in enumerate(neighbors_i))
-    recon_j = sum((-deltaPos*ws.alfaij_bars[nb_idx][k]/2 + (deltaPos^2)*ws.betaijs[nb_idx][k]/8 - (deltaPos^3)*ws.alfaijs[nb_idx][k]/48 + (deltaPos^4)*ws.gammaijs[nb_idx][k]/384)*(fVec[nb_k] - fVec[nb_idx]) for (k, nb_k) in enumerate(neighbors_j))
+function reconstruct_interface_states(::MUSCLORDER4, ws::MUSCLWorkspace1D4O, f_i, f_j, p_idx, nb_idx, deltaPos)
+    # Read pre-calculated derivatives
+    slope_i = ws.slopes[p_idx]
+    curve_i = ws.curves_xx[p_idx]
+    d3_i    = ws.d3fdx3[p_idx]
+    d4_i    = ws.d4fdx4[p_idx]
+    slope_j = ws.slopes[nb_idx]
+    curve_j = ws.curves_xx[nb_idx]
+    d3_j    = ws.d3fdx3[nb_idx]
+    d4_j    = ws.d4fdx4[nb_idx]
 
-    fij = fVec[p_idx] + recon_i
-    fji = fVec[nb_idx] + recon_j
+    h = 0.5 * deltaPos
+    h2 = h*h
+    h3 = h2*h
+    h4 = h3*h
+    
+    # 4th order Taylor expansion
+    fij = f_i + h * slope_i + 0.5 * h2 * curve_i + (1.0/6.0) * h3 * d3_i + (1.0/24.0) * h4 * d4_i
+    fji = f_j - h * slope_j + 0.5 * h2 * curve_j - (1.0/6.0) * h3 * d3_j + (1.0/24.0) * h4 * d4_j
+    
     return fij, fji
 end
