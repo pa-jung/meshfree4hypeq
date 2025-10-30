@@ -49,7 +49,7 @@ function check_for_nans(s::Any; range::Union{UnitRange, Nothing}=nothing, counte
         
         # Safety check to prevent BoundsError if the provided range is too large.
         if last(check_range) > length(field_value)
-            println("Warning: Skipping field `:$field_name` in check_for_nans because the provided range is out of bounds.")
+            #println("Warning: Skipping field `:$field_name` in check_for_nans because the provided range is out of bounds.")
             continue
         end
 
@@ -88,4 +88,26 @@ function check_for_nans(s::Any; range::Union{UnitRange, Nothing}=nothing, counte
     end
 
     return nothing
+end
+
+"""
+    zero_vector_fields!(s)
+
+Iterates over all fields of a struct `s`. If a field is an `AbstractVector`,
+it fills that vector with zeros. This is useful for clearing workspace
+arrays for debugging.
+"""
+function zero_vector_fields!(s)
+    for name in fieldnames(typeof(s))
+        field = getfield(s, name)
+        
+        # Check if the field is a subtype of AbstractVector
+        if field isa AbstractVector
+            # Get the element type of the vector (e.g., Float64)
+            # and fill with the zero() of that type (e.g., 0.0)
+            fill_value = zero(eltype(field))
+            fill!(field, fill_value)
+        end
+    end
+    return s # Return the modified struct
 end

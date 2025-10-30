@@ -79,25 +79,38 @@ end
 
 """
 Workspace for 1D, 3rd Order MUSCL.
+[cite: 9] Includes thread-local buffers for stable QR decomposition.
 """
 struct MUSCLWorkspace1D3O <: MUSCLWorkspace1D
     # --- Coeffs ---
-    alfaijs::Vector{Float64}     # for d3
-    alfaij_bars::Vector{Float64} # for d1
-    betaijs::Vector{Float64}     # for d2
+    alfaijs::Vector{Float64}     # for d3 [cite: 9]
+    alfaij_bars::Vector{Float64} # for d1 [cite: 9]
+    betaijs::Vector{Float64}     # for d2 [cite: 9]
     
     # --- Derivatives ---
     slopes::Vector{Float64}
     curves_xx::Vector{Float64}
-    d3fdx3::Vector{Float64} # Field for 3rd derivative
+    d3fdx3::Vector{Float64}
+
+    # --- Thread-Local Temporary Buffers (for MGS QR) ---
+    # One M x 3 matrix per thread
+    #thread_Q_buffers::Vector{Matrix{Float64}} 
 
     function MUSCLWorkspace1D3O(
         initial_particle_cap::Int = 100, 
-        initial_flat_cap::Int = 1000
+        initial_flat_cap::Int = 1000,
+        initial_neighbor_cap::Int = 30 # Max neighbors for temp buffer
     )
+        # # Create one Q_buffer for each thread
+        # n_threads = Threads.nthreads()
+        # thread_Q_buffers = [
+        #     zeros(Float64, initial_neighbor_cap, 3) for _ in 1:n_threads
+        # ]
+
         new(
-            zeros(initial_flat_cap), zeros(initial_flat_cap), zeros(initial_flat_cap),
-            zeros(initial_particle_cap), zeros(initial_particle_cap), zeros(initial_particle_cap)
+            zeros(initial_flat_cap), zeros(initial_flat_cap), zeros(initial_flat_cap), # [cite: 10]
+            zeros(initial_particle_cap), zeros(initial_particle_cap), zeros(initial_particle_cap), # [cite: 10]
+            #thread_Q_buffers
         )
     end
 end
@@ -453,12 +466,26 @@ function initGIBuffers!(ws::MUSCLWorkspace1D3O, pg::ParticleGrid1D)
     N = pg.N
     M = length(pg.neighbor_indices)
     
+    # --- Resize derivative and coefficient buffers (as before) ---
     if length(ws.slopes) < N
         resize!.((ws.slopes, ws.curves_xx, ws.d3fdx3), N)
     end
     if length(ws.alfaijs) < M
         resize!.((ws.alfaijs, ws.alfaij_bars, ws.betaijs), M)
     end
+
+    # # --- NEW: Resize thread-local buffers based on max_nb ---
+    # max_nb = pg.max_nb 
+    
+    # # Check if the *current* buffers are inadequately sized
+    # if size(ws.thread_Q_buffers[1], 1) < max_nb
+    #     # Re-allocate all thread-local buffers to the new, correct size
+    #     for tid in 1:Threads.nthreads()
+    #         # Note: This allocates, but only *once* per simulation setup,
+    #         # not inside the time-stepping loop.
+    #         ws.thread_Q_buffers[tid] = zeros(Float64, max_nb, 3)
+    #     end
+    # end
 end
 
 function initGIBuffers!(ws::MUSCLWorkspace1D4O, pg::ParticleGrid1D)
@@ -496,9 +523,9 @@ function initGI!(
     neighbor_dfs::AbstractVector    # The flat neighbor-difference buffer
 ) where D
     ws = muscl.workspace # ws will be MUSCLWorkspace2D1O or MUSCLWorkspace2D2O
+    
     nb_slice = getNBSlice(pg, i)
     num_nb = length(nb_slice)
-
     # --- Handle zero-neighbor case ---
     if num_nb == 0
         _zero_coeffs!(nb_slice, ws) # Zero coefficients
@@ -511,24 +538,18 @@ function initGI!(
     # --- 1. Compute Coefficients ---
     # Dispatches based on muscl.order AND ws type implicitly
     _compute_coeffs!(muscl.order, nb_slice, ws, pg)
-
     slopes = _calculate_slopes(nb_slice, neighbor_dfs, ws)
     # --- 3. Limit Slopes ---
     # (Uses the existing _limit_slopes helpers)
     slopes = _limit_slopes(muscl.limiter, slopes, nb_slice, f_i, neighbor_fs, pg)
-
     # --- 4. Calculate Higher Derivatives ---
     # Dispatches based on muscl.order and ws type
     higher_derivatives = _calculate_higher_derivatives(muscl.order, nb_slice, neighbor_dfs, ws)
+    
 
-    # # --- 5. Store Final Derivatives ---
-    # if isnan(slope_y) || isnan(slope_x) # Basic NaN check
-    #     error("Found NaN while calculating derivatives for particle $i!")
-    # end
-    # Add checks for higher_derivatives if needed
-
+    # # --- 5. Store Final Derivatives --
     # Dispatches based on ws type
-    _save_derivatives!(ws, i, slopes, higher_derivatives)
+    _save_derivatives!(ws, i, slopes, higher_derivatives) 
     return
 end
 
@@ -564,19 +585,6 @@ function (muscl::MUSCL{1, ORDER})(
     # 1D flux
     fx = flux(eq, f_i)
 
-    # --- Select the correct coefficient buffer based on order ---
-    # This logic matches your previous 1D implementation and initGI! setup.
-    local div_coeffs
-    if ORDER == MUSCLORDER1
-        div_coeffs = ws.alfaij_bars # O1 divergence uses 1st deriv coeff
-    elseif ORDER == MUSCLORDER2
-        div_coeffs = ws.alfaij_bars # O2 divergence also uses 1st deriv coeff
-    elseif ORDER == MUSCLORDER3
-        div_coeffs = ws.alfaijs     # O3 divergence uses 3rd deriv coeff
-    else # ORDER4
-        div_coeffs = ws.alfaijs     # O4 div coeff (can be changed to gammaijs if needed)
-    end
-
     # Loop over neighbors using the global index
     @inbounds for k_global in neighbor_slice
         
@@ -586,7 +594,7 @@ function (muscl::MUSCL{1, ORDER})(
         f_j = f_neighbors[k_global]
         
         # Get pre-calculated coefficient from flat buffer
-        coeff = div_coeffs[k_global]
+        coeff = ws.alfaij_bars[k_global]
         
         # This call uses pre-calculated slopes/curves from the workspace
         # It dispatches on ws's concrete type (e.g., MUSCLWorkspace1D2O)

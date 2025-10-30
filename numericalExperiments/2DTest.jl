@@ -41,18 +41,18 @@ function main()
 
     params = ParamDict(
         # --- Shared Parameters ---
-        "tmax" => 100.,
-        "N" => 500,
+        "tmax" => 1000.,
+        "N" => 1000,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "CFL" => .2,
-        #"dt" => .25,
+        #"dt" => .001,
         "snapshots" => 20,
         "interp_alpha" => 1.0,
         "interp_range" => 3.5,
-        "init_func" => "box", # Using the unified struct
-        #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
-        "init_params" => (0.,1.,-2.,2.),
+        "init_func" => "gauss", # Using the unified struct
+        "init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
+        #"init_params" => (0.,1.,-2.,2.),
         "randomness_factor" => 0.2, # (x_rand_factor, y_rand_factor)
         "SEED_value" => 42,
         "PDE" => "linear",
@@ -62,11 +62,11 @@ function main()
         "sim_function" => "runScalarSimulation",
 
         # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
-        "timestepper" => "RalstonRK2",
+        "timestepper" => "RK4",
         "main_gradient" => "MUSCL",
         "fallback_gradient" => "Upwind",
         "fallback_flux" => "Rusanov",
-        "order" =>5,
+        "order" =>4,
         "main_flux" => "Rusanov",
         #"limiter" => "minmod",
         #"MOOD" => "U1", "delta_relax" => 0. # No MOOD for this run

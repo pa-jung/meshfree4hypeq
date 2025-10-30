@@ -186,7 +186,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
             elseif timestepper_name == "RK3"; method = RK3(MainGrad; fallbackInterpolator = FallbackGrad, mood = mood_fun)
-            elseif timestepper_name == "RK4"; method = RK4(MainGrad; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+            elseif timestepper_name == "RK4"; method = RK4(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "LF"; method = LaxFriedrich()
             elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(; mood = mood_fun)
             elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(MainFlux)

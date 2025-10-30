@@ -278,9 +278,16 @@ struct RK4{G1, G2, MOOD} <: MeshfreeTimeStepper
     k3::Vector{Float64} # Stores divergence from stage 3
     k4::Vector{Float64} # Stores divergence from stage 4
 
+    # --- Buffers for efficient calculations (like in RK2) ---
+    neighbor_fs::Vector{Float64}
+    neighbor_dfs::Vector{Float64}
+
     function RK4(grad::G1, fallback::G2, mood::M) where {G1, G2, M}
-        # Initialize with empty buffers; they will be resized on the first call
-        new{G1, G2, M}(grad, fallback, mood, Float64[], Float64[], Float64[], Float64[], Float64[], Float64[])
+        new{G1, G2, M}(grad, fallback, mood, 
+            Float64[], Float64[], # rho_n, rho_stage
+            Float64[], Float64[], Float64[], Float64[], # k1-k4
+            Float64[], Float64[]  # neighbor_fs, neighbor_dfs
+        )
     end
 end
 
@@ -289,87 +296,191 @@ function RK4(gradientInterpolator::G1; fallbackInterpolator::G2 = NoFallbackGrad
     RK4(gradientInterpolator, fallbackInterpolator, mood)
 end
 
-function initTimeStepper(rk4::RK4, particleGrid::ParticleGrid, settings::SimSetting)
-    initTimeStep(rk4.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
-    if !(rk4.fallbackInterpolator isa NoFallbackGrad)
-        initTimeStep(rk4.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
-    end
+function initAddTSBuffer!(rk4::RK4, pg::ParticleGrid)
+    num_particles = length(pg.num_neighbors) 
+    _ensure_capacity!(rk4.rho_n, num_particles)
+    _ensure_capacity!(rk4.rho_stage, num_particles)
+    _ensure_capacity!(rk4.k1, num_particles)
+    _ensure_capacity!(rk4.k2, num_particles)
+    _ensure_capacity!(rk4.k3, num_particles)
+    _ensure_capacity!(rk4.k4, num_particles)
 end
-
 function (rk4::RK4)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
-    #initMOOD!(rk4.mood,particleGrid.max_volume)
-    # --- Ensure buffers are correctly sized for the current grid ---
-    if length(rk4.rho_n) != N
-        resize!.((rk4.rho_n, rk4.rho_stage, rk4.k1, rk4.k2, rk4.k3, rk4.k4), N)
+    
+    # --- Define chunks for parallel loops ---
+    chunk_size = 50 # Or any value you prefer
+    chunks = collect(Iterators.partition(1:N, chunk_size))
+
+    # ==================================================================
+    # --- Stage 1: Calculate k1 = div(u^n) ---
+    # ==================================================================
+    
+    # 1.1: Init Buffers for Stage 1
+    initGIBuffers!(rk4.gradientInterpolator, particleGrid)
+    initGIBuffers!(rk4.fallbackInterpolator, particleGrid)
+    initTSBuffer!(rk4, particleGrid) # Resizes neighbor_fs/dfs and k1-k4 etc.
+    # --- Store Initial State ---
+    rk4.rho_n[1:N] .= particleGrid.rhos
+
+    # 1.2: Threaded loop to calculate slopes/coefficients
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            fi = rk4.rho_n[p_idx]
+            initFs!(rk4, p_idx, fi, rk4.rho_n, particleGrid)
+            initGI!(rk4.gradientInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            initGI!(rk4.fallbackInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+        end
     end
+    
+    # 1.3: Threaded loop to calculate k1 (divergence)
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            if particleGrid.is_boundary[p_idx]; continue; end
 
-    interior = particleGrid.interior_indices
-    rk4.rho_n .= particleGrid.rhos # Store u^n
-    apply_boundary_conditions!(particleGrid)
-    # --- Stage 1: Calculate k1 = -div(u^n) ---
-    initTimeStep(rk4.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
-    if !(rk4.fallbackInterpolator isa NoFallbackGrad); initTimeStep(rk4.fallbackInterpolator, particleGrid, settings.interpAlpha, settings.interpRange); end
-
-    for p_idx in interior
-        rk4.k1[p_idx] = rk4.gradientInterpolator(particleGrid, p_idx, rk4.rho_n, eq, settings)
-        
-        # MOOD check is for the candidate solution of the *next* stage
-        rho_candidate = rk4.rho_n[p_idx] - 0.5 * dt * rk4.k1[p_idx]
-        if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(particleGrid, p_idx, rk4.rho_n, rho_candidate; firstStage=true)
-            rk4.k1[p_idx] = rk4.fallbackInterpolator(particleGrid, p_idx, rk4.rho_n, eq, settings; setCurvature=false)
+            fi = rk4.rho_n[p_idx]
+            nb_slice = getNBSlice(particleGrid, p_idx)
+            
+            k1_val = rk4.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            
+            rho_candidate = rk4.rho_n[p_idx] - 0.5 * dt * k1_val # u^(1) candidate
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.rho_n)
+                k1_val = rk4.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            end
+            rk4.k1[p_idx] = k1_val
         end
     end
 
-    # --- Stage 2: Calculate k2 = -div(u^n + 0.5*dt*k1) ---
+    # 1.4: Compute intermediate state u^(1) and apply BCs
     @. rk4.rho_stage = rk4.rho_n - 0.5 * dt * rk4.k1
-    particleGrid.rhos[interior] .= @view rk4.rho_stage[interior]
-    apply_boundary_conditions!(particleGrid)
-    rk4.rho_stage .= particleGrid.rhos # Update buffer with correct ghosts
+    apply_boundary_conditions!(particleGrid, rk4.rho_stage)
 
-    initTimeStep(rk4.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
-    for p_idx in interior
-        rk4.k2[p_idx] = rk4.gradientInterpolator(particleGrid, p_idx, rk4.rho_stage, eq, settings)
-        rho_candidate = rk4.rho_n[p_idx] - 0.5 * dt * rk4.k2[p_idx]
-        if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(particleGrid, p_idx, rk4.rho_stage, rho_candidate)
-            rk4.k2[p_idx] = rk4.fallbackInterpolator(particleGrid, p_idx, rk4.rho_stage, eq, settings; setCurvature=false)
+    # ==================================================================
+    # --- Stage 2: Calculate k2 = div(u^(1)) ---
+    # ==================================================================
+    
+    # 2.1: Init Buffers for Stage 2
+    initGIBuffers!(rk4.gradientInterpolator, particleGrid)
+    initGIBuffers!(rk4.fallbackInterpolator, particleGrid)
+    initTSBuffer!(rk4, particleGrid)
+
+    # 2.2: Threaded loop to calculate slopes/coefficients (using u^(1))
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            fi = rk4.rho_stage[p_idx] # <-- Use u^(1) from rho_stage
+            initFs!(rk4, p_idx, fi, rk4.rho_stage, particleGrid)
+            initGI!(rk4.gradientInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            initGI!(rk4.fallbackInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+        end
+    end
+    
+    # 2.3: Threaded loop to calculate k2 (divergence)
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            if particleGrid.is_boundary[p_idx]; continue; end
+
+            fi = rk4.rho_stage[p_idx] # <-- Use u^(1)
+            nb_slice = getNBSlice(particleGrid, p_idx)
+            
+            k2_val = rk4.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            
+            rho_candidate = rk4.rho_n[p_idx] - 0.5 * dt * k2_val # u^(2) candidate
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.rho_stage)
+                k2_val = rk4.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            end
+            rk4.k2[p_idx] = k2_val
         end
     end
 
-    # --- Stage 3: Calculate k3 = -div(u^n + 0.5*dt*k2) ---
-    @. rk4.rho_stage = rk4.rho_n - 0.5 * dt * rk4.k2
-    particleGrid.rhos[interior] .= @view rk4.rho_stage[interior]
-    apply_boundary_conditions!(particleGrid)
-    rk4.rho_stage .= particleGrid.rhos
+    # 2.4: Compute intermediate state u^(2) and apply BCs
+    @. rk4.rho_stage = rk4.rho_n - 0.5 * dt * rk4.k2 # Overwrite rho_stage
+    apply_boundary_conditions!(particleGrid, rk4.rho_stage)
 
-    initTimeStep(rk4.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
-    for p_idx in interior
-        rk4.k3[p_idx] = rk4.gradientInterpolator(particleGrid, p_idx, rk4.rho_stage, eq, settings)
-        rho_candidate = rk4.rho_n[p_idx] - dt * rk4.k3[p_idx]
-        if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(particleGrid, p_idx, rk4.rho_stage, rho_candidate)
-            rk4.k3[p_idx] = rk4.fallbackInterpolator(particleGrid, p_idx, rk4.rho_stage, eq, settings; setCurvature=false)
+    # ==================================================================
+    # --- Stage 3: Calculate k3 = div(u^(2)) ---
+    # ==================================================================
+    
+    # 3.1: Init Buffers for Stage 3
+    initGIBuffers!(rk4.gradientInterpolator, particleGrid)
+    initGIBuffers!(rk4.fallbackInterpolator, particleGrid)
+    initTSBuffer!(rk4, particleGrid)
+
+    # 3.2: Threaded loop to calculate slopes/coefficients (using u^(2))
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            fi = rk4.rho_stage[p_idx] # <-- Use u^(2) from rho_stage
+            initFs!(rk4, p_idx, fi, rk4.rho_stage, particleGrid)
+            initGI!(rk4.gradientInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            initGI!(rk4.fallbackInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+        end
+    end
+    
+    # 3.3: Threaded loop to calculate k3 (divergence)
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            if particleGrid.is_boundary[p_idx]; continue; end
+
+            fi = rk4.rho_stage[p_idx] # <-- Use u^(2)
+            nb_slice = getNBSlice(particleGrid, p_idx)
+            
+            k3_val = rk4.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            
+            rho_candidate = rk4.rho_n[p_idx] - dt * k3_val # u^(3) candidate
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.rho_stage)
+                k3_val = rk4.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            end
+            rk4.k3[p_idx] = k3_val
         end
     end
 
-    # --- Stage 4: Calculate k4 = -div(u^n + dt*k3) ---
-    @. rk4.rho_stage = rk4.rho_n - dt * rk4.k3
-    particleGrid.rhos[interior] .= @view rk4.rho_stage[interior]
-    apply_boundary_conditions!(particleGrid)
-    rk4.rho_stage .= particleGrid.rhos
+    # 3.4: Compute intermediate state u^(3) and apply BCs
+    @. rk4.rho_stage = rk4.rho_n - dt * rk4.k3 # Overwrite rho_stage
+    apply_boundary_conditions!(particleGrid, rk4.rho_stage)
 
-    initTimeStep(rk4.gradientInterpolator, particleGrid, settings.interpAlpha, settings.interpRange)
-    for p_idx in interior
-        rk4.k4[p_idx] = rk4.gradientInterpolator(particleGrid, p_idx, rk4.rho_stage, eq, settings)
-        # Final MOOD check
-        rho_final = rk4.rho_n[p_idx] - (dt/6) * (rk4.k1[p_idx] + 2*rk4.k2[p_idx] + 2*rk4.k3[p_idx] + rk4.k4[p_idx])
-        if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(particleGrid, p_idx, rk4.rho_stage, rho_final)
-            # If the final step fails, a common fallback is to take a first-order Euler step
-            # using the final stage's divergence (k4). This is a robust choice.
-            particleGrid.rhos[p_idx] = rk4.rho_stage[p_idx] - dt * rk4.k4[p_idx]
-        else
-            particleGrid.rhos[p_idx] = rho_final
+    # ==================================================================
+    # --- Stage 4: Calculate k4 = div(u^(3)) and Final Solution ---
+    # ==================================================================
+    
+    # 4.1: Init Buffers for Stage 4
+    initGIBuffers!(rk4.gradientInterpolator, particleGrid)
+    initGIBuffers!(rk4.fallbackInterpolator, particleGrid)
+    initTSBuffer!(rk4, particleGrid)
+
+    # 4.2: Threaded loop to calculate slopes/coefficients (using u^(3))
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            fi = rk4.rho_stage[p_idx] # <-- Use u^(3) from rho_stage
+            initFs!(rk4, p_idx, fi, rk4.rho_stage, particleGrid)
+            initGI!(rk4.gradientInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            initGI!(rk4.fallbackInterpolator, p_idx, fi, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
         end
     end
+    
+    # 4.3: Threaded loop to calculate k4 and Final Solution
+    Threads.@threads for particle_range in chunks
+        for p_idx in particle_range
+            if particleGrid.is_boundary[p_idx]; continue; end
+
+            fi = rk4.rho_stage[p_idx] # <-- Use u^(3)
+            nb_slice = getNBSlice(particleGrid, p_idx)
+            
+            k4_val = rk4.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
+            rk4.k4[p_idx] = k4_val # Store k4
+            
+            rho_final = rk4.rho_n[p_idx] - (dt/6) * (rk4.k1[p_idx] + 2*rk4.k2[p_idx] + 2*rk4.k3[p_idx] + k4_val)
+            
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, rk4.rho_stage)
+                # Fallback to Euler step using u^(3) and k4
+                particleGrid.rhos[p_idx] = rk4.rho_stage[p_idx] - dt * rk4.k4[p_idx]
+            else
+                particleGrid.rhos[p_idx] = rho_final
+            end
+        end
+    end
+
+    # 4.4: Final Boundary Condition Application
+    apply_boundary_conditions!(particleGrid, particleGrid.rhos)
+    
 end
 
 
@@ -412,14 +523,37 @@ function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid)
     updateNeighbors!(particleGrid)
 end
 
+"""
+    zero_vector_fields!(s)
+
+Iterates over all fields of a struct `s`. If a field is an `AbstractVector`,
+it fills that vector with zeros. This is useful for clearing workspace
+arrays for debugging.
+"""
+function zero_vector_fields!(s)
+    for name in fieldnames(typeof(s))
+        field = getfield(s, name)
+        
+        # Check if the field is a subtype of AbstractVector
+        if field isa AbstractVector
+            # Get the element type of the vector (e.g., Float64)
+            # and fill with the zero() of that type (e.g., 0.0)
+            fill_value = zero(eltype(field))
+            fill!(field, fill_value)
+        end
+    end
+    return s # Return the modified struct
+end
+
 function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
     #initTS!(ralston.particleGrid)
     # --- Resize buffers only if necessary, using N ---
-    counter = Atomic{Int}(0)
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
     initGIBuffers!(ralston.fallbackInterpolator, particleGrid)
     initTSBuffer!(ralston, particleGrid)
+    #zero_vector_fields!(ralston.gradientInterpolator)
+    #zero_vector_fields!(ralston.gradientInterpolator.workspace)
 
 
     # --- First RK Stage ---
@@ -469,13 +603,16 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
     initGIBuffers!(ralston.fallbackInterpolator, particleGrid)
     initTSBuffer!(ralston, particleGrid)
-
+    #zero_vector_fields!(ralston.gradientInterpolator)
+    #zero_vector_fields!(ralston.gradientInterpolator.workspace)
+    if any(isnan,ralston.rhos); error("TEST") end
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
     Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             fi = ralston.rhos[p_idx]
             initFs!(ralston, p_idx, fi, ralston.rhos, particleGrid)
-            initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            if any(isnan,ralston.rhos); error("TEST2") end
+            initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs) # ERROR IS HERE
             initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
         end
     end
