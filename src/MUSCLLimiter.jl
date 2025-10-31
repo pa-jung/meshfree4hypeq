@@ -31,20 +31,29 @@ function venkatakrishnan_psi(r::Real)::Float64
 end
 
 """
-    find_closest_lr_neighbors_1D(particleGrid, p_idx, fVec)
+    find_closest_lr_neighbors_1D(nb_slice, dx_global, f_neighbors_global)
 
-Finds the closest neighbor to the left and right of a given particle `p_idx`.
-Optimized to work with the "Struct of Arrays" grid layout.
+Finds the closest neighbor to the left and right of a particle,
+using the pre-calculated flat neighbor arrays.
+
+# Arguments
+- `nb_slice::UnitRange{Int}`: The slice into the global flat arrays
+  corresponding to the particle's neighbors.
+- `dx_global::AbstractVector`: The global flat array of signed
+  x-distances (e.g., `pg.neighbor_xdistance`).
+- `f_neighbors_global::AbstractVector`: The global flat array of
+  pre-gathered neighbor values (e.g., `ts.neighbor_fs`).
+
 # Returns
 - `(val_L, dist_L, val_R, dist_R)`: The solution value and signed distance for the
   closest left and right neighbors.
-Returns `0.0` for values and distances if a 
+- Returns `0.0` for values and distances if a 
   neighbor is not found on a given side.
 """
 function find_closest_lr_neighbors_1D(
-    particleGrid::ParticleGrid1D, 
-    p_idx::Integer, 
-    fVec::AbstractVector
+    nb_slice::UnitRange{Int},
+    dx_global::AbstractVector,
+    f_neighbors_global::AbstractVector
 )
     # Initialize return values
     val_L, dist_L = 0.0, 0.0
@@ -54,26 +63,23 @@ function find_closest_lr_neighbors_1D(
     min_abs_dist_L = Inf
     min_dist_R = Inf
 
-    # Access the neighbor list directly from the grid's SoA field
-    for nb_idx in particleGrid.neighbour_indices[p_idx]
-        dx_ij = getDistance(particleGrid, p_idx, nb_idx)
+    # Access the neighbor data directly from the flat global arrays
+    @inbounds for k in nb_slice
+        dx_ij = dx_global[k]
 
-   
-     if dx_ij > 1e-9 # Potential right neighbor
+        if dx_ij > 1e-9 # Potential right neighbor
             if dx_ij < min_dist_R
                 min_dist_R = dx_ij
-                val_R = fVec[nb_idx]
+                val_R = f_neighbors_global[k]
                 dist_R = dx_ij
             end
-       
- elseif dx_ij < -1e-9 # Potential left neighbor
+        elseif dx_ij < -1e-9 # Potential left neighbor
             abs_dx_ij = abs(dx_ij)
             if abs_dx_ij < min_abs_dist_L
                 min_abs_dist_L = abs_dx_ij
-                val_L = fVec[nb_idx]
+                val_L = f_neighbors_global[k]
                 dist_L = dx_ij # Keep its negative sign
-    
-        end
+            end
         end
     end
     
@@ -96,7 +102,7 @@ function _limit_slopes(
     dx = pg.neighbor_xdistance
 
     # Find neighbors (using the existing 1D helper)
-    val_L, dist_L, val_R, dist_R = find_closest_lr_neighbors_1D(pg, f_i, f_neighbors) # Needs fix
+    val_L, dist_L, val_R, dist_R = find_closest_lr_neighbors_1D(nb_slice, dx, f_neighbors) # Needs fix
 
     # --- This logic is simplified from your helper ---
     # We need to find the closest L/R *from the neighbor list*

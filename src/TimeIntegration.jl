@@ -206,13 +206,14 @@ function mainTimeIntegrator!(
         # Use a while-loop in case dt spans multiple snapshot times
         while snap_counter <= snapshots && t >= t_snap[snap_counter]
             # Save data at the *exact* snapshot time
-            saveData!(xs, us, ts, snap_counter, particleGrid, t_snap[snap_counter], remove_ghosts)
+            saveData!(xs, us, ts, snap_counter, particleGrid, t, remove_ghosts)
             snap_counter += 1
         end
         
         ProgressMeter.next!(p)
     end
-    num_saved_snapshots = snap_counter - 1
+    saveData!(xs, us, ts, snap_counter, particleGrid, settings.tmax, remove_ghosts)
+    num_saved_snapshots = snap_counter
     return elapsed_time, xs[1:num_saved_snapshots], us[1:num_saved_snapshots], ts[1:num_saved_snapshots]
 end
 
@@ -229,11 +230,6 @@ function mainTimeIntegrator!(
     remove_ghosts::Bool = false
 ) where {N,D}
     # --- Initialization ---
-    for pg in system_pgs
-        #updateNeighbors!(pg, settings.interpRange)
-    end
-    initTimeStepper(system_timestepper, system_pgs, settings)
-
     # --- Pre-allocate Storage ---
     first_pg = system_pgs[1]
     N_save = remove_ghosts ? (first_pg.N - first_pg.N_ghost) : first_pg.N
@@ -249,23 +245,19 @@ function mainTimeIntegrator!(
     # --- Snapshot Time Points ---
     t_snap = range(0.0, settings.tmax, length=snapshots)
     snap_counter = 1
-    
+    t = 0.0
+    k_step = 0
     # Save initial state (t=0)
     saveData!(xs, us_sys, ts, snap_counter, system_pgs, t, remove_ghosts)
     snap_counter += 1 # We are now looking for the 2nd snapshot
 
     # --- Main Time Loop ---
-    t = 0.0
-    k_step = 0
+
     p = Progress(convert(Int, ceil(settings.tmax / settings.dt)), "Running System Simulation...")
 
     elapsed_time = @elapsed while t < settings.tmax && snap_counter <= snapshots
         actual_dt = min(settings.dt, settings.tmax - t)
         if actual_dt <= 1e-12; break; end
-
-        for pg in system_pgs
-            apply_boundary_conditions!(pg)
-        end
         system_timestepper(system_eqs, system_pgs, settings, t, actual_dt)
         
         t += actual_dt
@@ -281,8 +273,9 @@ function mainTimeIntegrator!(
         
         ProgressMeter.next!(p)
     end
-    num_saved_snapshots = snap_counter - 1
-    return elapsed_time, xs[1:num_saved_snapshots], us[1:num_saved_snapshots], ts[1:num_saved_snapshots]
+    saveData!(xs, us_sys, ts, snap_counter, system_pgs, t, remove_ghosts)
+    num_saved_snapshots = snap_counter
+    return elapsed_time, xs[1:num_saved_snapshots], us_sys[1:num_saved_snapshots], ts[1:num_saved_snapshots]
 end
 
 end  # module TimeIntegration

@@ -185,13 +185,13 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         if isnothing(relax_vel)
             method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
-            elseif timestepper_name == "RK3"; method = RK3(MainGrad; fallbackInterpolator = FallbackGrad, mood = mood_fun)
+            elseif timestepper_name == "RK3"; method = RK3(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "RK4"; method = RK4(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "LF"; method = LaxFriedrich()
             elseif timestepper_name == "LW"; method = ClassicalRichtmyerLWMOOD(; mood = mood_fun)
             elseif timestepper_name == "Classic"; method = ClassicalTimeStepper(MainFlux)
             elseif timestepper_name == "Upwind"; method = Upwind(N_total_particles)
-            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch(MainGrad; fallbackInterpolator = FallbackGrad, mood = mood_fun, tol = run_params["switch_tol"])
+            elseif timestepper_name == "RalstonRK2SmoothSwitch"; method = RalstonRK2SmoothSwitch(MainGrad, FallbackGrad, mood_fun; tol =  run_params["switch_tol"])
             else error("Unknown Timestepper!") end
 
             save_relax = false
@@ -239,7 +239,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                             elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term)
                             else error("Unknown TimeStepper name for system: '$timestepper_name'") 
                             end
-            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings)
+            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots)
             @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
             us = save_relax ? sys_us : [vec(sum(sys_u, dims=2)) for sys_u = sys_us]

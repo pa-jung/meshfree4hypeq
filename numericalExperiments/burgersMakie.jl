@@ -1,17 +1,19 @@
-include("../SimulationFunctions/runScalarSimulation.jl")
+using Meshfree4ScalarEq
+using IPlotPDESols
 
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
+    runScalarSimulation,
     ParamDict(
-        "tmax" => 10., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
+        "tmax" => 10., "N" => 500, "xmin" => -5.0, "xmax" => 5.0,
+        "CFL" => .2, "snapshots" => 20, "interp_alpha" => 1.0,
         "interp_range" => 1.5,
         "init_func" => "box",
         "init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
-        "bc" => :outflow, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
+        "bc" => :periodic, "weight_function" => "exponential",
+        "order" => 1, "PDE" => "burgers", #"PDE_params" => 1.
     ),
 
     MethodDict(
@@ -341,7 +343,7 @@ sim_config_burgers = SimulationConfig(
     #["Analytical Solution", "ARS233WENO", "ARS233MUSCL2MOOD", "RK2MUSCL2(Superbee)", "RK2MUSCL2(VKLimiter)"]
     #["ARS233MUSCL2","IMEXRK2MUSCL2Limiter", "RK2MUSCL2(Superbee)","ARS233MUSCL2Limiter", "ARS233WENO","SimpleSplittingMUSCL2Limiter", "ARS233MUSCL2MOOD"]#,"ARS233MUSCL2","ARS233Upwind"]
     #"RK2MUSCL2(Superbee)"
-    #["RK2MUSCL2MOOD", "RK2MUSCL2(Superbee)", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter","Analytic Solution", "ARS233Upwind"]
+    ["RK2MUSCL2MOOD", "RK2MUSCL2(superbee)", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter","Analytic Solution", "ARS233Upwind"]
     #["ARS233MUSCL2", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter", "EulerUpwind","Analytic Solution"]#,"LW", "EulerUpwind"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK4MUSCL5MOOD"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]
@@ -350,7 +352,8 @@ sim_config_burgers = SimulationConfig(
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
-    "RK2MUSCL2(minmod)"
+    #"RK2MUSCL2(minmod)"
+    #["ARS233MUSCL2","ARS233MUSCL2MOOD"]
     #"RK2Upwind"
 );
 scene_options = Dict{String, Any}()
