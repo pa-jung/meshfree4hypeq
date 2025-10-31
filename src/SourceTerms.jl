@@ -93,50 +93,11 @@ function (source::AbstractSourceTerm)(
     error("Functor () not implemented for source term type $(typeof(source))")
 end
 
-struct RelaxationSourceTerm1D{MF <: AbstractVector{<:Function}} <: AbstractSourceTerm
-    maxwellians::MF
-    epsilon::Float64
-    num_components::Int
-
-    function RelaxationSourceTerm1D(
-        maxwellian_functions::MF,
-        epsilon::Float64
-    ) where {MF <: AbstractVector{<:Function}}
-        if isempty(maxwellian_functions)
-            error("Maxwellian functions vector cannot be empty.")
-        end
-        if epsilon <= 0.0
-            error("Relaxation parameter epsilon must be positive.")
-        end
-        new{MF}(maxwellian_functions, epsilon, length(maxwellian_functions))
-    end
-end
-
-function (rs::RelaxationSourceTerm1D)(
-    S_out_particle::AbstractVector{Float64},
-    U_particle::AbstractVector{Float64},
-    particle_pos::Any, # Unused by this specific S
-    time::Real             # Unused by this specific S
-)
-    if length(U_particle) != rs.num_components || length(S_out_particle) != rs.num_components
-        error("Dimension mismatch in RelaxationSourceTerm. Expected $(rs.num_components) components. Got U: $(length(U_particle)), S_out: $(length(S_out_particle))")
-    end
-
-    rho_total = 0.0
-    for k_comp in 1:rs.num_components
-        rho_total += U_particle[k_comp]
-    end
-
-    for k_comp in 1:rs.num_components
-        mk_of_rho = rs.maxwellians[k_comp](rho_total)
-        S_out_particle[k_comp] = (mk_of_rho - U_particle[k_comp]) / rs.epsilon
-    end
-end
-
 struct RelaxationSourceTerm{MF <: Tuple, KI <: Tuple} <: AbstractSourceTerm
     maxwellians::MF
     kinetic_indices::KI
     epsilon::Float64
+    inv_epsilon::Float64
     num_total_kinetic_components::Int64
     num_macro_variables::Int64
     # The buffer now has a concrete type!
@@ -157,6 +118,7 @@ function RelaxationSourceTerm(
         maxwellian_tuple, 
         kinetic_indices_tuple,
         epsilon,
+        1/epsilon,
         num_total_kin,
         num_macro_vars,
         # Initialize the buffer with a concrete type
@@ -181,7 +143,7 @@ function (rs::RelaxationSourceTerm{MF,KI})(
 
         mk_of_U_macro = maxwellian(rs.macro_buffer)
         
-        S_out_particle[k_global_comp] = (mk_of_U_macro - U_kinetic_particle[k_global_comp]) / rs.epsilon
+        S_out_particle[k_global_comp] = (mk_of_U_macro - U_kinetic_particle[k_global_comp]) * rs.inv_epsilon
     end
 end
 

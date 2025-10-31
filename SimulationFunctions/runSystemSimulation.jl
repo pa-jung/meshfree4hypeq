@@ -65,9 +65,9 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             @info "  Computing analytical solution..."
             # Setup a temporary grid to sample the solution
             grid_analytic = if dimension == 1
-                ParticleGrid1D(xmin, xmax, run_params["N"], bc != :periodic , bc)
+                ParticleGrid1D(xmin, xmax, run_params["N"], bc != :periodic , bc, 0.)
             else
-                ParticleGrid2D(xmin, xmax, run_params["ymin"], run_params["ymax"], run_params["Nx"], run_params["Ny"], bc != :periodic, bc)
+                ParticleGrid2D(xmin, xmax, run_params["ymin"], run_params["ymax"], run_params["Nx"], run_params["Ny"], bc != :periodic, bc, 0.)
             end
             
             dt_analytic = tmax / snapshots
@@ -140,25 +140,32 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         N_ghost = bc == :periodic ? 0 : ceil(Int, interp_range_factor) + 1
         rng = MersenneTwister(seed_val)
         
-        local particleGrid_template::Union{ParticleGrid1D, ParticleGrid2D}, interp_range
         if dimension == 1
             Nx = run_params["N"]
             dx_nominal = (xmax - xmin) / Nx
             randomness = randomness_factor * dx_nominal
-            particleGrid_template = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc; rng=rng, randomness=randomness)
-            delta_relax = particleGrid_template.dx * delta_relax_factor
-            interp_range = interp_range_factor * particleGrid_template.dx
+            
+            interp_range = interp_range_factor * dx_nominal
+            delta_relax = dx_nominal * delta_relax_factor
+            upwind_alg_2d = "Classic"
         else # dimension == 2
             Nx, Ny = run_params["Nx"], run_params["Ny"]
             ymin, ymax = run_params["ymin"], run_params["ymax"]
             dx_nominal = (xmax - xmin) / Nx
             dy_nominal = (ymax - ymin) / Ny
             randomness = (randomness_factor[1] * dx_nominal, randomness_factor[2] * dy_nominal)
-            particleGrid_template = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc, interp_range_factor; rng=rng, randomness=randomness)
-            interp_range = interp_range_factor * max(particleGrid_template.dx, particleGrid_template.dy)
-            delta_relax = particleGrid_template.dx * particleGrid_template.dy * delta_relax_factor   
+            interp_range = interp_range_factor * max(dx_nominal, dy_nominal)
+            delta_relax = dx_nominal * dy_nominal * delta_relax_factor         
+            upwind_alg_2d = main_grad_name == "Upwind" || fallback_grad_name == "Upwind" ? run_params["upwind_alg_2d"] : nothing
         end
-        
+        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction(interp_alpha, interp_range)
+                      elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
+        local particleGrid_template
+        if dimension == 1
+            particleGrid_template = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc, interp_range_factor; rng=rng, randomness=randomness, weight_func = weight_func)
+        else
+            particleGrid_template = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc, interp_range_factor; weight_func = weight_func, rng=rng, randomness=randomness)
+        end        
         # --- REFACTORED: Initial Condition Setup for System ---
 
         # 1. Calculate the macroscopic initial condition at all particle positions (including ghosts).
@@ -183,7 +190,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             if max_abs_speed < 1e-9; max_abs_speed = 1.0; end
             
             temp_eq_for_dt = dimension == 1 ? LinearAdvection(max_abs_speed) : LinearAdvection((max_abs_speed, max_abs_speed))
-            dt = cfl * getTimeStep(particleGrid_template, temp_eq_for_dt, interp_alpha, interp_range)
+            dt = cfl * getTimeStep(particleGrid_template, temp_eq_for_dt)
         else
             dt = dt_val
         end
@@ -201,7 +208,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         else error("MOOD '$mood_name' not recognized") end
 
         local weight_func
-        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction()
+        weight_func = if weight_func_name == "exponential"; exponentialWeightFunction(interp_alpha, interp_range)
                       else error("Weight function not implemented yet!") end
 
         local limiter
@@ -219,8 +226,10 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                   
 
         MainFlux = if main_flux_name == "Rusanov"; RusanovFlux() 
+            elseif main_flux_name == "Upwind"; MainFlux = UpwindFlux()
             elseif main_grad_name!="WENO" error("Flux $main_flux_name NYI");
-            elseif main_flux_name == "Upwind"; MainFlux = UpwindFlux() end
+            end
+            
             
         FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux() 
                        elseif fallback_flux_name == "Upwind"; FallbackFlux = UpwindFlux()
@@ -255,7 +264,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         kinetic_eqs = Tuple(kinetic_eqs_vec)
         particleGrids = Tuple(particleGrids_vec)
 
-        elapsed_time, xs_data, sys_us_kinetic, ts = mainTimeIntegrator!(system_method, kinetic_eqs, particleGrids, settings)
+        elapsed_time, xs_data, sys_us_kinetic, ts = mainTimeIntegrator!(system_method, kinetic_eqs, particleGrids, settings; snapshots = snapshots)
         @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
         # --- 8. Post-process & Return ---

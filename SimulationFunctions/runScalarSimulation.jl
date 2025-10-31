@@ -57,7 +57,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             if dimension == 1
                 Nx = run_params["N"]
-                grid_analytic = ParticleGrid1D(xmin, xmax, Nx, bc != :periodic , bc)
+                grid_analytic = ParticleGrid1D(xmin, xmax, Nx, bc != :periodic , bc, 0.)
                 xs = grid_analytic.positions
                 us = [[IC(x, t, eq, grid_analytic) for x in x_coords] for (x_coords, t) in zip(xs, ts)]
             else # dimension == 2
@@ -150,6 +150,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
         # --- Build Method Components ---
         mood_fun =   if mood_name == "U2"; MOODu2(deltaRelax=delta_relax)
+                     elseif mood_name == "LoubertU2"; mood_fun = MOODLoubertU2(deltaRelax = delta_relax)
                      elseif mood_name == "U1"; MOODu1(deltaRelax = delta_relax)
                      elseif mood_name == "only"; OnlyMOOD()
                      elseif mood_name == "none" || isnothing(mood_name); NoMOOD()
@@ -159,7 +160,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         MainFlux = if main_flux_name == "Rusanov"; RusanovFlux()
                      elseif main_flux_name == "Upwind"; UpwindFlux()
                      elseif main_flux_name == "LW"; MainFlux = LaxWendroffFlux()
-                     elseif !isnothing(main_flux_name); error("Main Flux '$main_flux_name' not implemented.")
+                     elseif main_grad_name!="WENO" error("Flux $main_flux_name NYI");
                      end
 
         FallbackFlux = if fallback_flux_name == "Rusanov"; RusanovFlux()

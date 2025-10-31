@@ -138,9 +138,10 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
     K_I_stages_sys::Vector{Matrix{Float64}}
     rho_buffer::Vector{Float64} # Scalar buffer (size N_particles)
     
-    # --- Particle-local buffers for implicit solve ---
-    u_particle_iter_buffer::Vector{Float64} # (size N_components)
-    Y_i_base_particle_buffer::Vector{Float64} # (size N_components)
+# --- THREAD-LOCAL buffers for implicit solve ---
+    # One buffer set per thread
+    thread_u_particle_buffers::Vector{Vector{Float64}}
+    thread_Y_i_base_buffers::Vector{Vector{Float64}}
     
     # --- Buffers for explicit fused loop (like in RK4) ---
     neighbor_fs::Vector{Float64}
@@ -154,6 +155,7 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
         ) where {G1, G2, M, IS, ST_OBJ, BT}
         
         s = size(butcher_tableau.A, 1) # Number of stages
+        n_threads = Threads.nthreads()
 
         # Initialize with empty buffers; they will be resized on the first call
         new{G1, G2, M, IS, ST_OBJ, BT}(
@@ -162,7 +164,8 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
             Matrix{Float64}(undef,0,0), [Matrix{Float64}(undef,0,0) for _ in 1:s],
             [Matrix{Float64}(undef,0,0) for _ in 1:s], [Matrix{Float64}(undef,0,0) for _ in 1:s], 
             Vector{Float64}(undef, 0), # rho_buffer
-            Float64[], Float64[], # implicit buffers
+            [Float64[] for _ in 1:n_threads], # thread_u_particle_buffers
+            [Float64[] for _ in 1:n_threads], # thread_Y_i_base_buffers
             Float64[], Float64[], # neighbor_fs, neighbor_dfs
             s
         )
@@ -173,20 +176,39 @@ end
 
 # --- NEW: initAddTSBuffer! for the IMEX stepper ---
 # This resizes the buffers that are per-particle, but not system-wide
-function initAddTSBuffer!(imex_ts::GeneralIMEXTimeStepper, pg::ParticleGrid)
-    num_particles = length(pg.num_neighbors)
-    _ensure_capacity!(imex_ts.rho_buffer, num_particles)
-    
-    # Note: System-wide matrices (N_particles x N_components) and
-    # component-wide vectors (N_components) are resized inside the main functor,
-    # as this is the only place that knows both N_particles and N_components.
+function initAddTSBuffer!(imex_ts::GeneralIMEXTimeStepper, pgs::Tuple)
+    N_particles = pgs[1].N
+    N_components = length(pgs)
+    # --- Ensure buffers are correctly sized for the current grid ---
+    if size(imex_ts.U_n_sys, 1) < N_particles
+        # --- System-wide (N_particles x N_components) ---
+        imex_ts.U_n_sys = Matrix{Float64}(undef, N_particles, N_components)
+        for i in 1:imex_ts.num_stages
+            imex_ts.Y_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
+            imex_ts.K_E_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
+            imex_ts.K_I_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
+        end
+        
+        n_threads = Threads.nthreads()
+        # Resize the outer vector if thread count changed
+        if length(imex_ts.thread_u_particle_buffers) < n_threads
+            resize!(imex_ts.thread_u_particle_buffers, n_threads)
+            resize!(imex_ts.thread_Y_i_base_buffers, n_threads)
+        end
+        # Resize inner vectors
+        for t_id in 1:n_threads
+            imex_ts.thread_u_particle_buffers[t_id] = Vector{Float64}(undef, N_components)
+            imex_ts.thread_Y_i_base_buffers[t_id] = Vector{Float64}(undef, N_components)
+        end
+        
+    end
 end
 
 
 # --- REFACTORED Functor for GeneralIMEXTimeStepper ---
 function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         scalar_equations::DiagonalHyperbolicSystem{N,D},
-        system_pg::ParticleGridSystem{N},
+        system_pg::ParticleGridSystem{N,D},
         settings::SimSetting,
         time_n::Real,
         dt::Real
@@ -200,77 +222,94 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
     # Define chunks for parallel loops
     chunk_size = 50 
     chunks = collect(Iterators.partition(1:N_particles, chunk_size))
-
-    # --- Ensure buffers are correctly sized for the current grid ---
-    if size(imex_ts.U_n_sys, 1) != N_particles
-        # --- System-wide (N_particles x N_components) ---
-        imex_ts.U_n_sys = Matrix{Float64}(undef, N_particles, N_components)
-        for i in 1:s
-            imex_ts.Y_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
-            imex_ts.K_E_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
-            imex_ts.K_I_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
-        end
-        
-        # --- Per-component (size N_components) ---
-        resize!(imex_ts.u_particle_iter_buffer, N_components)
-        resize!(imex_ts.Y_i_base_particle_buffer, N_components)
-        
-        # --- Per-interaction (size M) ---
-        # (This will be resized by initTSBuffer! inside the loop)
-    end
-
-    # --- 0. Store U^n from system_pg ---
-    for k in 1:N; imex_ts.U_n_sys[:, k] = system_pg[k].rhos; end
+    initTSBuffer!(imex_ts, system_pg) # Resizes neighbor_fs/dfs
 
     # --- Loop through stages i = 1 to s ---
     for i in 1:s
-        current_Y_i_sys = imex_ts.Y_stages_sys[i]
-        current_Y_i_sys .= imex_ts.U_n_sys # Start with U^n
 
-        # --- Calculate stage value Y_i for INTERIOR points ---
-        # (This part is sequential and remains unchanged)
-        for j in 1:(i-1)
-            if bt.At[i,j] != 0.0; @. current_Y_i_sys[1:N_particles, :] += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][1:N_particles, :]; end
-            if bt.A[i,j] != 0.0;  @. current_Y_i_sys[1:N_particles, :] += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][1:N_particles, :]; end
-        end
-        
-        # --- Implicit Solve for stage Y_i for INTERIOR points ---
-        # (This part is sequential and remains unchanged)
-        if abs(bt.A[i,i]) > 1e-14
-            time_implicit = time_n + bt.c[i] * dt
-            for p_idx in 1:N_particles # (Assuming implicit solve on all)
-                imex_ts.u_particle_iter_buffer .= @view current_Y_i_sys[p_idx, :] 
-                imex_ts.Y_i_base_particle_buffer .= @view current_Y_i_sys[p_idx, :] 
-                                          
-                ImplicitSolvers.solve!(imex_ts.implicit_solver,
-                    imex_ts.u_particle_iter_buffer, imex_ts.Y_i_base_particle_buffer, dt * bt.A[i,i],
-                    imex_ts.source_term_object, system_pg[1].positions[p_idx], time_implicit, N_components
-                )
-                current_Y_i_sys[p_idx, :] .= imex_ts.u_particle_iter_buffer
+        initTSBuffer!(imex_ts, system_pg) # Resizes neighbor_fs/dfs        
+        current_Y_i_sys = imex_ts.Y_stages_sys[i]
+        Threads.@threads for particle_range in chunks
+            @inbounds for p_idx in particle_range
+                
+                # Loop over each component (rho, rho_u, ...)
+                for k in 1:N_components
+                    grid_k = system_pg[k]
+                    
+                    # 1. Initialize stage value with U_n
+                    #    (We read from U_n_sys, which holds the pristine U_n state)
+                    y_particle_k = grid_k.rhos[p_idx]
+                    
+                    # 2. Accumulate K terms (only for interior particles)
+                    if !grid_k.is_boundary[p_idx]
+                        for j in 1:(i-1)
+                            if bt.At[i,j] != 0.0
+                                y_particle_k += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][p_idx, k]
+                            end
+                            if bt.A[i,j] != 0.0
+                                y_particle_k += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][p_idx, k]
+                            end
+                        end
+                    end # (end boundary check)
+                    
+                    # 3. Write the final accumulated value for Y_i(p_idx, k)
+                    current_Y_i_sys[p_idx, k] = y_particle_k
+                end
             end
         end
         
-        # --- Ghost Cell Update for Intermediate Stage Y_i ---
-        # (This part is sequential and remains unchanged)
-        for k in 1:N
-            apply_boundary_conditions!(system_pg[k],@view current_Y_i_sys[:, k])
+# --- REFACTORED: Implicit Solve (Now Parallel) ---
+        if abs(bt.A[i,i]) > 1e-14
+            time_implicit = time_n + bt.c[i] * dt
+            
+            # Use @threads over the chunks for good load balancing
+            Threads.@threads for particle_range in chunks
+                # Get this thread's private buffers
+                tid = mod1(Threads.threadid(),Threads.nthreads())
+                # u_iter_buffer = imex_ts.thread_u_particle_buffers[tid]
+                Y_base_buffer = imex_ts.thread_Y_i_base_buffers[tid]
+
+                @inbounds for p_idx in particle_range
+                    if system_pg[1].is_boundary[p_idx]; continue; end
+
+                    # --- OPTIMIZED: Remove all copying ---
+                    # 1. Get a direct view of the particle's state
+                    u_particle_view = @view current_Y_i_sys[p_idx, :]
+                    
+                    # 2. Copy the state ONCE into the base buffer
+                    #    (This is the *only* copy, and it's small)
+                    Y_base_buffer .= u_particle_view
+
+                    # 3. Pass the *view* as the iteration buffer.
+                    #    The solver will read from Y_base_buffer
+                    #    and write/iterate directly into current_Y_i_sys[p_idx, :].
+                    ImplicitSolvers.solve!(imex_ts.implicit_solver,
+                        u_particle_view, # <-- Pass the view directly
+                        Y_base_buffer,   # Pass the copied base state
+                        dt * bt.A[i,i],
+                        imex_ts.source_term_object, 
+                        system_pg[1].positions[p_idx], 
+                        time_implicit, N_components
+                    )
+                    # 4. No copy-back needed, solver wrote to the view
+                    #  current_Y_i_sys[p_idx, :] .= u_iter_buffer # <-- REMOVED
+                end
+            end
         end
-        
         # ==================================================================
         # --- REFACTORED: Evaluate and store explicit tendency K_E ---
         # ==================================================================
-        
         # Loop over each component (equation) in the system
         for k in 1:N
             eq_k = scalar_equations[k]
             grid_k = system_pg[k]
             # Get the view of the current stage for this component
             current_Y_i_k = @view current_Y_i_sys[:, k]
+            apply_boundary_conditions!(grid_k,current_Y_i_k)
 
             # 1. Init Buffers for this component
             initGIBuffers!(imex_ts.gradientInterpolator, grid_k)
             initGIBuffers!(imex_ts.fallbackInterpolator, grid_k)
-            initTSBuffer!(imex_ts, grid_k) # Resizes neighbor_fs/dfs
 
             # 2. Threaded loop to calculate slopes/coefficients
             Threads.@threads for particle_range in chunks
@@ -302,6 +341,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                     end
                 end
             end
+            apply_boundary_conditions!(grid_k,current_Y_i_k)
         end # End of component loop for K_E
         
         # ==================================================================
@@ -310,28 +350,54 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         # (This part is sequential and remains unchanged)
         time_implicit_for_KI = time_n + bt.c[i] * dt 
         
-        for p_idx in 1:N_particles
-            imex_ts.source_term_object(
-                @view(imex_ts.K_I_stages_sys[i][p_idx, :]), 
-                @view(current_Y_i_sys[p_idx, :]), 
-                system_pg[1].positions[p_idx], 
-                time_implicit_for_KI
-            )
+        Threads.@threads for particle_range in chunks
+            @inbounds for p_idx in particle_range
+                # This loop CANNOT skip boundary particles, as the source
+                # term might apply to all particles (e.g., gravity)
+                imex_ts.source_term_object(
+                    @view(imex_ts.K_I_stages_sys[i][p_idx, :]), 
+                    @view(current_Y_i_sys[p_idx, :]), 
+                    system_pg[1].positions[p_idx], 
+                    time_implicit_for_KI
+                )
+            end
         end
     end # End of stages loop
-
-    # --- Final Update ---
-    # (This part is sequential and remains unchanged)
-    U_np1 = imex_ts.U_n_sys # Reuse this buffer for the final result
+    
     for i in 1:s
-        if abs(bt.bt[i]) > 1e-14; U_np1[1:N_particles, :] .+= dt * bt.bt[i] .* @view(imex_ts.K_E_stages_sys[i][1:N_particles, :]); end
-        if abs(bt.b[i]) > 1e-14;  U_np1[1:N_particles, :] .+= dt * bt.b[i] .* @view(imex_ts.K_I_stages_sys[i][1:N_particles, :]); end
+        # Pre-calculate factors
+        dt_bt = dt * bt.bt[i]
+        dt_b  = dt * bt.b[i]
+        
+        @inbounds for p_idx in 1:N_particles
+            if system_pg[1].is_boundary[p_idx]; continue; end # Skip boundary
+
+            for k in 1:N_components
+                # Get the grid component once
+                rhos_vec = system_pg[k].rhos
+
+                # --- The In-Place Update ---
+                # On the first loop (i=1), this does:
+                # rhos_vec[p_idx] = rhos_vec[p_idx] + dt*b1*K1
+                # (which is U_n + dt*b1*K1)
+                # On subsequent loops, it adds the other terms.
+                if abs(bt.bt[i]) > 1e-14
+                    rhos_vec[p_idx] += dt_bt * imex_ts.K_E_stages_sys[i][p_idx, k]
+                end
+                if abs(bt.b[i]) > 1e-14
+                    rhos_vec[p_idx] += dt_b * imex_ts.K_I_stages_sys[i][p_idx, k]
+                end
+            end
+        end
     end
 
     # --- Update physical particle grids ---
     for k in 1:N
-        system_pg[k].rhos .= @view U_np1[:, k]
-        # system_pg[k].mood_events .= false # (If you have this field)
+        # --- FIX: Hoist all type-unstable accesses out of the inner loop ---
+        grid_k = system_pg[k]            # Get the grid ONCE
+        # Apply final BCs to the physical grid state
+        # This ensures ghost cells are correct for the *next* timestep.
+        apply_boundary_conditions!(grid_k, grid_k.rhos)
     end
 end
 

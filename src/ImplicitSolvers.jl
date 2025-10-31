@@ -88,51 +88,6 @@ end
 
 function solve!(
     solver::LinearizedRelaxationImplicitSolver,
-    Y_out_particle::AbstractVector{Float64},         # Output: result U_k_new is stored here
-    RHS_const_particle::AbstractVector{Float64},     # Input: This is U_k_base (e.g., U^n or U_temp for ARS2 stages)
-    dt_coefficient_for_S::Float64,              # This is the effective dt' (e.g., dt*gamma in ARS2)
-    source_term_object::RelaxationSourceTerm1D,     # Must be RelaxationSourceTerm
-    particle_pos::Any,                      # Unused by this specific solver for this source
-    time_for_S_eval::Real,                      # Unused if Maxwellians are not time-dependent
-    N_components::Int
-)::Bool                                          # Always "converges" in one step for this direct formula
-
-    if N_components == 0 && length(Y_out_particle) == 0
-        return true # Nothing to solve
-    end
-    if length(Y_out_particle) != N_components || length(RHS_const_particle) != N_components
-        error("Vector size mismatch in LinearizedRelaxationImplicitSolver.solve!")
-    end
-
-    epsilon = source_term_object.epsilon
-    maxwellians = source_term_object.maxwellians # Vector of M_k functions
-
-    # 1. Calculate rho_base = sum(U_k_base) using RHS_const_particle
-    #    (which is the state *before* this current implicit relaxation step)
-    rho_base = 0.0
-    for k_comp in 1:N_components
-        rho_base += RHS_const_particle[k_comp]
-    end
-
-    # 2. Apply the direct update formula for each component
-    #    Y_k_new = (epsilon * U_k_base + dt' * M_k(rho_base)) / (epsilon + dt')
-    #    where U_k_base is RHS_const_particle[k_comp]
-    #    and dt' is dt_coefficient_for_S
-
-    coeff_sum_inv = 1.0 / (epsilon + dt_coefficient_for_S) # Precompute for efficiency
-
-    for k_comp in 1:N_components
-        U_k_base = RHS_const_particle[k_comp]
-        Mk_of_rho_base = maxwellians[k_comp](rho_base)
-        
-        Y_out_particle[k_comp] = (epsilon * U_k_base + dt_coefficient_for_S * Mk_of_rho_base) * coeff_sum_inv
-    end
-    
-    return true # Direct formula, always "converges" in one evaluation
-end
-
-function solve!(
-    solver::LinearizedRelaxationImplicitSolver,
     Y_out_particle::AbstractVector{Float64},         
     RHS_const_particle::AbstractVector{Float64},     
     dt_coefficient_for_S::Float64,              

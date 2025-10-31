@@ -70,7 +70,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         interp_range_factor::Real; 
         randomness::Real = 0.0, rng = Meshfree4ScalarEq.rng,
         # --- MODIFIED: Added default value ---
-        weight_func::MLSWeightFunction = exponentialWeightFunction()
+        weight_func::MLSWeightFunction = exponentialWeightFunction(1.,1.)
     )
         # --- (Existing constructor logic for N, interior_indices, dx) ---
         local dx
@@ -183,7 +183,7 @@ mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
     function ParticleGrid2D(
         xmin::Real, xmax::Real, ymin::Real, ymax::Real, 
         Nx_interior::Integer, Ny_interior::Integer, N_ghost::Integer, bc::Symbol, interp_range_factor::Real; 
-        randomness::NTuple{2, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng, weight_func::MLSWeightFunction = exponentialWeightFunction()
+        randomness::NTuple{2, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng, weight_func::MLSWeightFunction = exponentialWeightFunction(1.,1.)
     )
         local Nx_total, Ny_total, interior_indices, dx_nominal, dy_nominal
         if bc == :periodic

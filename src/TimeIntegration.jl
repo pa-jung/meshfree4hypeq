@@ -30,26 +30,27 @@ abstract type MeshfreeSystemTimeStepper <: MeshfreeTimeStepper end
 function (method::TimeStepper)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     error("Each `TimeStepper' must override the ()-operator.")
 end
+function initTS!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
+    updateNeighbors!(pg)
+end
 
-# Function called once before time integration loop to pre-calculate all relevant coefficients fot interpolation.
-function initTimeStepper(method::FixedGridTimeStepper, particleGrid::ParticleGrid, settings::SimSetting)
-    @info "Simulation uses $(typeof(method)) on a fixed regular Grid!"
+function initTSBuffer!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
+    # `num_interactions` is the total length of the flat neighbor lists (M)
+    num_interactions = length(pg.neighbor_indices) 
+    # --- 3. Resize Per-Interaction Buffers (Size M) ---
+    _ensure_capacity!(ts.neighbor_fs, num_interactions)
+    _ensure_capacity!(ts.neighbor_dfs, num_interactions)
+    initAddTSBuffer!(ts, pg)
+    return nothing
 end
-function initTimeStepper(method::MeshfreeTimeStepper, particleGrid::ParticleGrid, settings::SimSetting) 
-    fallback_string = "none"
-    if hasfield(typeof(method), :fallbackInterpolator) & !isnothing(method.fallbackInterpolator)
-        fallback_string = "$(typeof(method.fallbackInterpolator))"
-    end
-    @info "Simulation uses $(typeof(method)) with main gradient: $(typeof(method.gradientInterpolator)) and fallback gradient: $fallback_string"
-end
-function initTimeStepper(method::TimeStepper, particleGrids::Vector{T}, settings::SimSetting) where T <: ParticleGrid 
-    @warn "Scalar timestepper given during initialization! Initializing each timestepper independently!"
-    for particleGrid = particleGrids
-        initTimeStepper(method, particleGrid, settings)
-    end
-end
-function initTimeStepper(method::MeshfreeSystemTimeStepper, particleGrids::Vector{T}, settings::SimSetting) where T <: ParticleGrid
-    @warn "Timestepper detected as a system timestepper, however, no initialization is used for this Timestepper."
+function initTSBuffer!(ts::MeshfreeTimeStepper, pgs::Tuple)
+    # `num_interactions` is the total length of the flat neighbor lists (M)
+    num_interactions = length(pgs[1].neighbor_indices) 
+    # --- 3. Resize Per-Interaction Buffers (Size M) ---
+    _ensure_capacity!(ts.neighbor_fs, num_interactions)
+    _ensure_capacity!(ts.neighbor_dfs, num_interactions)
+    initAddTSBuffer!(ts, pgs)
+    return nothing
 end
 
 """
@@ -175,9 +176,9 @@ function mainTimeIntegrator!(
     pos_type = D == 1 ? Float64 : Tuple{Float64,Float64}
     
     # Pre-allocate the storage vectors
-    xs = [Vector{pos_type}(undef, N_save) for _ in 1:snapshots]
-    us = [Vector{Float64}(undef, N_save) for _ in 1:snapshots]
-    ts = Vector{Float64}(undef, snapshots)
+    xs = [Vector{pos_type}(undef, N_save) for _ in 1:snapshots+1]
+    us = [Vector{Float64}(undef, N_save) for _ in 1:snapshots+1]
+    ts = Vector{Float64}(undef, snapshots+1)
 
     # --- Snapshot Time Points ---
     # Create an array of equidistant time points, including t=0 and t=tmax
@@ -238,9 +239,9 @@ function mainTimeIntegrator!(
     pos_type = D == 1 ? Float64 : Tuple{Float64,Float64}
     
     # Pre-allocate storage
-    xs = [Vector{pos_type}(undef, N_save) for _ in 1:snapshots]
-    us_sys = [Matrix{Float64}(undef, N_save, N_vars) for _ in 1:snapshots]
-    ts = Vector{Float64}(undef, snapshots)
+    xs = [Vector{pos_type}(undef, N_save) for _ in 1:snapshots+1]
+    us_sys = [Matrix{Float64}(undef, N_save, N_vars) for _ in 1:snapshots+1]
+    ts = Vector{Float64}(undef, snapshots+1)
 
     # --- Snapshot Time Points ---
     t_snap = range(0.0, settings.tmax, length=snapshots)

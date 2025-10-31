@@ -8,20 +8,6 @@ using Base.Threads
 # This function assumes that any timestepper `ts` you pass to it will have 
 # mutable fields `neighbor_fs::Vector{Float64}` and `neighbor_dfs::Vector{Float64}`.
 
-
-function initTS!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
-    updateNeighbors!(pg)
-end
-
-function initTSBuffer!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
-    # `num_interactions` is the total length of the flat neighbor lists (M)
-    num_interactions = length(pg.neighbor_indices) 
-    # --- 3. Resize Per-Interaction Buffers (Size M) ---
-    _ensure_capacity!(ts.neighbor_fs, num_interactions)
-    _ensure_capacity!(ts.neighbor_dfs, num_interactions)
-    initAddTSBuffer!(ts, pg)
-    return nothing
-end
 """
     initFs!(ts::MeshfreeTimeStepper, pg::ParticleGrid, fVec::AbstractVector)
 

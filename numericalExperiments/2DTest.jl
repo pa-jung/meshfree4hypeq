@@ -82,7 +82,7 @@ function main()
     #    We also give it a larger buffer (n) and a reasonable delay
     sim_data = nothing
     #sim_data = runScalarSimulation(params);
-    #@profview runScalarSimulation(params)
+    @profview runScalarSimulation(params)
 
     # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.
     #
@@ -104,7 +104,7 @@ end
 
 sim_data, test_config = main()
 
-show1DSolutionFig(test_config)
+#show1DSolutionFig(test_config)
 scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
 #show2DCutFig(test_config;scene_options = scene_options)
 #show2DSolutionFig(test_config)
