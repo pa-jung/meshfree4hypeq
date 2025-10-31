@@ -288,10 +288,10 @@ function (upwind::UpwindGradient{1, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     # The interpolator works with the unscaled distances
     if upwind.order == 1
         # Interpolator{1, 1, 1} returns 1 value (df/dx)
-        res1 = interp(ws.dxVec, ws.wVec, ws.dfVec, num_upwind)
+        res1 = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec)
     elseif upwind.order == 2
         # Interpolator{1, 2, 1} returns 2 values (df/dx, d2f/dx2)
-        res_tuple = interp(ws.dxVec, ws.wVec, ws.dfVec, num_upwind)
+        res_tuple = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec)
         res1 = res_tuple[1]
         # res_tuple[2] is the curvature, which we ignore in the functor
     end
@@ -377,22 +377,15 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     num_upwind = count
 
     if num_upwind < upwind.order; return 0.0; end
-    ensure_capacity!(interp, num_upwind)
     
-    local res1, res2
     # The interpolator works with the scaled distances
-    if upwind.order == 1
-        res1, res2 = interp(ws.dxVec, ws.dyVec, ws.wVec,  ws.dfVec, num_upwind)
-    elseif upwind.order == 2
-        res1, res2, _, _, _ = interp(ws.dxVec, ws.dyVec,  ws.wVec, ws.dfVec, num_upwind)
-        # Curvature cannot be set as `pg` is not an argument in this signature
-    end
+    res = interp(1:num_upwind, ws.dxVec, ws.dyVec, ws.wVec, ws.dfVec)
     
     # --- SCALE the final derivative result ---
     # res1 and res2 represent the scaled derivatives (d/d(x/L), d/d(y/L))
     # Divide by interpRange to get the actual derivatives (d/dx, d/dy)
-    ddx = res1
-    ddy = res2
+    ddx = res[1]
+    ddy = res[2]
     # --- END SCALE ---
     #@assert ddx < 1e-5 "div Non zero $(vel[1] * ddx + vel[2] * ddy)"
     return (vel[1] * ddx + vel[2] * ddy)
@@ -456,9 +449,8 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
     end
 
     if stencil_size_x >= upwind.order
-        ensure_capacity!(interp, stencil_size_x) 
         # Call interpolator with workspace arrays and the calculated stencil size
-        res_x = interp(dxVec, dyVec, wVec, dfVec, stencil_size_x) 
+        res_x = interp(1:stencil_size_x, dxVec, dyVec, wVec, dfVec) 
         
         # No scaling on result
         ddx = res_x[1] 
@@ -484,9 +476,8 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
     end
     
     if stencil_size_y >= upwind.order
-        ensure_capacity!(interp, stencil_size_y) 
         # Call interpolator with workspace arrays and the calculated stencil size
-        res_y = interp(dxVec, dyVec, wVec, dfVec, stencil_size_y) 
+        res_y = interp(1:stencil_size_y, dxVec, dyVec, wVec, dfVec) 
 
         # No scaling on result
         ddy = res_y[2] 

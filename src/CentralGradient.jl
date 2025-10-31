@@ -1,145 +1,105 @@
-# --- In Interpolations.jl ---
 
-#==============================================================================
-  CENTRAL GRADIENT (Unified 1D/2D - Optimized for SoA & Workspace)
-==============================================================================#
 
-# --- 1. Define Workspaces and Parametric Struct ---
-
-abstract type CentralGradientWorkspace end
-
-struct CentralGradientWorkspace1D <: CentralGradientWorkspace
-    dx_buffer::Vector{Float64}
-    df_buffer::Vector{Float64}
-    w_buffer::Vector{Float64}
-    function CentralGradientWorkspace1D(cap=20)
-        new(zeros(cap), zeros(cap), zeros(cap))
-    end
-end
-
-struct CentralGradientWorkspace2D <: CentralGradientWorkspace
-    dx_buffer::Vector{Float64}
-    dy_buffer::Vector{Float64}
-    df_buffer::Vector{Float64}
-    w_buffer::Vector{Float64}
-    function CentralGradientWorkspace2D(cap=40)
-        new(zeros(cap), zeros(cap), zeros(cap), zeros(cap))
-    end
-end
-
-function ensure_capacity!(ws::CentralGradientWorkspace, n::Int)
-    if n > length(ws.dx_buffer)
-        N = n + n ÷ 4
-        resize!(ws.dx_buffer, N); resize!(ws.df_buffer, N); resize!(ws.w_buffer, N)
-        if ws isa CentralGradientWorkspace2D
-            resize!(ws.dy_buffer, N)
-        end
-    end
-end
-
-mutable struct CentralGradient{D, WS <: CentralGradientWorkspace, I <: Interpolator} <: GradientInterpolator
+struct CentralGradient{D, I <: Interpolator} <: GradientInterpolator
     order::Int
-    weightFunction::MLSWeightFunction
-    workspace::WS
     interpolator::I
 
-    function CentralGradient(order::Int, dimension::Int; weightFunction=exponentialWeightFunction())
-        @assert order >= 1 "Order must be 1 or greater."
-        ws = dimension == 1 ? CentralGradientWorkspace1D() : CentralGradientWorkspace2D()
+    function CentralGradient(order::Int, dimension::Int)
+        @assert order >= 1 "Order must be 1 or greater."       
+
         interpolator = Interpolator{dimension, order, 1}()
-        WS = typeof(ws)
         I = typeof(interpolator)
-        new{dimension, WS, I}(order, weightFunction, ws, interpolator)
+
+        new{dimension, I}(order, interpolator)
     end
 end
 
-# --- 2. Refactored CentralGradient Functors (Dispatched for 1D and 2D) ---
+# --- 4. Buffer Initialization Hooks (Adapted from Upwind.jl) ---
 
+"""
+Buffer initialization hook for CentralGradient. Finds the max neighbors
+from the grid and resizes all thread-local buffers.
+"""
+function initGIBuffers!(g::CentralGradient, pg::ParticleGrid)
+    return
+end
+
+"""
+initGI! is a no-op for this interpolator, as all calculations
+are performed in the functor.
+"""
+function initGI!(g::CentralGradient, kwargs...)
+    return
+end
+
+# --- 5. Refactored CentralGradient Functors (Fused-Loop Signature) ---
+
+"""
+(1D Functor) Calculates the central gradient divergence for particle `i`.
+"""
 function (central::CentralGradient{1})(
-    particleGrid::ParticleGrid1D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector, 
-    eq::LinearAdvection{1}, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
-)::Real
-    
-    ws = central.workspace
+    eq::PDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid1D,             # Grid object
+    f_neighbors::AbstractVector,    # (Not used)
+    df_neighbors::AbstractVector    # Pre-gathered diffs
+)::Real where {PDE <: ScalarHyperbolicPDE} # Use ScalarHyperbolicPDE for velocity
+
+    vel = velocity(eq, f_i)
+
     interp = central.interpolator
-    neighbors = particleGrid.neighbour_indices[particleIndex]
-    num_neighbors = length(neighbors)
-    if num_neighbors < central.order; return 0.0; end
 
-    ensure_capacity!(ws, num_neighbors)
-    ensure_capacity!(interp, num_neighbors)
-    dxVec = @view ws.dx_buffer[1:num_neighbors]
-    dfVec = @view ws.df_buffer[1:num_neighbors]
-    wVec  = @view ws.w_buffer[1:num_neighbors]
+    # Get references to GLOBAL grid data arrays
+    dxVec = pg.neighbor_xdistance
+    wVec = pg.neighbor_weights
 
-    for (i, nbIndex) in enumerate(neighbors)
-        dxVec[i] = getDistance(particleGrid, particleIndex, nbIndex) / particleGrid.dx
-        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-    end
-    central.weightFunction(wVec, dxVec; param=settings.interpAlpha, normalisation=1.0)
+    num_nb = length(nb_slice)
+    
+    # Check if we have enough neighbors for the interpolation order
+    if num_nb < central.order; return 0.0; end
 
-    res1, res2 = interp(dxVec, wVec, dfVec)
+    # --- 4. Call Interpolator ---
+    # Note: Curvature (res2) is calculated but not stored here,
+    # matching the Upwind.jl functor's structure.
+    res = interp(nb_slice, dxVec, wVec, df_neighbors)
 
-    if setCurvature
-        if central.order == 1
-            particleGrid.curvatures[particleIndex] = 0.0
-        else # order == 2
-            particleGrid.curvatures[particleIndex] = res2 / (particleGrid.dx^2)
-        end
-    end
-
-    return velocity(eq, 0.0) * res1 / particleGrid.dx
+    # --- 5. Return Scaled Divergence ---
+    return vel * res[1]
 end
 
 
+"""
+(2D Functor) Calculates the central gradient divergence for particle `i`.
+"""
 function (central::CentralGradient{2})(
-    particleGrid::ParticleGrid2D, 
-    particleIndex::Integer, 
-    fVec::AbstractVector, 
-    eq::LinearAdvection{2}, 
-    settings::SimSetting; 
-    setCurvature::Bool=true
-)::Real
-    
-    ws = central.workspace
+    eq::PDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid2D,             # Grid object
+    f_neighbors::AbstractVector,    # (Not used)
+    df_neighbors::AbstractVector    # Pre-gathered diffs
+)::Real where {PDE <: ScalarHyperbolicPDE}
+
+    vel = velocity(eq, f_i)
+
     interp = central.interpolator
-    neighbors = particleGrid.neighbour_indices[particleIndex]
-    num_neighbors = length(neighbors)
-    if num_neighbors < central.order; return 0.0; end
 
-    ensure_capacity!(ws, num_neighbors)
-    ensure_capacity!(interp, num_neighbors)
-    dxVec = @view ws.dx_buffer[1:num_neighbors]
-    dyVec = @view ws.dy_buffer[1:num_neighbors]
-    dfVec = @view ws.df_buffer[1:num_neighbors]
-    wVec  = @view ws.w_buffer[1:num_neighbors]
-    
-    norm_factor = max(particleGrid.dx, particleGrid.dy)
+    # Get references to GLOBAL grid data arrays
+    dxVec = pg.neighbor_xdistance
+    dyVec = pg.neighbor_ydistance
+    wVec = pg.neighbor_weights
 
-    for (i, nbIndex) in enumerate(neighbors)
-        dx, dy = getDistance(particleGrid, particleIndex, nbIndex)
-        dxVec[i] = dx / norm_factor
-        dyVec[i] = dy / norm_factor
-        dfVec[i] = fVec[nbIndex] - fVec[particleIndex]
-    end
-    central.weightFunction(wVec, dxVec, dyVec; param=settings.interpAlpha, normalisation=1.0)
+    num_nb = length(nb_slice)
+    
+    if num_nb < central.order; return 0.0; end
 
-    res1, res2, res3, res4 = interp(dxVec, dyVec, wVec, dfVec)
+    # --- 4. Call Interpolator ---
+    # Note: Curvature (res3, res4) is calculated but not stored here.
+    res = interp(nb_slice, dxVec, dyVec, wVec, df_neighbors)
     
-    if setCurvature
-        if central.order == 1
-            particleGrid.curvatures[particleIndex, :] .= 0.0
-        else # order == 2
-            particleGrid.curvatures[particleIndex, 1] = res3 / (norm_factor^2)
-            particleGrid.curvatures[particleIndex, 2] = res4 / (norm_factor^2)
-        end
-    end
-    
-    vel = velocity(eq, 0.0)
-    return (vel[1] * res1 + vel[2] * res2) / norm_factor
+    # --- 5. Return Scaled Divergence ---
+    return (vel[1] * res[1] + vel[2] * res[2])
 end
-

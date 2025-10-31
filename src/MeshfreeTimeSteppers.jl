@@ -605,13 +605,11 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     initTSBuffer!(ralston, particleGrid)
     #zero_vector_fields!(ralston.gradientInterpolator)
     #zero_vector_fields!(ralston.gradientInterpolator.workspace)
-    if any(isnan,ralston.rhos); error("TEST") end
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
     Threads.@threads for particle_range in chunks
         for p_idx in particle_range
             fi = ralston.rhos[p_idx]
             initFs!(ralston, p_idx, fi, ralston.rhos, particleGrid)
-            if any(isnan,ralston.rhos); error("TEST2") end
             initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs) # ERROR IS HERE
             initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
         end
