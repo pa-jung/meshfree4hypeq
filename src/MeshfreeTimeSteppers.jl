@@ -233,7 +233,7 @@ function (rk3::RK3)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
             
             rho_candidate = rk3.rho_n[p_idx] - dt * div1_val
             
-            if !(rk3.fallbackInterpolator isa NoFallbackGrad) && rk3.mood(rk3.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk3.rho_n)
+            if !(rk3.fallbackInterpolator isa NoFallbackGrad) && rk3.mood(rk3.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk3.neighbor_fs)
                 div1_val = rk3.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk3.neighbor_fs, rk3.neighbor_dfs)
                 rho_candidate = rk3.rho_n[p_idx] - dt * div1_val
             end
@@ -276,7 +276,7 @@ function (rk3::RK3)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
             
             rho_candidate = 0.75 * rk3.rho_n[p_idx] + 0.25 * rk3.rho_stage1[p_idx] - 0.25 * dt * div2_val
             
-            if !(rk3.fallbackInterpolator isa NoFallbackGrad) && rk3.mood(rk3.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk3.rho_stage1)
+            if !(rk3.fallbackInterpolator isa NoFallbackGrad) && rk3.mood(rk3.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk3.neighbor_fs)
                 div2_val = rk3.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk3.neighbor_fs, rk3.neighbor_dfs)
                 rho_candidate = 0.75 * rk3.rho_n[p_idx] + 0.25 * rk3.rho_stage1[p_idx] - 0.25 * dt * div2_val
             end
@@ -319,7 +319,7 @@ function (rk3::RK3)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
             
             rho_final = (1/3) * rk3.rho_n[p_idx] + (2/3) * rk3.rho_stage2[p_idx] - (2/3) * dt * div3_val
             
-            if !(rk3.fallbackInterpolator isa NoFallbackGrad) && rk3.mood(rk3.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, rk3.rho_stage2)
+            if !(rk3.fallbackInterpolator isa NoFallbackGrad) && rk3.mood(rk3.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, rk3.neighbor_fs)
                 div3_val = rk3.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk3.neighbor_fs, rk3.neighbor_dfs)
                 rho_final = (1/3) * rk3.rho_n[p_idx] + (2/3) * rk3.rho_stage2[p_idx] - (2/3) * dt * div3_val
             end
@@ -413,7 +413,7 @@ function (rk4::RK4)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
             k1_val = rk4.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
             
             rho_candidate = rk4.rho_n[p_idx] - 0.5 * dt * k1_val # u^(1) candidate
-            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.rho_n)
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.neighbor_fs)
                 k1_val = rk4.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
             end
             rk4.k1[p_idx] = k1_val
@@ -454,7 +454,7 @@ function (rk4::RK4)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
             k2_val = rk4.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
             
             rho_candidate = rk4.rho_n[p_idx] - 0.5 * dt * k2_val # u^(2) candidate
-            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.rho_stage)
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.neighbor_fs)
                 k2_val = rk4.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
             end
             rk4.k2[p_idx] = k2_val
@@ -495,7 +495,7 @@ function (rk4::RK4)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
             k3_val = rk4.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
             
             rho_candidate = rk4.rho_n[p_idx] - dt * k3_val # u^(3) candidate
-            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.rho_stage)
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, rk4.neighbor_fs)
                 k3_val = rk4.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, rk4.neighbor_fs, rk4.neighbor_dfs)
             end
             rk4.k3[p_idx] = k3_val
@@ -538,7 +538,7 @@ function (rk4::RK4)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, setting
             
             rho_final = rk4.rho_n[p_idx] - (dt/6) * (rk4.k1[p_idx] + 2*rk4.k2[p_idx] + 2*rk4.k3[p_idx] + k4_val)
             
-            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, rk4.rho_stage)
+            if !(rk4.fallbackInterpolator isa NoFallbackGrad) && rk4.mood(rk4.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, rk4.neighbor_fs)
                 # Fallback to Euler step using u^(3) and k4
                 particleGrid.rhos[p_idx] = rk4.rho_stage[p_idx] - dt * rk4.k4[p_idx]
             else
@@ -658,7 +658,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
             ralston.div1[p_idx] = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
             
-            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, ralston.rhoInit)
+            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, particleGrid, ralston.neighbor_fs)
                 ralston.div1[p_idx] = ralston.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
                 rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
             end
@@ -694,7 +694,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
             # Pass the intermediate state (ralston.rhos) to the gradient calculation
             div2 = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
-            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, ralston.rhos)
+            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, ralston.neighbor_fs)
                 div2 = ralston.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
                 rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
             end
@@ -876,7 +876,7 @@ function (ralston::RalstonRK2SmoothSwitch)(eq::ScalarHyperbolicPDE, particleGrid
         rho_final_candidate = ralston.rho_n[p_idx] - dt * (ralston.div1[p_idx]/4 + 3*div2/4)
         
         # --- Initial MOOD Check ---
-        if ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final_candidate, particleGrid, ralston.rho_stage)
+        if ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final_candidate, particleGrid, ralston.neighbor_fs)
             particleGrid.rhos[p_idx] = ralston.rho_fallback[p_idx]
             push!(ralston.mood_indices, p_idx)
             ralston.switched_to_fallback[p_idx] = true

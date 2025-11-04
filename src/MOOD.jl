@@ -35,14 +35,14 @@ function (mood::MOODu1)(
     nb_slice::UnitRange{Int},
     newRho::Float64,                # Proposed new value
     particleGrid::ParticleGrid,     # Grid to access neighbor info
-    rhoVec::AbstractVector{Float64} # Full rho vector
+    neighbor_fs::AbstractVector{Float64} # Full neighbor rho vector
 )::Bool
     
     num_nb = particleGrid.num_neighbors[i]
     if num_nb == 0; return false; end # If no neighbors, DMP cannot be violated
     
     # Calculate local extrema using the helper with direct indexing
-    minU, maxU = findLocalExtrema(rho_i, nb_slice, particleGrid.neighbor_indices, rhoVec)
+    minU, maxU = findLocalExtrema(rho_i, nb_slice, neighbor_fs)
     
     δ = mood.d # Relaxation parameter
 
@@ -86,13 +86,13 @@ function (mood::MOODu2)(
     nb_slice::UnitRange{Int},
     newRho::Float64,                # Proposed new value
     particleGrid::ParticleGrid1D,  # Grid to access neighbor info (1D)
-    rhoVec::AbstractVector{Float64} # Full rho vector
+    neighbor_fs::AbstractVector{Float64} # Full neighbor rho vector
 )::Bool
     
     num_nb = particleGrid.num_neighbors[i]
     if num_nb == 0; return false; end 
 
-    minU, maxU = findLocalExtrema(rho_i, nb_slice, particleGrid.neighbor_indices, rhoVec)
+    minU, maxU = findLocalExtrema(rho_i, nb_slice, neighbor_fs)
     δ = mood.d
 
     # Basic DMP check
@@ -129,13 +129,13 @@ function (mood::MOODu2)(
     nb_slice::UnitRange{Int},
     newRho::Float64,                # Proposed new value
     particleGrid::ParticleGrid2D,  # Grid to access neighbor info (2D)
-    rhoVec::AbstractVector{Float64} # Full rho vector
+    neighbor_fs::AbstractVector{Float64} # Full neighbor rho vector
 )::Bool
     
     num_nb = particleGrid.num_neighbors[i]
     if num_nb == 0; return false; end
 
-    minU, maxU = findLocalExtrema(rho_i, nb_slice, particleGrid.neighbor_indices, rhoVec)
+    minU, maxU = findLocalExtrema(rho_i, nb_slice, neighbor_fs)
     δ = mood.d
 
     # Basic DMP check

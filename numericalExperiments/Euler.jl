@@ -23,7 +23,7 @@ function main()
     sim_config_euler1d_system = SimulationConfig(
         runSystemSimulation,
         ParamDict(
-            "tmax" => 0.2, "N" => 1000, "bc" => :outflow,
+            "tmax" => 0.2, "N" => 1000, "bc" => :periodic,
             "xmin" => -0.5, "xmax" => .5, 
             "CFL" => 0.2, "snapshots" => 11, 
             "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx

@@ -1007,8 +1007,7 @@ Finds the local min/max of `rho` in the neighborhood using direct indexing.
 function findLocalExtrema(
     rho_i::Float64,
     nb_slice::UnitRange{Int},          # Slice for the current particle
-    neighbor_indices_full::Vector{Int}, # The grid's full neighbor index list
-    rhoVec::AbstractVector{Float64}     # Full rho vector
+    neighbor_fs::Vector{Float64}, # The grid's full neighbor index list
 )::Tuple{Float64, Float64}
     
     minU = rho_i
@@ -1016,8 +1015,7 @@ function findLocalExtrema(
     
     # Iterate through the slice of the full neighbor index list
     @inbounds for k in nb_slice 
-        j = neighbor_indices_full[k] # Get neighbor index
-        rho_j = rhoVec[j]
+        rho_j = neighbor_fs[k]
         minU = min(minU, rho_j)
         maxU = max(maxU, rho_j)
     end

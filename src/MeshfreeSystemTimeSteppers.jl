@@ -4,13 +4,31 @@ export GeneralIMEXTimeStepper, ARS233, PareschiRussoIMEXSSP3, ARS222, SSP2332, S
 
 include("ButcherTableaus.jl")
 
-# --- In your TimeIntegration.jl file ---
-
-using InteractiveUtils
-
-function run_functor_test(rs, S_out, U_kin, pos, time)
-    # This is the call we want to inspect
-    rs(S_out, U_kin, pos, time)
+function initFs!(ts::MeshfreeSystemTimeStepper, i, f_is, fVecs, pgs::Tuple)
+    for l in eachindex(pgs)
+        # --- 4. Parallel Pre-Gather Loop ---
+        pg = pgs[l]
+        f_i = f_is[l]
+        fVec = @view(fVecs[:,l])
+        # Get local aliases to the buffers for cleaner code in the loop
+        neighbor_fs  = ts.all_neighbor_fs[l]
+        neighbor_dfs = ts.all_neighbor_dfs[l]
+        pointer = pg.neighbor_pointers[i]
+        neighbor_slice = pointer:(pointer + pg.num_neighbors[i] - 1)
+        nb_indices = pg.neighbor_indices
+        for k in neighbor_slice
+            # `k` is the global index into the flat neighbor arrays
+            
+            # 1. GATHER: Get neighbor index `j`...
+            j = nb_indices[k]
+            # ...and then get its value `f_j`. This is the slow part.
+            f_j = fVec[j] 
+            #println(i,":",j)
+            # 2. CALCULATE & STORE: Write to the pre-allocated buffers
+            neighbor_fs[k]  = f_j
+            neighbor_dfs[k] = f_j - f_i
+        end
+    end
 end
 
 # In your main code, after `my_source_term` is defined:
@@ -122,7 +140,7 @@ function (ss::SimpleSplitting)(
 end
 # --- In your TimeIntegration.jl file ---
 # --- REFACTORED GeneralIMEXTimeStepper Struct and Constructor ---
-mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSystemTimeStepper
+mutable struct GeneralIMEXTimeStepper{N, G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSystemTimeStepper
     # User's modular components
     gradientInterpolator::G1
     fallbackInterpolator::G2
@@ -144,8 +162,8 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
     thread_Y_i_base_buffers::Vector{Vector{Float64}}
     
     # --- Buffers for explicit fused loop (like in RK4) ---
-    neighbor_fs::Vector{Float64}
-    neighbor_dfs::Vector{Float64}
+    all_neighbor_fs::NTuple{N,Vector{Float64}}
+    all_neighbor_dfs::NTuple{N,Vector{Float64}}
     
     num_stages::Int
 
@@ -156,9 +174,9 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
         
         s = size(butcher_tableau.A, 1) # Number of stages
         n_threads = Threads.nthreads()
-
+        N = source_term_object.num_total_kinetic_components
         # Initialize with empty buffers; they will be resized on the first call
-        new{G1, G2, M, IS, ST_OBJ, BT}(
+        new{N, G1, G2, M, IS, ST_OBJ, BT}(
             gradientInterpolator, fallbackInterpolator, mood, implicit_solver, 
             source_term_object, butcher_tableau,
             Matrix{Float64}(undef,0,0), [Matrix{Float64}(undef,0,0) for _ in 1:s],
@@ -166,7 +184,7 @@ mutable struct GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSyst
             Vector{Float64}(undef, 0), # rho_buffer
             [Float64[] for _ in 1:n_threads], # thread_u_particle_buffers
             [Float64[] for _ in 1:n_threads], # thread_Y_i_base_buffers
-            Float64[], Float64[], # neighbor_fs, neighbor_dfs
+            ntuple(x -> Float64[], N), ntuple(x -> Float64[],N), # neighbor_fs, neighbor_dfs
             s
         )
     end
@@ -300,8 +318,8 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         # --- REFACTORED: Evaluate and store explicit tendency K_E ---
         # ==================================================================
         # Loop over each component (equation) in the system
-        for k in 1:N
-            eq_k = scalar_equations[k]
+
+        Threads.@threads for k in 1:N
             grid_k = system_pg[k]
             # Get the view of the current stage for this component
             current_Y_i_k = @view current_Y_i_sys[:, k]
@@ -310,40 +328,50 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
             # 1. Init Buffers for this component
             initGIBuffers!(imex_ts.gradientInterpolator, grid_k)
             initGIBuffers!(imex_ts.fallbackInterpolator, grid_k)
-
-            # 2. Threaded loop to calculate slopes/coefficients
-            Threads.@threads for particle_range in chunks
-                for p_idx in particle_range
-                    fi = current_Y_i_k[p_idx]
-                    initFs!(imex_ts, p_idx, fi, current_Y_i_k, grid_k)
-                    initGI!(imex_ts.gradientInterpolator, p_idx, fi, grid_k, imex_ts.neighbor_fs, imex_ts.neighbor_dfs)
-                    initGI!(imex_ts.fallbackInterpolator, p_idx, fi, grid_k, imex_ts.neighbor_fs, imex_ts.neighbor_dfs)
+        end
+        for p_idx in 1:N_particles
+            initFs!(imex_ts, p_idx, @view(current_Y_i_sys[p_idx,:]), current_Y_i_sys, system_pg)
+        end
+        # 2. Threaded loop to calculate slopes/coefficients
+        Threads.@threads for particle_range in chunks
+            for p_idx in particle_range
+                for k in 1:N
+                    grid_k = system_pg[k]
+                    neighbor_fs = imex_ts.all_neighbor_fs[k]
+                    neighbor_dfs = imex_ts.all_neighbor_dfs[k]
+                    fi = current_Y_i_sys[p_idx, k]
+                    initGI!(imex_ts.gradientInterpolator, p_idx, fi, grid_k, neighbor_fs, neighbor_dfs)
+                    initGI!(imex_ts.fallbackInterpolator, p_idx, fi, grid_k, neighbor_fs, neighbor_dfs)
                 end
             end
+        end
 
-            # 3. Threaded loop to calculate divergence
-            Threads.@threads for particle_range in chunks
-                for p_idx in particle_range
+        # 3. Threaded loop to calculate divergence
+        Threads.@threads for particle_range in chunks
+            for p_idx in particle_range
+                for k in 1:N
+                    grid_k = system_pg[k]
                     if grid_k.is_boundary[p_idx]; continue; end
-
-                    fi = current_Y_i_k[p_idx]
-                    nb_slice = getNBSlice(grid_k, p_idx)
                     
-                    div_high = imex_ts.gradientInterpolator(eq_k, p_idx, fi, nb_slice, grid_k, imex_ts.neighbor_fs, imex_ts.neighbor_dfs)
+                    eq_k = scalar_equations[k]
+                    fi = current_Y_i_sys[p_idx,k]
+                    nb_slice = getNBSlice(grid_k, p_idx)
+                    neighbor_fs = imex_ts.all_neighbor_fs[k]
+                    neighbor_dfs = imex_ts.all_neighbor_dfs[k]
+
+                    div_high = imex_ts.gradientInterpolator(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
                     
                     rho_candidate = fi - dt * div_high # Candidate for MOOD
                     
-                    if !(imex_ts.fallbackInterpolator isa NoFallbackGrad) && imex_ts.mood(imex_ts.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, grid_k, current_Y_i_k)
-                        div_fallback = imex_ts.fallbackInterpolator(eq_k, p_idx, fi, nb_slice, grid_k, imex_ts.neighbor_fs, imex_ts.neighbor_dfs)
+                    if !(imex_ts.fallbackInterpolator isa NoFallbackGrad) && imex_ts.mood(imex_ts.gradientInterpolator, p_idx, fi, nb_slice, rho_candidate, grid_k, neighbor_fs)
+                        div_fallback = imex_ts.fallbackInterpolator(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
                         imex_ts.K_E_stages_sys[i][p_idx, k] = -div_fallback
                     else
                         imex_ts.K_E_stages_sys[i][p_idx, k] = -div_high
                     end
-                end
             end
-            apply_boundary_conditions!(grid_k,current_Y_i_k)
-        end # End of component loop for K_E
-        
+        end
+        end # End of component loop for K_E    
         # ==================================================================
         # --- Evaluate and store implicit tendency K_I ---
         # ==================================================================
