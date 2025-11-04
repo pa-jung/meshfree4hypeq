@@ -326,8 +326,8 @@ end
 
 function (interp::Interpolator{1, 0, 0})(
     nb_slice::UnitRange{Int},
-    wVec::Vector{Float64},  # Full Vector
-    fVec::Vector{Float64},  # Full Vector
+    wVec::AbstractVector{Float64},  # Full AbstractVector
+    fVec::AbstractVector{Float64},  # Full AbstractVector
 )
     sum_w = 0.0
     dot_wf = 0.0
@@ -348,9 +348,9 @@ end
 
 function (interp::Interpolator{1, 1, 0})(
     nb_slice::UnitRange{Int},
-    dxVec::Vector{Float64}, # Full Vector
-    wVec::Vector{Float64},  # Full Vector
-    fVec::Vector{Float64},  # Full Vector
+    dxVec::AbstractVector{Float64}, # Full AbstractVector
+    wVec::AbstractVector{Float64},  # Full AbstractVector
+    fVec::AbstractVector{Float64},  # Full AbstractVector
 )
     # Accumulate matrix and RHS components in a loop
     A11 = 0.0; A12 = 0.0; A22 = 0.0
@@ -389,9 +389,9 @@ end
 
 function (interp::Interpolator{1, 2, 0})(
     nb_slice::UnitRange{Int},
-    dxVec::Vector{Float64}, # Full Vector
-    wVec::Vector{Float64},  # Full Vector
-    fVec::Vector{Float64},  # Full Vector
+    dxVec::AbstractVector{Float64}, # Full AbstractVector
+    wVec::AbstractVector{Float64},  # Full AbstractVector
+    fVec::AbstractVector{Float64},  # Full AbstractVector
 )
     # Accumulate matrix and RHS components
     # Basis: [1, x, x^2/2]
@@ -453,9 +453,9 @@ end
 
 function (interp::Interpolator{1, 1, 1})(
     nb_slice::UnitRange{Int},
-    dxVec::Vector{Float64}, # Full Vector
-    wVec::Vector{Float64},  # Full Vector
-    dfVec::Vector{Float64}, # Full Vector
+    dxVec::AbstractVector{Float64}, # Full AbstractVector
+    wVec::AbstractVector{Float64},  # Full AbstractVector
+    dfVec::AbstractVector{Float64}, # Full AbstractVector
 )
     # Calculate A11 = sum(w*dx*dx) and b1 = sum(w*dx*df)
     A11 = 0.0
@@ -479,9 +479,9 @@ end
 
 function (interp::Interpolator{1, 2, 1})(
     nb_slice::UnitRange{Int},
-    dxVec::Vector{Float64}, # Full Vector
-    wVec::Vector{Float64},  # Full Vector
-    dfVec::Vector{Float64}, # Full Vector
+    dxVec::AbstractVector{Float64}, # Full AbstractVector
+    wVec::AbstractVector{Float64},  # Full AbstractVector
+    dfVec::AbstractVector{Float64}, # Full AbstractVector
 )
     # --- 1. Find a scaling factor L (characteristic length) ---
     L = 1e-14 # Avoid division by zero
@@ -554,10 +554,10 @@ end
 
 function (interp::Interpolator{2, 1, 1})(
     nb_slice::UnitRange{Int},
-    dxVec::Vector{Float64}, # Full Vector
-    dyVec::Vector{Float64}, # Full Vector
-    wVec::Vector{Float64},  # Full Vector
-    dfVec::Vector{Float64}, # Full Vector
+    dxVec::AbstractVector{Float64}, # Full AbstractVector
+    dyVec::AbstractVector{Float64}, # Full AbstractVector
+    wVec::AbstractVector{Float64},  # Full AbstractVector
+    dfVec::AbstractVector{Float64}, # Full AbstractVector
 )
     A11 = 0.0; A12 = 0.0; A22 = 0.0
     b1 = 0.0; b2 = 0.0
@@ -590,10 +590,10 @@ end
 
 function (interp::Interpolator{2, 2, 1})(
     nb_slice::UnitRange{Int},
-    dxVec::Vector{Float64}, # Full Vector
-    dyVec::Vector{Float64}, # Full Vector
-    wVec::Vector{Float64},  # Full Vector
-    dfVec::Vector{Float64}; # Full Vector
+    dxVec::AbstractVector{Float64}, # Full AbstractVector
+    dyVec::AbstractVector{Float64}, # Full AbstractVector
+    wVec::AbstractVector{Float64},  # Full AbstractVector
+    dfVec::AbstractVector{Float64}; # Full AbstractVector
     scale::Float64=1.0      
 )
     num_nb = length(nb_slice)
@@ -601,7 +601,7 @@ function (interp::Interpolator{2, 2, 1})(
 
     # --- 1. Allocate local matrix and vector ---
     A = Matrix{Float64}(undef, num_nb, 5)
-    b = Vector{Float64}(undef, num_nb)
+    b = AbstractVector{Float64}(undef, num_nb)
     
     # --- 2. Precompute scaling factors ---
     invL = 1.0 / scale
@@ -631,12 +631,12 @@ function (interp::Interpolator{2, 2, 1})(
         A[idx, 4] = basis_4_s * sqrt_w
         A[idx, 5] = basis_5_s * sqrt_w
         
-        # Vector b = sqrt(W) * df
+        # AbstractVector b = sqrt(W) * df
         b[idx] = df * sqrt_w
     end
 
     # --- 4. Solve (sqrt(W) A') c' = (sqrt(W) df) ---
-    local c_scaled::Vector{Float64}
+    local c_scaled::AbstractVector{Float64}
     try
         # This solves the standard WLS problem
         c_scaled = A \ b
@@ -660,10 +660,10 @@ end
 
 # function (interp::Interpolator{2, 2, 1})(
 #     nb_slice::UnitRange{Int},
-#     dxVec::Vector{Float64}, # Full Vector
-#     dyVec::Vector{Float64}, # Full Vector
-#     wVec::Vector{Float64},  # Full Vector
-#     dfVec::Vector{Float64}; # Full Vector,
+#     dxVec::AbstractVector{Float64}, # Full AbstractVector
+#     dyVec::AbstractVector{Float64}, # Full AbstractVector
+#     wVec::AbstractVector{Float64},  # Full AbstractVector
+#     dfVec::AbstractVector{Float64}; # Full AbstractVector,
 #     scale::Float64=1.0      # <-- ADDED optional scaling
 # )
 #     # --- 1. Precompute scaling factors ---
@@ -795,10 +795,10 @@ end
 
 # function (interp::Interpolator{2, 2, 1})(
 #     nb_slice::UnitRange{Int},
-#     dxVec::Vector{Float64}, # Full Vector
-#     dyVec::Vector{Float64}, # Full Vector
-#     wVec::Vector{Float64},  # Full Vector
-#     dfVec::Vector{Float64}, # Full Vector
+#     dxVec::AbstractVector{Float64}, # Full AbstractVector
+#     dyVec::AbstractVector{Float64}, # Full AbstractVector
+#     wVec::AbstractVector{Float64},  # Full AbstractVector
+#     dfVec::AbstractVector{Float64}, # Full AbstractVector
 # )
 #     # --- 1. Declare local variables for the 5x5 matrix (upper triangle) ---
 #     N11 = 0.0; N12 = 0.0; N13 = 0.0; N14 = 0.0; N15 = 0.0
@@ -957,19 +957,19 @@ end
 
 # struct DumbserWENO <: GradientInterpolator
 #     order::Int64
-#     res::Vector{Float64}
+#     res::AbstractVector{Float64}
 #     weightFunction::MLSWeightFunction
 #     s::Integer  # amount of one-sided stencils
 #     gradients::Matrix{Float64}
-#     weights::Vector{Float64}
+#     weights::AbstractVector{Float64}
 
 #     function DumbserWENO(order::Int64 = 2; weightFunction::MLSWeightFunction = exponentialWeightFunction())
 #         @assert order == 2 "Order must be to two, since the WENO weights require a second derivative."
-#         new(order, Vector{Float64}(undef, 5), weightFunction, 8, Matrix{Float64}(undef, (5, 9)), Vector{Float64}(undef, 9))
+#         new(order, AbstractVector{Float64}(undef, 5), weightFunction, 8, Matrix{Float64}(undef, (5, 9)), AbstractVector{Float64}(undef, 9))
 #     end
 # end
 
-# function (weno::DumbserWENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::Vector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
+# function (weno::DumbserWENO)(particleGrid::ParticleGrid2D, particleIndex::Integer, fVec::AbstractVector{<:Real}, eq::LinearAdvection{2}, settings::SimSetting; setCurvature::Bool=true)::Real
 #     @assert settings.interpRange >= sqrt(5.0^2 + 3.0^2)*particleGrid.dx "Interpolation must be sufficiently larger, otherwise one cannot guarantee sufficient neighbours are found." 
 #     particle = particleGrid.grid[particleIndex]
 #     Npts = length(particle.neighbourIndices)

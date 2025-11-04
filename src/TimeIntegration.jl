@@ -43,13 +43,14 @@ function initTSBuffer!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
     initAddTSBuffer!(ts, pg)
     return nothing
 end
-function initTSBuffer!(ts::MeshfreeTimeStepper, pgs::Tuple)
+function initTSBuffer!(ts::MeshfreeSystemTimeStepper, pgs::Tuple)
     # `num_interactions` is the total length of the flat neighbor lists (M)
-    for k = eachindex(pgs)
-        num_interactions = length(pgs[k].neighbor_indices) 
-        # --- 3. Resize Per-Interaction Buffers (Size M) ---
-        _ensure_capacity!(ts.all_neighbor_fs[k], num_interactions)
-        _ensure_capacity!(ts.all_neighbor_dfs[k], num_interactions)
+    num_interactions = length(pgs[1].neighbor_indices)
+    num_eqs = length(pgs)
+    if size(ts.all_neighbor_dfs,1) < num_interactions
+        n = num_interactions + num_interactions ÷ 4
+        ts.all_neighbor_fs = Matrix{Float64}(undef, n, num_eqs)
+        ts.all_neighbor_dfs = Matrix{Float64}(undef, n, num_eqs)
     end
     initAddTSBuffer!(ts, pgs)
     return nothing
