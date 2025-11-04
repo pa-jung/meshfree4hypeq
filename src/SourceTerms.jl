@@ -93,6 +93,7 @@ function (source::AbstractSourceTerm)(
     error("Functor () not implemented for source term type $(typeof(source))")
 end
 
+# --- MODIFIED Struct ---
 struct RelaxationSourceTerm{MF <: Tuple, KI <: Tuple} <: AbstractSourceTerm
     maxwellians::MF
     kinetic_indices::KI
@@ -100,10 +101,11 @@ struct RelaxationSourceTerm{MF <: Tuple, KI <: Tuple} <: AbstractSourceTerm
     inv_epsilon::Float64
     num_total_kinetic_components::Int64
     num_macro_variables::Int64
-    # The buffer now has a concrete type!
-    macro_buffer::Vector{Float64}
+    # Buffer is now a list of buffers, one per thread
+    thread_macro_buffers::Vector{Vector{Float64}}
 end
 
+# --- MODIFIED Constructor ---
 function RelaxationSourceTerm(
     maxwellian_functions_input::AbstractVector{<:MaxwellianFunctor},
     epsilon::Float64,
@@ -114,6 +116,10 @@ function RelaxationSourceTerm(
     num_total_kin = length(maxwellian_tuple)
     num_macro_vars = length(kinetic_indices_tuple)
     
+    # --- Create one buffer for each thread ---
+    n_threads = Threads.nthreads()
+    thread_buffers = [Vector{Float64}(undef, num_macro_vars) for _ in 1:n_threads]
+    
     return RelaxationSourceTerm(
         maxwellian_tuple, 
         kinetic_indices_tuple,
@@ -121,27 +127,37 @@ function RelaxationSourceTerm(
         1/epsilon,
         num_total_kin,
         num_macro_vars,
-        # Initialize the buffer with a concrete type
-        Vector{Float64}(undef, num_macro_vars)
+        thread_buffers # <-- Pass the list of buffers
     )
 end
 
+# --- MODIFIED Functor ---
 function (rs::RelaxationSourceTerm{MF,KI})(
     S_out_particle::AbstractVector{Float64},
     U_kinetic_particle::AbstractVector{Float64},
     particle_pos, 
     time             
 ) where {MF <: Tuple, KI <: Tuple}
+    
     if length(U_kinetic_particle) != rs.num_total_kinetic_components || length(S_out_particle) != rs.num_total_kinetic_components
         error("Dimension mismatch in RelaxationSourceTerm functor.")
     end
 
+    # --- Get the correct buffer for this thread ---
+    tid = Threads.threadid()
+    # Use mod1 to handle potential dynamic changes in thread count if Julia is started with -t auto
+    safe_tid = mod1(tid, length(rs.thread_macro_buffers))
+    macro_buffer = rs.thread_macro_buffers[safe_tid] # <-- THREAD-SAFE
+    
+    # This loop now writes to a thread-local buffer
     for i = 1:rs.num_macro_variables
-        rs.macro_buffer[i] = sum(U_kinetic_particle[k] for k in rs.kinetic_indices[i])
+        # Use @inbounds for a slight speedup if you are confident
+        macro_buffer[i] = sum(U_kinetic_particle[k] for k in rs.kinetic_indices[i])
     end
+    
+    # This loop now reads from a thread-local buffer
     for (k_global_comp, maxwellian) in enumerate(rs.maxwellians)
-
-        mk_of_U_macro = maxwellian(rs.macro_buffer)
+        mk_of_U_macro = maxwellian(macro_buffer)
         
         S_out_particle[k_global_comp] = (mk_of_U_macro - U_kinetic_particle[k_global_comp]) * rs.inv_epsilon
     end

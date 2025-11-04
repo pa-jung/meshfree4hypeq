@@ -229,7 +229,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
 
         initTSBuffer!(imex_ts, system_pg) # Resizes neighbor_fs/dfs        
         current_Y_i_sys = imex_ts.Y_stages_sys[i]
-        Threads.@threads for particle_range in chunks
+       Threads.@threads for particle_range in chunks
             @inbounds for p_idx in particle_range
                 
                 # Loop over each component (rho, rho_u, ...)
@@ -369,7 +369,8 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         dt_bt = dt * bt.bt[i]
         dt_b  = dt * bt.b[i]
         
-        @inbounds for p_idx in 1:N_particles
+        Threads.@threads for particle_range in chunks
+            @inbounds for p_idx in particle_range
             if system_pg[1].is_boundary[p_idx]; continue; end # Skip boundary
 
             for k in 1:N_components
@@ -388,6 +389,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                     rhos_vec[p_idx] += dt_b * imex_ts.K_I_stages_sys[i][p_idx, k]
                 end
             end
+        end
         end
     end
 

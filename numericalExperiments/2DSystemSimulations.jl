@@ -1,4 +1,5 @@
-include("../SimulationFunctions/runSystemSimulation.jl")
+using Meshfree4ScalarEq
+using IPlotPDESols
 
 function _relax_velocities(a::Float64, N::Int)
     res = Vector{Vector{Tuple{Float64,Float64}}}(undef, N)

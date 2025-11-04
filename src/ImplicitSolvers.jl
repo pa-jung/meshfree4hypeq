@@ -106,8 +106,11 @@ function solve!(
     kinetic_map = source_term_object.kinetic_indices
     N_macro_vars = source_term_object.num_macro_variables
 
-    # Create a tuple directly. `ntuple` is type-stable and non-allocating.
-    macro_buffer = source_term_object.macro_buffer
+    # --- Get the correct buffer for this thread ---
+    tid = Threads.threadid()
+    # Use mod1 to handle potential dynamic changes in thread count if Julia is started with -t auto
+    safe_tid = mod1(tid, length(source_term_object.thread_macro_buffers))
+    macro_buffer = source_term_object.thread_macro_buffers[safe_tid] # <-- THREAD-SAFE
     for i = 1:N_macro_vars
         macro_buffer[i] = sum(RHS_const_particle[k] for k in kinetic_map[i])
     end

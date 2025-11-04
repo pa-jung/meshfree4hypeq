@@ -140,7 +140,7 @@ function main()
     )
 
     params = ParamDict(
-            "tmax" => 0.2, "N" => 3000, "bc" => :periodic,
+            "tmax" => 0.2, "N" => 3000, "bc" => :outflow,
             "xmin" => -0.5, "xmax" => .5, 
             "CFL" => 0.2, "snapshots" => 11, 
             "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
@@ -160,12 +160,12 @@ function main()
             #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
         )
 
-    @profview runSystemSimulation(params)
+    #@profview runSystemSimulation(params)
     return sim_config_euler1d_system
 end
 
 sim_config_euler1d_system = main()
-#show1DSolutionFig(sim_config_euler1d_system; ui_options = :default) 
+show1DSolutionFig(sim_config_euler1d_system; ui_options = :default) 
 #showDynamicDependence(sim_config_euler1d_system; calc_stats = true)
 #showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
 # This will require show1DSolutionFig to be adapted to handle SimData1D.u as Vector{Matrix}
