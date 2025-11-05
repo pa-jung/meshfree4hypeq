@@ -504,9 +504,8 @@ end
 
 # --- In MUSCL.jl ---
 
-# --- REPLACED _compute_coeffs! for 2D Order 1 ---
 """
-(2D Order 1) Calculates coefficients (alfaij, betaij).
+(2D Order 1) Calculates coefficients (alfaij, betaij) using Cholesky.
 """
 function _compute_coeffs!(
     ::MUSCLORDER1,
@@ -521,35 +520,76 @@ function _compute_coeffs!(
     alfaij = ws.alfaijs
     betaij = ws.betaijs
 
-    # --- 1. Calculate A-matrix components ---
-    A11 = 0.0; A22 = 0.0; A12 = 0.0
+    # --- 1. Build the 2x2 Normal Matrix N = A^T W A ---
+    N11 = 0.0; N12 = 0.0; N22 = 0.0
+
     @inbounds for k in nb_slice
         w_k = w[k]
+        if w_k == 0.0; continue; end
+
         dx_k = dx[k]
         dy_k = dy[k]
-        A11 += w_k * dx_k * dx_k
-        A22 += w_k * dy_k * dy_k
-        A12 += w_k * dx_k * dy_k
+
+        # Basis functions
+        b1 = dx_k
+        b2 = dy_k
+
+        # Add contribution to upper triangle of N
+        N11 += w_k * b1 * b1
+        N12 += w_k * b1 * b2
+        N22 += w_k * b2 * b2
     end
 
-    D = A11 * A22 - A12^2
+    # --- 2. Hardcoded Cholesky Decomposition (N = LLᵀ) ---
+    # L = [l11  0 ]
+    #     [l21 l22]
 
-    # --- Handle singular matrix case ---
-    if abs(D) < 1e-14
+    l11_sq = N11
+    if l11_sq < 1e-14
         fill!(alfaij, 0.0)
         fill!(betaij, 0.0)
         return
     end
+    l11 = sqrt(l11_sq); inv_l11 = 1.0 / l11
+    l21 = N12 * inv_l11
 
-    # --- 2. Calculate final coefficients ---
-    invD = 1.0 / D
+    l22_sq = N22 - l21*l21
+    if l22_sq < 1e-14
+        fill!(alfaij, 0.0)
+        fill!(betaij, 0.0)
+        return
+    end
+    l22 = sqrt(l22_sq); inv_l22 = 1.0 / l22
+
+    # --- 3. Solve for Coefficients for EACH neighbor ---
     @inbounds for k in nb_slice
         w_k = w[k]
+
+        # Build the RHS vector b_k = (A^T W)_k
         dx_k = dx[k]
         dy_k = dy[k]
 
-        alfaij[k] = (w_k * (A22 * dx_k - A12 * dy_k)) * invD
-        betaij[k] = (w_k * (A11 * dy_k - A12 * dx_k)) * invD
+        b1 = dx_k * w_k
+        b2 = dy_k * w_k
+
+        # Solve N*c = b  (where N = LLT)
+        # a) Forward Substitution (Ly = b)
+        # y1 = b1 / l11
+        # y2 = (b2 - l21*y1) / l22
+        y1 = b1 * inv_l11
+        y2 = (b2 - l21*y1) * inv_l22
+
+        # b) Backward Substitution (Lᵀc = y)
+        # L^T = [l11 l21]
+        #       [ 0  l22]
+        # c2 = y2 / l22
+        # c1 = (y1 - l21*c2) / l11
+        c2 = y2 * inv_l22
+        c1 = (y1 - l21*c2) * inv_l11
+
+        # Store coefficients in the workspace views
+        alfaij[k] = c1
+        betaij[k] = c2
     end
 end
 

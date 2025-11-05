@@ -12,9 +12,9 @@ using Logging
 function __init__()
     # This code will run once when the module is loaded.
     # It sets the logger for the entire application.
-    min_level_to_show = Logging.Info
+    min_level_to_show = Logging.Warn
     global_logger(ConsoleLogger(stderr, min_level_to_show))
-    println("IPlotPDESols logger initialized to show ",min_level_to_show,"-Level.")
+    println("Logger initialized to show ",min_level_to_show,"-Level.")
 end
 # ---------------------------------------------------------
 

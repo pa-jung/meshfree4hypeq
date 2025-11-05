@@ -281,37 +281,25 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
             time_implicit = time_n + bt.c[i] * dt
             
             # Use @threads over the chunks for good load balancing
-            Threads.@threads for particle_range in chunks
-                # Get this thread's private buffers
-                tid = mod1(Threads.threadid(),Threads.nthreads())
-                # u_iter_buffer = imex_ts.thread_u_particle_buffers[tid]
-                Y_base_buffer = imex_ts.thread_Y_i_base_buffers[tid]
+            Threads.@threads for p_idx in 1:N_particles
+                if system_pg[1].is_boundary[p_idx]; continue; end
 
-                @inbounds for p_idx in particle_range
-                    if system_pg[1].is_boundary[p_idx]; continue; end
+                # --- OPTIMIZED: Remove all copying ---
+                # 1. Get a direct view of the particle's state
+                u_particle_view = @view current_Y_i_sys[p_idx, :]
 
-                    # --- OPTIMIZED: Remove all copying ---
-                    # 1. Get a direct view of the particle's state
-                    u_particle_view = @view current_Y_i_sys[p_idx, :]
-                    
-                    # 2. Copy the state ONCE into the base buffer
-                    #    (This is the *only* copy, and it's small)
-                    Y_base_buffer .= u_particle_view
-
-                    # 3. Pass the *view* as the iteration buffer.
-                    #    The solver will read from Y_base_buffer
-                    #    and write/iterate directly into current_Y_i_sys[p_idx, :].
-                    ImplicitSolvers.solve!(imex_ts.implicit_solver,
-                        u_particle_view, # <-- Pass the view directly
-                        Y_base_buffer,   # Pass the copied base state
-                        dt * bt.A[i,i],
-                        imex_ts.source_term_object, 
-                        system_pg[1].positions[p_idx], 
-                        time_implicit, N_components
-                    )
-                    # 4. No copy-back needed, solver wrote to the view
-                    #  current_Y_i_sys[p_idx, :] .= u_iter_buffer # <-- REMOVED
-                end
+                # 3. Pass the *view* as the iteration buffer.
+                #    The solver will read from Y_base_buffer
+                #    and write/iterate directly into current_Y_i_sys[p_idx, :].
+                ImplicitSolvers.solve!(imex_ts.implicit_solver,
+                    u_particle_view, # <-- Pass the view directly
+                    dt * bt.A[i,i],
+                    imex_ts.source_term_object, 
+                    system_pg[1].positions[p_idx], 
+                    time_implicit, N_components
+                )
+                # 4. No copy-back needed, solver wrote to the view
+                #  current_Y_i_sys[p_idx, :] .= u_iter_buffer # <-- REMOVED
             end
         end
         # ==================================================================
@@ -330,23 +318,20 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
             initGIBuffers!(imex_ts.fallbackInterpolator[k], grid_k)
         end
         # 2. Threaded loop to calculate slopes/coefficients
-        Threads.@threads for particle_range in chunks
-            for p_idx in particle_range
-                initFs!(imex_ts, p_idx, @view(current_Y_i_sys[p_idx,:]), current_Y_i_sys, system_pg)
-                for k in 1:N
-                    grid_k = system_pg[k]
-                    neighbor_fs = @view imex_ts.all_neighbor_fs[:,k]
-                    neighbor_dfs = @view imex_ts.all_neighbor_dfs[:,k]
-                    fi = current_Y_i_sys[p_idx, k]
-                    initGI!(imex_ts.gradientInterpolator[k], p_idx, fi, grid_k, neighbor_fs, neighbor_dfs)
-                    initGI!(imex_ts.fallbackInterpolator[k], p_idx, fi, grid_k, neighbor_fs, neighbor_dfs)
-                end
+        Threads.@threads for p_idx in 1:N_particles
+            initFs!(imex_ts, p_idx, @view(current_Y_i_sys[p_idx,:]), current_Y_i_sys, system_pg)
+            for k in 1:N
+                grid_k = system_pg[k]
+                neighbor_fs = @view imex_ts.all_neighbor_fs[:,k]
+                neighbor_dfs = @view imex_ts.all_neighbor_dfs[:,k]
+                fi = current_Y_i_sys[p_idx, k]
+                initGI!(imex_ts.gradientInterpolator[k], p_idx, fi, grid_k, neighbor_fs, neighbor_dfs)
+                initGI!(imex_ts.fallbackInterpolator[k], p_idx, fi, grid_k, neighbor_fs, neighbor_dfs)
             end
         end
 
         # 3. Threaded loop to calculate divergence
-        Threads.@threads for particle_range in chunks
-            for p_idx in particle_range
+        Threads.@threads for p_idx in 1:N_particles
                 for k in 1:N
                     grid_k = system_pg[k]
                     if grid_k.is_boundary[p_idx]; continue; end
@@ -370,7 +355,6 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                         imex_ts.K_E_stages_sys[i][p_idx, k] = -div_high
                     end
             end
-        end
         end # End of component loop for K_E    
         # ==================================================================
         # --- Evaluate and store implicit tendency K_I ---
@@ -378,8 +362,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         # (This part is sequential and remains unchanged)
         time_implicit_for_KI = time_n + bt.c[i] * dt 
         
-        Threads.@threads for particle_range in chunks
-            @inbounds for p_idx in particle_range
+        Threads.@threads for p_idx in 1:N_particles
                 # This loop CANNOT skip boundary particles, as the source
                 # term might apply to all particles (e.g., gravity)
                 imex_ts.source_term_object(
@@ -388,7 +371,6 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                     system_pg[1].positions[p_idx], 
                     time_implicit_for_KI
                 )
-            end
         end
     end # End of stages loop
     
@@ -397,8 +379,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         dt_bt = dt * bt.bt[i]
         dt_b  = dt * bt.b[i]
         
-        Threads.@threads for particle_range in chunks
-            @inbounds for p_idx in particle_range
+        Threads.@threads for  p_idx in N_particles
             if system_pg[1].is_boundary[p_idx]; continue; end # Skip boundary
 
             for k in 1:N_components
@@ -417,7 +398,6 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                     rhos_vec[p_idx] += dt_b * imex_ts.K_I_stages_sys[i][p_idx, k]
                 end
             end
-        end
         end
     end
 

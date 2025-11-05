@@ -79,6 +79,30 @@ function main()
                         "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
                 "relax_epsilon" => 1e-6
             ),
+            "ARS233MUSCL2" => ParamDict(
+                "timestepper" => "ARS233",
+                "main_flux" => "Rusanov",
+                "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
+                "MOOD" => "none", 
+                        "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+                "relax_epsilon" => 1e-6
+            ),
+            "ARS233MUSCL3" => ParamDict(
+                "timestepper" => "ARS233",
+                "main_flux" => "Rusanov",
+                "main_gradient" => "MUSCL", "order" => 3, # MUSCL(1) for 2nd order spatial
+                "MOOD" => "none", 
+                        "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+                "relax_epsilon" => 1e-6
+            ),
+            "ARS233MUSCL4" => ParamDict(
+                "timestepper" => "ARS233",
+                "main_flux" => "Rusanov",
+                "main_gradient" => "MUSCL", "order" => 4, # MUSCL(1) for 2nd order spatial
+                "MOOD" => "none", 
+                        "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+                "relax_epsilon" => 1e-6
+            ),
             "SSP2MUSCL2MOOD" => ParamDict(
                 "timestepper" => "SSP2",
                 "main_flux" => "Rusanov",
@@ -142,12 +166,13 @@ function main()
             )
         ),
         #"ARS222MUSCL2MOOD"
-        ["SSWENO","ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD", "SSMUSCL2(minmod)"]
+        ["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4"]
+        #["SSWENO","ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD", "SSMUSCL2(minmod)"]
         #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
     )
 
     params = ParamDict(
-            "tmax" => 0.2, "N" => 3000, "bc" => :outflow,
+            "tmax" => 0.2, "N" => 1000, "bc" => :outflow,
             "xmin" => -0.5, "xmax" => .5, 
             "CFL" => 0.2, "snapshots" => 11, 
             "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
@@ -175,6 +200,7 @@ sim_config_euler1d_system = main()
 show1DSolutionFig(sim_config_euler1d_system; ui_options = :default) 
 #showDynamicDependence(sim_config_euler1d_system; calc_stats = true)
 #showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
+#showConvergencePlot(sim_config_euler1d_system, "SEED", 100:50:10000; force_int_param = true, initial_calc = true, ui_options = :default)
 # This will require show1DSolutionFig to be adapted to handle SimData1D.u as Vector{Matrix}
 # and use the component selector. For now, it will plot the first component (rho_macro).
 #sim_config = create_sim_config_from_csv("numericalExperiments/Euler/ShockTubeSolution(uniform)/figures/euler_shocktube_limiter_uniform_params.csv","none")

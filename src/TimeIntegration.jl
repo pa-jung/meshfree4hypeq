@@ -168,9 +168,6 @@ function mainTimeIntegrator!(
     snapshots::Integer = 10, 
     remove_ghosts::Bool = false
 ) where {D}
-    # --- Initialization ---
-    initTimeStepper(timeStepper, particleGrid, settings)
-    
     # --- Pre-allocate Storage ---
     # Determine the number of particles to save
     N_save = remove_ghosts ? (particleGrid.N - particleGrid.N_ghost) : particleGrid.N

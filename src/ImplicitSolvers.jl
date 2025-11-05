@@ -89,7 +89,6 @@ end
 function solve!(
     solver::LinearizedRelaxationImplicitSolver,
     Y_out_particle::AbstractVector{Float64},         
-    RHS_const_particle::AbstractVector{Float64},     
     dt_coefficient_for_S::Float64,              
     source_term_object::RelaxationSourceTerm,     
     particle_pos::Any,                      
@@ -112,11 +111,11 @@ function solve!(
     safe_tid = mod1(tid, length(source_term_object.thread_macro_buffers))
     macro_buffer = source_term_object.thread_macro_buffers[safe_tid] # <-- THREAD-SAFE
     for i = 1:N_macro_vars
-        macro_buffer[i] = sum(RHS_const_particle[k] for k in kinetic_map[i])
+        macro_buffer[i] = sum(Y_out_particle[k] for k in kinetic_map[i])
     end
 
     for k_global_comp in 1:N_total_kinetic_components_arg
-        v_k_base_kinetic = RHS_const_particle[k_global_comp]
+        v_k_base_kinetic = Y_out_particle[k_global_comp]
         
         # The Maxwellian now receives the TUPLE, which can be splatted efficiently
         Mk_val = maxwellians[k_global_comp](macro_buffer)

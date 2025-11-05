@@ -198,6 +198,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             save_relax = false
             # --- 8. Run Simulation ---
             elapsed_time, xs, us, ts = mainTimeIntegrator!(method, eq, particleGrid, settings; snapshots = snapshots)
+            #@profview mainTimeIntegrator!(method, eq, particleGrid, settings; snapshots = snapshots)
         else
             relax_eps = run_params["relax_epsilon"]
             save_relax = run_params["save_relax"]
@@ -241,6 +242,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                             else error("Unknown TimeStepper name for system: '$timestepper_name'") 
                             end
             elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots)
+            #@profview mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots)
             @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
             us = save_relax ? sys_us : [vec(sum(sys_u, dims=2)) for sys_u = sys_us]

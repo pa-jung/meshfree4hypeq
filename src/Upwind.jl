@@ -404,7 +404,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
     vel = velocity(eq,f_i)
     
     # --- 1. Get workspace, interpolator, and global refs ---
-    thread_idx = Threads.threadid()
+    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
     ws = upwind.workspaces[thread_idx] 
     interp = upwind.interpolator
 
@@ -500,7 +500,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspacePA, <:Any, PraveenAlgorithm
     vel = velocity(eq,f_i)
     
     # --- 1. Get workspace, scaling factor, and refs to global data ---
-    thread_idx = Threads.threadid()
+    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
     ws = upwind.workspaces[thread_idx]
 
     dx_all_full = pg.neighbor_xdistance

@@ -518,7 +518,7 @@ function initGI!(
     muscl::MUSCL{D},
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
-    pg::ParticleGrid{D},               # Grid object (will be 2D)
+    pg::ParticleGrid{D},               # Grid object
     neighbor_fs::AbstractVector,    # The flat neighbor-value buffer
     neighbor_dfs::AbstractVector    # The flat neighbor-difference buffer
 ) where D
