@@ -14,15 +14,15 @@ function main()
     sim_config_2d = SimulationConfig(
         runScalarSimulation,
         ParamDict(
-            "tmax" => 2.0, "Nx" => 200, "Ny" => 200,
+            "tmax" => 4.0, "Nx" => 200, "Ny" => 200,
             "xmin" => -5.0, "xmax" => 5.0, "ymin" => -5.0, "ymax" => 5.0,
             "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
-            "interp_range" => 3.5,
+            "interp_range" => 3.5, "remove_ghosts" => false,
             "init_func" => "riemann", # Use the new 2D function name
             #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
             #"init_params" => (0.,1.,-2.,2.,-2.,2.),
-            "init_params" => (0.,1.,(0.,0.),(1.,1.)),
-            "bc" => :outflow,
+            "init_params" => (1.,0.,(0.,0.),(1.,1.)),
+            "bc" => :fixed_dirichlet,
             "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
             "SEED" => 42,
             "weight_function" => "exponential",
@@ -47,6 +47,23 @@ function main()
                 "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Praveen",
                 "MOOD" => "U2", "delta_relax" => 0.
             ),
+            "RK2MUSCL2Limiter" => ParamDict(
+                "timestepper" => "RalstonRK2",
+                "main_gradient" => "MUSCL",
+                "order" => 2,
+                "main_flux" => "Rusanov",
+                "MOOD" => "none",
+                "limiter" => "VK",
+            ),
+            "RK2Upwind(Tiwari)" => ParamDict(
+                "timestepper" => "RalstonRK2",
+                "main_gradient" => "Upwind",
+                "upwind_alg_2d" => "Classic",
+                "order" => 1,
+                "main_flux" => "Rusanov",
+                "MOOD" => "none"
+            ),
+
             "Analytical Solution" => ParamDict(
                 "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order", "relax_velocities"]
             ),
@@ -78,7 +95,7 @@ function main()
                 "main_gradient" => "Upwind",
                 "order" => 1,
                 "main_flux" => "Rusanov",
-                "upwind_alg_2d" => "Praveen",
+                "upwind_alg_2d" => "Classic",
                 "MOOD" => "none",
                 "relax_velocities" => _relax_velocities(2.,1)[1], "relax_epsilon" => 1e-6,
                 "save_relax" => false,
@@ -106,8 +123,8 @@ function main()
                 "save_relax" => false,
             ),            
         ),
-        "ARS222Upwind"
-        #["ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222Upwind", "Analytical Solution"]
+        #"RK2Upwind(Tiwari)",
+        ["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind(Tiwari)"]
         #["ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222MUSCL2TotalFallback","RK2MUSCL2","RK2MUSCL2MOOD","ARS222Upwind"] # Methods to run by default
     );
     params = ParamDict(
@@ -138,8 +155,8 @@ end
 
 params, sim_config_2d = main()
 
-@profview runScalarSimulation(params)
+#@profview runScalarSimulation(params)
 # For example:
 #show2DSolutionFig(sim_config_2d;)
-#show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,1.)))
+show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,1.)))
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)

@@ -100,6 +100,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         seed_val = run_params["SEED"]
         weight_func_name = run_params["weight_function"]
         save_relax = run_params["save_relax"]
+        remove_ghosts = get(run_params,"remove_ghosts",true)
 
         @assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
         
@@ -264,7 +265,7 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         kinetic_eqs = Tuple(kinetic_eqs_vec)
         particleGrids = Tuple(particleGrids_vec)
 
-        elapsed_time, xs_data, sys_us_kinetic, ts = mainTimeIntegrator!(system_method, kinetic_eqs, particleGrids, settings; snapshots = snapshots)
+        elapsed_time, xs_data, sys_us_kinetic, ts = mainTimeIntegrator!(system_method, kinetic_eqs, particleGrids, settings; snapshots = snapshots, remove_ghosts = remove_ghosts)
         @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
         # --- 8. Post-process & Return ---

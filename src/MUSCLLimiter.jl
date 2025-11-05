@@ -190,7 +190,7 @@ Applies geometric limiting logic from the old `limit_slopes!(...)`
 """
 function _limit_slopes(
     strategy::Union{BarthJespersenLimiter, VenkatakrishnanLimiter},
-    slope_x::Real, slope_y::Real,
+    slopes::NTuple{2,<:Real},
     nb_slice::UnitRange{Int},
     f_i::Real,
     f_neighbors::AbstractVector, # View of neighbor f-values
@@ -198,6 +198,8 @@ function _limit_slopes(
 )
     dx = pg.neighbor_xdistance
     dy = pg.neighbor_ydistance
+    slope_x = slopes[1]
+    slope_y = slopes[2]
 
     ui = f_i
     if slope_x^2 + slope_y^2 < 1e-12
@@ -231,9 +233,6 @@ function _limit_slopes(
     
     limited_slope_x = slope_x * phi_i
     limited_slope_y = slope_y * phi_i
-
-    if isnan(limited_slope_y) ||
-    isnan(limited_slope_x); error("Found NaN while Limiting!"); end
     
     return limited_slope_x, limited_slope_y
 end

@@ -57,14 +57,15 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             if dimension == 1
                 Nx = run_params["N"]
-                grid_analytic = ParticleGrid1D(xmin, xmax, Nx, bc != :periodic , bc, 0.)
+                grid_analytic = ParticleGrid1D(xmin, xmax, Nx , bc, bc != :periodic)
                 xs = grid_analytic.positions
                 us = [[IC(x, t, eq, grid_analytic) for x in x_coords] for (x_coords, t) in zip(xs, ts)]
             else # dimension == 2
                 Nx, Ny = run_params["Nx"], run_params["Ny"]
                 ymin, ymax = run_params["ymin"], run_params["ymax"]
-                grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc != :periodic , bc, 0.)
+                grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, bc != :periodic)
                 xs = grid_analytic.positions
+                println(xs[1])
                 us = [[IC(p[1], p[2], t, eq, grid_analytic) for p in pos_coords] for (pos_coords, t) in zip(xs, ts)]
 
             end
@@ -92,11 +93,11 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         relax_vel = get(run_params, "relax_velocities", nothing)
         weight_func_name = get(run_params, "weight_function", nothing)
         lim = get(run_params, "limiter", nothing)
+        remove_ghosts = get(run_params, "remove_ghosts", true)
 
         #@assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
 
         # --- 5. Grid Creation (Dimension-Aware) ---
-        N_ghost::Int = bc == :periodic ? 0 : get(run_params, "N_ghost", ceil(Int, interp_range_factor) + 1)
         rng = MersenneTwister(seed_val)
 
         if dimension == 1
@@ -121,9 +122,9 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                       elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         local particleGrid
         if dimension == 1
-            particleGrid = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc, interp_range_factor; rng=rng, randomness=randomness, weight_func = weight_func)
+            particleGrid = ParticleGrid1D(xmin, xmax, Nx, bc, interp_range_factor; rng=rng, randomness=randomness, weight_func = weight_func)
         else
-            particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc, interp_range_factor; weight_func = weight_func, rng=rng, randomness=randomness)
+            particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, interp_range_factor; weight_func = weight_func, rng=rng, randomness=randomness)
         end
         N_total_particles = particleGrid.N
         #determineVolumes!(particleGrid)
@@ -197,7 +198,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             save_relax = false
             # --- 8. Run Simulation ---
-            elapsed_time, xs, us, ts = mainTimeIntegrator!(method, eq, particleGrid, settings; snapshots = snapshots)
+            elapsed_time, xs, us, ts = mainTimeIntegrator!(method, eq, particleGrid, settings; snapshots = snapshots, remove_ghosts = remove_ghosts)
             #@profview mainTimeIntegrator!(method, eq, particleGrid, settings; snapshots = snapshots)
         else
             relax_eps = run_params["relax_epsilon"]
@@ -241,7 +242,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                             elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term)
                             else error("Unknown TimeStepper name for system: '$timestepper_name'") 
                             end
-            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots)
+            elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots, remove_ghosts = remove_ghosts)
             #@profview mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots)
             @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 

@@ -58,6 +58,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     xmin::Float64
     xmax::Float64
     N::Int # Total number of particles
+    N_ghost::Int
     dx::Float64
     regular::Bool
     bc::Symbol
@@ -66,13 +67,14 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     max_nb::Int           
 
     function ParticleGrid1D(
-        xmin::Real, xmax::Real, N_interior::Integer, N_ghost::Integer, bc::Symbol,
+        xmin::Real, xmax::Real, N_interior::Integer, bc::Symbol,
         interp_range_factor::Real; 
         randomness::Real = 0.0, rng = Meshfree4ScalarEq.rng,
         # --- MODIFIED: Added default value ---
         weight_func::MLSWeightFunction = exponentialWeightFunction(1.,1.)
     )
         # --- (Existing constructor logic for N, interior_indices, dx) ---
+        N_ghost::Int = bc == :periodic ? 0 : ceil(Int, interp_range_factor) + 1
         local dx
         if bc == :periodic
             @assert N_ghost == 0 "Periodic grids do not use ghost cells."
@@ -123,14 +125,14 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         num_neighbors = zeros(Int, N)
         neighbor_xdistance = Float64[]
         neighbor_weights = Float64[]
-
+        N_ghost
         # --- Create the new grid object ---
         pg = new{typeof(weight_func)}(
             positions, rhos, curvatures, is_boundary, volumes, mood_events,
             neighbor_indices, neighbor_pointers, num_neighbors,
             neighbor_xdistance, neighbor_weights,
             weight_func,
-            xmin, xmax, N, dx, regular, bc, 
+            xmin, xmax, N, N-N_interior, dx, regular, bc, 
             interior_indices,
             convert(Float64, interp_range_factor), 0 # max_nb starts at 0
         )
@@ -182,9 +184,10 @@ mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
 
     function ParticleGrid2D(
         xmin::Real, xmax::Real, ymin::Real, ymax::Real, 
-        Nx_interior::Integer, Ny_interior::Integer, N_ghost::Integer, bc::Symbol, interp_range_factor::Real; 
+        Nx_interior::Integer, Ny_interior::Integer, bc::Symbol, interp_range_factor::Real; 
         randomness::NTuple{2, Real} = (0.0, 0.0), rng = Meshfree4ScalarEq.rng, weight_func::MLSWeightFunction = exponentialWeightFunction(1.,1.)
     )
+        N_ghost::Int = bc == :periodic ? 0 : ceil(Int, interp_range_factor) + 1
         local Nx_total, Ny_total, interior_indices, dx_nominal, dy_nominal
         if bc == :periodic
             @assert N_ghost == 0 "Periodic grids do not use ghost cells."
@@ -241,7 +244,7 @@ mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
 
         permutation = collect(1:N)
         # 3. Create the stateful object
-
+        N_ghost = N - Nx_interior * Ny_interior
         pg = new{typeof(system),typeof(weight_func)}(positions, zeros(N), is_boundary, 
         system, weight_func, Int[], zeros(Int,N+1), zeros(Int,N), Float64[], Float64[], Float64[],
         [Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], [Atomic{Int}(0) for _ in 1:N], 
@@ -850,7 +853,7 @@ function apply_boundary_conditions!(particleGrid::ParticleGrid2D, rhos_buffer::A
     elseif particleGrid.bc == :outflow
 
     # Find all ghost particles by checking the is_boundary flag
-    @threads for ghost_idx in 1:particleGrid.N
+    @inbounds for ghost_idx in 1:particleGrid.N
         if particleGrid.is_boundary[ghost_idx]
             num_nb = particleGrid.num_neighbors[ghost_idx]
             if num_nb == 0; continue; end
@@ -877,10 +880,11 @@ function apply_boundary_conditions!(particleGrid::ParticleGrid2D, rhos_buffer::A
                     end
                 end
             end
-
             # Copy the value from the closest neighbor *from the buffer*
             if closest_interior_neighbor_idx != -1
                 rhos_buffer[ghost_idx] = rhos_buffer[closest_interior_neighbor_idx]
+            else
+                rhos_buffer[ghost_idx] = 0.
             end
         end
     end
