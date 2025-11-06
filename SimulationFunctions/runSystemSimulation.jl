@@ -65,9 +65,9 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             @info "  Computing analytical solution..."
             # Setup a temporary grid to sample the solution
             grid_analytic = if dimension == 1
-                ParticleGrid1D(xmin, xmax, run_params["N"], bc != :periodic , bc, 0.)
+                ParticleGrid1D(xmin, xmax, run_params["N"], bc, bc != :periodic)
             else
-                ParticleGrid2D(xmin, xmax, run_params["ymin"], run_params["ymax"], run_params["Nx"], run_params["Ny"], bc != :periodic, bc, 0.)
+                ParticleGrid2D(xmin, xmax, run_params["ymin"], run_params["ymax"], run_params["Nx"], run_params["Ny"], bc, bc != :periodic)
             end
             
             dt_analytic = tmax / snapshots
@@ -163,9 +163,9 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                       elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         local particleGrid_template
         if dimension == 1
-            particleGrid_template = ParticleGrid1D(xmin, xmax, Nx, N_ghost, bc, interp_range_factor; rng=rng, randomness=randomness, weight_func = weight_func)
+            particleGrid_template = ParticleGrid1D(xmin, xmax, Nx, bc, interp_range_factor; rng=rng, randomness=randomness, weight_func = weight_func)
         else
-            particleGrid_template = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, N_ghost, bc, interp_range_factor; weight_func = weight_func, rng=rng, randomness=randomness)
+            particleGrid_template = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, interp_range_factor; weight_func = weight_func, rng=rng, randomness=randomness)
         end        
         # --- REFACTORED: Initial Condition Setup for System ---
 

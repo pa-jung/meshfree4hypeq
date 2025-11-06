@@ -59,20 +59,17 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                 Nx = run_params["N"]
                 grid_analytic = ParticleGrid1D(xmin, xmax, Nx , bc, bc != :periodic)
                 xs = grid_analytic.positions
-                us = [[IC(x, t, eq, grid_analytic) for x in x_coords] for (x_coords, t) in zip(xs, ts)]
+                us = [[IC(x, t, eq, grid_analytic) for x in xs] for t in ts]
             else # dimension == 2
                 Nx, Ny = run_params["Nx"], run_params["Ny"]
                 ymin, ymax = run_params["ymin"], run_params["ymax"]
                 grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, bc != :periodic)
                 xs = grid_analytic.positions
-                println(xs[1])
-                us = [[IC(p[1], p[2], t, eq, grid_analytic) for p in pos_coords] for (pos_coords, t) in zip(xs, ts)]
-
+                us = [[IC(p, t, eq, grid_analytic) for p in xs] for t in ts]
             end
-            
-            sim_data = createSimData(xs, us, ts, run_params)
+            sim_data = createSimData([xs for _ in ts], us, ts, run_params)
             sim_data.stats["time"] = 0.0
-            calculateAllStats!(sim_data, (x,t) -> IC(x,t,eq,grid_analytic); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, grid_analytic), quad_tol = 10e-9, dierckx_k = 4)
+            #calculateAllStats!(sim_data, (x,t) -> IC(x,t,eq,grid_analytic); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, grid_analytic), quad_tol = 10e-9, dierckx_k = 4)
             return sim_data
         end
         
@@ -90,7 +87,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         main_flux_name = get(run_params, "main_flux", nothing)
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
         seed_val = get(run_params, "SEED_value", nothing)
-        relax_vel = get(run_params, "relax_velocities", nothing)
+        relax_velocities_config = get(run_params, "relax_velocities", nothing)
         weight_func_name = get(run_params, "weight_function", nothing)
         lim = get(run_params, "limiter", nothing)
         remove_ghosts = get(run_params, "remove_ghosts", true)
@@ -184,7 +181,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                          end
         
         local xs, us, ts, elapsed_time, save_relax
-        if isnothing(relax_vel)
+        if isnothing(relax_velocities_config)
             method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
             elseif timestepper_name == "RK3"; method = RK3(MainGrad, FallbackGrad, mood_fun)
@@ -203,26 +200,43 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         else
             relax_eps = run_params["relax_epsilon"]
             save_relax = run_params["save_relax"]
-            N_kinetic = length(relax_vel)
-            kinetic_eqs = ntuple(N_kinetic) do i; LinearAdvection(relax_vel[i]) end
-
-            M_funcs_vec = Vector{MaxwellianFunctor}(undef, N_kinetic)
+            N_macro_vars = 1
+            N_kinetic = length(relax_velocities_config)
+            # --- 4. Construct Kinetic System (Dimension-Aware) ---
+            num_kinetic_per_macro::Vector{Int} = [length(v) for v in relax_velocities_config]
+            N_total_kinetic = sum(num_kinetic_per_macro)
+            
+            kinetic_eqs_vec = Vector{LinearAdvection{dimension}}(undef, N_total_kinetic)
+            SE = typeof(eq)
+            M_funcs_vec = Vector{MaxwellianFunctor{dimension,N_macro_vars,SE}}(undef, N_total_kinetic)
+            
+            kinetic_to_macro_map = [collect(1:N_total_kinetic)]
+            
+            # Set Maxwellian parameters based on dimension
             coeff, int_factor = dimension == 1 ? (0.5, 1.0) : (0.25, 2.)
-            for (i,speed) in enumerate(relax_vel)
-                local i_dim::Int, relax_speed::Float64
-                if dimension == 1
-                    i_dim = 1
-                    relax_speed = speed
-                else # dimension == 2
-                    i_dim = abs(speed[1]) > 1e-12 ? 1 : 2
-                    relax_speed = speed[i_dim]
-                end
 
-                M_funcs_vec[i] = MaxwellianFunctor(eq, 1, i_dim, relax_speed, coeff, int_factor)
+            global_k_idx = 1
+            for i_macro in 1:N_macro_vars
+                for speed in relax_velocities_config[i_macro]
+                    kinetic_eqs_vec[global_k_idx] = LinearAdvection(speed)
+                    
+                    local i_dim::Int, relax_speed::Float64
+                    if dimension == 1
+                        i_dim = 1
+                        relax_speed = speed
+                    else # dimension == 2
+                        i_dim = abs(speed[1]) > 1e-12 ? 1 : 2
+                        relax_speed = speed[i_dim]
+                    end
+
+                    M_funcs_vec[global_k_idx] = MaxwellianFunctor(eq, i_macro, i_dim, relax_speed, coeff, int_factor)
+                    global_k_idx += 1
+                end
             end
+            source_term = RelaxationSourceTerm(M_funcs_vec, relax_eps, kinetic_to_macro_map)
 
             # BUG FIX 2: Correctly initialize the kinetic particle grids to be in equilibrium.
-            pgs_vec = [deepcopy(particleGrid) for _ in 1:N_kinetic]
+            pgs_vec = [deepcopy(particleGrid) for _ in 1:N_total_kinetic]
             for k in 1:N_kinetic
                 for p_idx in 1:pgs_vec[k].N
                     # Get the macroscopic IC at this point
@@ -232,6 +246,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                 end
             end
             pgs = Tuple(pgs_vec)
+            kinetic_eqs = Tuple(kinetic_eqs_vec)
 
             source_term = RelaxationSourceTerm(M_funcs_vec, relax_eps, [collect(1:N_kinetic)])
             implicit_solver = LinearizedRelaxationImplicitSolver()
@@ -246,8 +261,31 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             #@profview mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots)
             @info "System integration (D=$dimension) finished in $(round(elapsed_time, digits=2)) seconds."
 
-            us = save_relax ? sys_us : [vec(sum(sys_u, dims=2)) for sys_u = sys_us]
-            xs = save_relax ? sys_xs : [sys_x[:,1] for sys_x = sys_xs]
+            local us_final
+            if save_relax
+                us_final = sys_us
+            else
+                m = length(ts)
+                # Pre-allocate the final macroscopic solution array
+                us_final = Vector{Vector{Float64}}(undef, m)
+                
+                # Use an efficient loop instead of `map`
+                for t_idx in eachindex(ts)
+                    kinetic_data_at_t = sys_us[t_idx]
+                    # Pre-allocate the matrix for this time step
+                    macro_data_at_t = Vector{Float64}(undef, size(sys_us[1])[1])
+                    
+                    for i_macro in 1:N_macro_vars
+                        indices = kinetic_to_macro_map[i_macro]
+                        # Sum the relevant columns directly into the output matrix without intermediate allocations
+                        macro_data_at_t .= sum(kinetic_data_at_t,dims = 2)
+                    end
+                    us_final[t_idx] = macro_data_at_t
+                end
+            end
+
+            xs = sys_xs
+            us = us_final
         end
         @info "Scalar D=$dimension simulation finished in $(round(elapsed_time, digits=2)) seconds."
 

@@ -16,13 +16,13 @@ function main()
         ParamDict(
             "tmax" => 4.0, "Nx" => 200, "Ny" => 200,
             "xmin" => -5.0, "xmax" => 5.0, "ymin" => -5.0, "ymax" => 5.0,
-            "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
-            "interp_range" => 3.5, "remove_ghosts" => false,
+            "CFL" => 0.4, "snapshots" => 200, "interp_alpha" => 1.0,
+            "interp_range" => 3.5, "remove_ghosts" => true,
             "init_func" => "riemann", # Use the new 2D function name
             #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
             #"init_params" => (0.,1.,-2.,2.,-2.,2.),
-            "init_params" => (1.,0.,(0.,0.),(1.,1.)),
-            "bc" => :fixed_dirichlet,
+            "init_params" => (1.,0.1,(0.,0.),(1.,1.)),
+            "bc" => :outflow,
             "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
             "SEED" => 42,
             "weight_function" => "exponential",
@@ -58,7 +58,15 @@ function main()
             "RK2Upwind(Tiwari)" => ParamDict(
                 "timestepper" => "RalstonRK2",
                 "main_gradient" => "Upwind",
-                "upwind_alg_2d" => "Classic",
+                "upwind_alg_2d" => "Tiwari",
+                "order" => 1,
+                "main_flux" => "Rusanov",
+                "MOOD" => "none"
+            ),
+            "RK2Upwind(Praveen)" => ParamDict(
+                "timestepper" => "RalstonRK2",
+                "main_gradient" => "Upwind",
+                "upwind_alg_2d" => "Praveen",
                 "order" => 1,
                 "main_flux" => "Rusanov",
                 "MOOD" => "none"
@@ -97,7 +105,7 @@ function main()
                 "main_flux" => "Rusanov",
                 "upwind_alg_2d" => "Classic",
                 "MOOD" => "none",
-                "relax_velocities" => _relax_velocities(2.,1)[1], "relax_epsilon" => 1e-6,
+                "relax_velocities" => _relax_velocities(2.,1), "relax_epsilon" => 1e-6,
                 "save_relax" => false,
             ),    
             "ARS222MUSCL2MOOD" => ParamDict(
@@ -108,7 +116,7 @@ function main()
                 "fallback_flux" => "Rusanov",
                 "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Praveen",
                 "MOOD" => "U2", "delta_relax" => 0.,
-                "relax_velocities" => _relax_velocities(2.,1)[1], "relax_epsilon" => 1e-6,
+                "relax_velocities" => _relax_velocities(2.,1), "relax_epsilon" => 1e-6,
                 "save_relax" => false,
             ), 
             "ARS222MUSCL2TotalFallback" => ParamDict(
@@ -119,12 +127,13 @@ function main()
                 "fallback_flux" => "Rusanov",
                 "fallback_gradient" => "Upwind", "upwind_alg_2d" => "Praveen",
                 "MOOD" => "only",
-                "relax_velocities" => _relax_velocities(2.,1)[1], "relax_epsilon" => 1e-6,
+                "relax_velocities" => _relax_velocities(2.,1), "relax_epsilon" => 1e-6,
                 "save_relax" => false,
             ),            
         ),
         #"RK2Upwind(Tiwari)",
-        ["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind(Tiwari)"]
+        #"RK2MUSCL2"
+        ["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind(Praveen)","ARS222MUSCL2"]
         #["ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222MUSCL2TotalFallback","RK2MUSCL2","RK2MUSCL2MOOD","ARS222Upwind"] # Methods to run by default
     );
     params = ParamDict(

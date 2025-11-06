@@ -4,6 +4,7 @@ module InitialConditions
 using ..HyperbolicPDEs
 using ..ParticleGrids
 using LinearAlgebra
+using StaticArrays
 
 export InitialCondition, SmoothInitialCondition, ShockInitialCondition, setInitialConditions!,
        Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,
@@ -358,7 +359,10 @@ function (ic::Riemann)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D
 end
 
 # --- NEW: Analytical Solution for 2D Burgers with Planar Riemann IC ---
-function (ic::Riemann{NTuple{2, Float64}})(x::Real, y::Real, t::Real, eq::BurgersEquation2D, pg::ParticleGrid2D)
+function (ic::Riemann{NTuple{2, Float64}})(pos::Union{NTuple{2,Float64},SVector{2,Float64}}, t::Real, eq::BurgersEquation2D, pg::ParticleGrid2D)
+    x = pos[1]
+    y = pos[2]
+    
     if t <= 1e-12; return ic(x, y); end
 
     # Project the problem onto the 1D normal direction

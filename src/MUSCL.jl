@@ -523,9 +523,25 @@ function initGI!(
     neighbor_dfs::AbstractVector    # The flat neighbor-difference buffer
 ) where D
     ws = muscl.workspace # ws will be MUSCLWorkspace2D1O or MUSCLWorkspace2D2O
-    
+
+    if pg.is_boundary[i]
+        # 1. Set 1st-order slopes to zero [cite: 76]
+        slopes = D == 1 ? 0. : ntuple(x -> 0., D)
+        
+        # 2. Get the correctly-shaped tuple of zeros for higher derivatives
+        # (e.g., () for O1, (0.0,) for 1D O2, (0.0, 0.0, 0.0) for 2D O2)
+        # We do this by calling the helper with an empty slice[cite: 3, 4, 12, 13].
+        nb_slice_empty = 1:0 
+        higher_derivatives_zeros = _calculate_higher_derivatives(muscl.order, nb_slice_empty, neighbor_dfs, ws)
+        
+        # 3. Save these zero-derivatives and return [cite: 9, 15, 16]
+        _save_derivatives!(ws, i, slopes, higher_derivatives_zeros) 
+        return
+    end    
+
     nb_slice = getNBSlice(pg, i)
     num_nb = length(nb_slice)
+
     # --- Handle zero-neighbor case ---
     if num_nb == 0
         _zero_coeffs!(nb_slice, ws) # Zero coefficients

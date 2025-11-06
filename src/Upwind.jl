@@ -288,10 +288,10 @@ function (upwind::UpwindGradient{1, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     # The interpolator works with the unscaled distances
     if upwind.order == 1
         # Interpolator{1, 1, 1} returns 1 value (df/dx)
-        res1 = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec)
+        res1 = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec; scale = pg.dx)
     elseif upwind.order == 2
         # Interpolator{1, 2, 1} returns 2 values (df/dx, d2f/dx2)
-        res_tuple = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec)
+        res_tuple = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec; scale = pg.dx)
         res1 = res_tuple[1]
         # res_tuple[2] is the curvature, which we ignore in the functor
     end
@@ -378,8 +378,9 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
 
     if num_upwind < upwind.order; return 0.0; end
     
+    scale = min(pg.dx,pg.dy)
     # The interpolator works with the scaled distances
-    res = interp(1:num_upwind, ws.dxVec, ws.dyVec, ws.wVec, ws.dfVec)
+    res = interp(1:num_upwind, ws.dxVec, ws.dyVec, ws.wVec, ws.dfVec; scale = scale)
     
     # --- SCALE the final derivative result ---
     # res1 and res2 represent the scaled derivatives (d/d(x/L), d/d(y/L))
@@ -418,6 +419,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
          return 0.0 
     end
     
+    scale = min(pg.dx,pg.dy)
     ensure_capacity!(ws, num_neighbors) 
     
     # Get local handles to workspace buffers
@@ -450,7 +452,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
 
     if stencil_size_x >= upwind.order
         # Call interpolator with workspace arrays and the calculated stencil size
-        res_x = interp(1:stencil_size_x, dxVec, dyVec, wVec, dfVec) 
+        res_x = interp(1:stencil_size_x, dxVec, dyVec, wVec, dfVec; scale = scale) 
         
         # No scaling on result
         ddx = res_x[1] 
@@ -477,7 +479,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
     
     if stencil_size_y >= upwind.order
         # Call interpolator with workspace arrays and the calculated stencil size
-        res_y = interp(1:stencil_size_y, dxVec, dyVec, wVec, dfVec) 
+        res_y = interp(1:stencil_size_y, dxVec, dyVec, wVec, dfVec; scale = scale) 
 
         # No scaling on result
         ddy = res_y[2] 
@@ -492,72 +494,85 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspacePA, <:Any, PraveenAlgorithm
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
     nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
-    pg::ParticleGrid2D,             # Grid object to access global arrays and range_factor
+    pg::ParticleGrid2D,             # Grid object
     f_neighbors::AbstractVector,    # (Not used directly by Praveen)
-    df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
+    df_neighbors::AbstractVector    # Pre-gathered view of (f_j - f_i)
 )::Real where {PDE <: ScalarHyperbolicPDE}
     
     vel = velocity(eq,f_i)
     
-    # --- 1. Get workspace, scaling factor, and refs to global data ---
+    # --- 1. Get workspace, scaling factor, and refs ---
     thread_idx = mod1(Threads.threadid(),Threads.nthreads())
     ws = upwind.workspaces[thread_idx]
 
     dx_all_full = pg.neighbor_xdistance
     dy_all_full = pg.neighbor_ydistance
-    w_all_full = pg.neighbor_weights # <-- USE PRECALCULATED WEIGHTS
+    w_all_full = pg.neighbor_weights
 
     num_neighbors = length(nb_slice)
-    
+    # Praveen needs at least 3 points for a non-singular 2D gradient
     if num_neighbors < 3; return 0.0; end 
+    
+    scale = min(pg.dx, pg.dy)
+    if scale < 1e-14; return 0.0; end # Prevent division by zero
+    invL = 1.0 / scale
     
     ensure_capacity!(ws, num_neighbors) 
 
-    # --- 2. Least-Squares System Setup (Explicit Loop with Scaling) ---
-    A11 = 0.0
-    A22 = 0.0
-    A12 = 0.0
+    # --- 2. Build Scaled Normal Matrix N' ---
+    N11_s = 0.0; N12_s = 0.0; N22_s = 0.0
     
-    # Use workspace buffers directly
-    coeff_x_Vec = ws.coeff_x_Vec
-    coeff_y_Vec = ws.coeff_y_Vec
-    cijVec      = ws.cijVec
-
     @inbounds for global_idx in nb_slice
-        # Fetch precalculated weight
         w_k = w_all_full[global_idx]
+        # p'1 = dx/L, p'2 = dy/L
+        dx_s = dx_all_full[global_idx] * invL
+        dy_s = dy_all_full[global_idx] * invL
         
-        # Scale distances
-        dx_k = dx_all_full[global_idx]
-        dy_k = dy_all_full[global_idx]
-        
-        # Accumulate matrix components
-        A11 += w_k * dx_k * dx_k
-        A22 += w_k * dy_k * dy_k
-        A12 += w_k * dx_k * dy_k
+        # N'_ij = sum(w_k * p'_i * p'_j)
+        N11_s += w_k * dx_s * dx_s
+        N12_s += w_k * dx_s * dy_s
+        N22_s += w_k * dy_s * dy_s
     end
     
-    D = A11 * A22 - A12^2
-    if abs(D) < 1e-14; return 0.0; end
-    invD = 1.0 / D
+    # --- 3. Hardcoded Cholesky Decomposition (N' = L'L'^T) ---
+    l11_s_sq = N11_s
+    if l11_s_sq < 1e-14; return 0.0; end
+    l11_s = sqrt(l11_s_sq)
+    inv_l11_s = 1.0 / l11_s # Store inverse for use in loop
+    
+    l21_s = N12_s * inv_l11_s
+    
+    l22_s_sq = N22_s - l21_s * l21_s # This is (Det(N') / N11_s)
+    if l22_s_sq < 1e-14; return 0.0; end
+    l22_s = sqrt(l22_s_sq)
+    inv_l22_s = 1.0 / l22_s # Store inverse for use in loop
 
-    # --- 3. Divergence Calculation (Explicit Loop) ---
+    # --- 4. Divergence Calculation (Loop 2) ---
     div = 0.0 # Accumulator for the final dot product
 
     @inbounds for global_idx in nb_slice
-        # Fetch precalculated weight and scaled distances (can re-fetch or buffer)
         w_k  = w_all_full[global_idx] 
-        dx_k = dx_all_full[global_idx]
-        dy_k = dy_all_full[global_idx]
+        dx_k = dx_all_full[global_idx] # Unscaled dx
+        dy_k = dy_all_full[global_idx] # Unscaled dy
         
-        # Solve for coefficients (no need to store in full Vecs if not reused)
-        coeff_x = (w_k * (A22 * dx_k - A12 * dy_k)) * invD
-        coeff_y = (w_k * (A11 * dy_k - A12 * dx_k)) * invD
-        # Store coefficients temporarily if needed, otherwise use directly
-        # coeff_x_Vec[local_idx] = coeff_x 
-        # coeff_y_Vec[local_idx] = coeff_y
+        # --- 4a. Build Scaled RHS b'_k ---
+        # b'_k = (A'^T W)_k = [w_k * (dx_k/L), w_k * (dy_k/L)]
+        b1_s = w_k * dx_k * invL
+        b2_s = w_k * dy_k * invL
+        
+        # --- 4b. Solve L'y' = b' (Forward sub) ---
+        y1_s = b1_s * inv_l11_s
+        y2_s = (b2_s - l21_s * y1_s) * inv_l22_s
 
-        # Rotational vectors
+        # --- 4c. Solve L'^T c' = y' (Backward sub) ---
+        c_y_s = y2_s * inv_l22_s
+        c_x_s = (y1_s - l21_s * c_y_s) * inv_l11_s
+
+        # --- 4d. Unscale coefficients ---
+        coeff_x = c_x_s * invL
+        coeff_y = c_y_s * invL
+
+        # --- 4e. Rotational math (uses unscaled geometry) ---
         hyp = hypot(dx_k, dy_k)
         nx, ny = if hyp < 1e-14
             (1.0, 0.0) # Handle dx=dy=0 case
@@ -568,7 +583,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspacePA, <:Any, PraveenAlgorithm
         sx = -ny 
         sy = nx  
 
-        # Compute adapted coefficients
+        # Compute adapted coefficients (uses unscaled coefficients)
         alfaBar = nx * coeff_x + ny * coeff_y
         betaBar = sx * coeff_x + sy * coeff_y
 
@@ -582,13 +597,12 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspacePA, <:Any, PraveenAlgorithm
     
         # Calculate final coefficient `cij`
         cij = alfaBar * bracketMinus1 + bracketMinus2
-        # cijVec[local_idx] = cij # Only store if needed later
-
+        
         # Accumulate dot product using precalculated df
         div += cij * df_neighbors[global_idx] 
     end
     
-    # Scale the final result
-    return 2 * div #/ interpRange
+    # --- 5. Return Final Result ---
+    return 2 * div
 end
 
