@@ -2,16 +2,18 @@ include("../SimulationFunctions/runScalarSimulation.jl")
 
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
+    runScalarSimulation,
     ParamDict(
-        "tmax" => 10., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
+        "tmax" => 10., "N" => 300, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => .2, "snapshots" => 5, "interp_alpha" => 1.0,
         "interp_range" => 1.5,
-        "init_func" => "box",
-        "init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
+        "init_func" => "riemann",
+        "init_params" => (1.,0.,-3.),
+        #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "randomness_factor" => 0., # Provide default needed when regular=false
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
-        "bc" => :periodic,
-        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
+        "bc" => :fixed_dirichlet, "weight_function" => "exponential",
+        "order" => 1, "PDE" => "burgers", # "PDE_params" => 1.
     ),
 
     MethodDict(
@@ -346,8 +348,8 @@ sim_config_burgers = SimulationConfig(
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
-    "ARS233MUSCL2"
-    #"RK2Upwind"
+    #"ARS233MUSCL2"
+    ["RK2Upwind","Analytical Solution"]
 );
 scene_options = Dict{String, Any}()
 #scene_options = Dict{String, Any}("t" => 6.,"component" => 1, "x_key" => "N", "y_key" => "l2error")
