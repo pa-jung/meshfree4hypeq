@@ -58,7 +58,7 @@ function main()
             "RK2Upwind(Tiwari)" => ParamDict(
                 "timestepper" => "RalstonRK2",
                 "main_gradient" => "Upwind",
-                "upwind_alg_2d" => "Tiwari",
+                "upwind_alg_2d" => "Classic",
                 "order" => 1,
                 "main_flux" => "Rusanov",
                 "MOOD" => "none"
@@ -131,9 +131,9 @@ function main()
                 "save_relax" => false,
             ),            
         ),
-        #"RK2Upwind(Tiwari)",
+        ["ARS222Upwind","RK2MUSCL2"]
         #"RK2MUSCL2"
-        ["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind(Praveen)","ARS222MUSCL2"]
+        #["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind(Praveen)","ARS222MUSCL2"]
         #["ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222MUSCL2TotalFallback","RK2MUSCL2","RK2MUSCL2MOOD","ARS222Upwind"] # Methods to run by default
     );
     params = ParamDict(

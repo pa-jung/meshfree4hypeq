@@ -10,6 +10,35 @@ abstract type UpwindWorkspace end
 
 using InteractiveUtils
 
+"""
+    sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
+
+Given a reconstruction of the state at the midpoint from the cell center flux1, and a state reconstruction from the neighbouring point, return the left and right state based on the relative orientation of the points.
+"""
+function sortFlux(flux_ij::Float64, flux_ji::Float64, deltaX::Float64)::Tuple{Float64, Float64}
+    if deltaX > 0.0
+        return (flux_ij, flux_ji)  # left state, right state
+    else
+        return (flux_ji, flux_ij)
+    end
+end
+
+"""
+    sortFlux(flux_ij::Real, flux_ji::Real, deltaX::Real)::Tuple{<:Real, <:Real}
+
+Given a reconstruction of the state at the midpoint from the cell center flux1, and a state reconstruction from the neighbouring point, return the left and right state in x and y direction.
+"""
+function sortFlux(flux_ij::Float64, flux_ji::Float64, deltaX::Float64, deltaY::Float64)::Tuple{Float64, Float64, Float64, Float64}
+    if deltaX > 0.0 && deltaY > 0.0
+        return (flux_ij, flux_ji, flux_ij, flux_ji)
+    elseif deltaX > 0.0 && deltaY < 0.0 
+        return (flux_ij, flux_ji, flux_ji, flux_ij)
+    elseif deltaX < 0.0 && deltaY > 0.0
+        return (flux_ji, flux_ij, flux_ij, flux_ji)
+    else
+        return (flux_ji, flux_ij, flux_ji, flux_ij)
+    end
+end
 
 function populate_buffers!(dxVec, dyVec, dfVec, neighbors, xdist, ydist, fVec, vel, particleIndex)
     
@@ -241,66 +270,61 @@ function (upwind::UpwindGradient{1, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     f_i::Real,                      # Value of f at particle i
     nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
     pg::ParticleGrid1D,             # Grid object
-    f_neighbors::AbstractVector,    # (Not used)
-    df_neighbors::AbstractVector    # Pre-gathered diffs
+    f_neighbors::AbstractVector,    # Pre-gathered f_j
+    df_neighbors::AbstractVector    # Pre-gathered f_j - f_i
 )::Real where {PDE <: HyperbolicPDE}
-    
-    # Cast equation type to access velocity
-    vel = velocity(eq,f_i)
     
     # --- 1. Get thread-local workspace, interpolator ---
     thread_idx = mod1(Threads.threadid(),Threads.nthreads())
     ws = upwind.workspaces[thread_idx]
     interp = upwind.interpolator
+    nFlux = upwind.numericalFlux
 
     # Get references to GLOBAL grid data arrays
     dx_all_full = pg.neighbor_xdistance
     w_all_full = pg.neighbor_weights # Use pre-gathered weights
 
     num_nb = length(nb_slice)
-    
     if num_nb == 0; return 0.0; end
-    
-    # Ensure the *internal* buffers are large enough
     ensure_capacity!(ws, num_nb)
 
     # --- 2. The Filter & Compact Loop ---
-    count = 0
-    @inbounds for global_idx in nb_slice
-        dx_k_unscaled = dx_all_full[global_idx]
+    # We now interpolate FLUX differences, not state differences.
+    # The upwind stencil is not needed; we use all neighbors
+    # just like the old code.
+    
+    # Get the flux at the center particle
+    flux_i = flux(eq, f_i)
+    
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        dx_k = dx_all_full[global_idx]
+        f_j = f_neighbors[global_idx]
+        
+        # Sort states for flux function
+        f_L, f_R = sortFlux(f_i, f_j, dx_k)
+        
+        # Calculate numerical flux at the interface
+        flux_num = nFlux(f_L, f_R, eq)
 
-        # 1D Upwind check (dot product is just multiplication)
-        if dx_k_unscaled * vel < 0
-            count += 1
-            # Store unscaled distances in the workspace
-            ws.dxVec[count] = dx_k_unscaled
-            # Store pre-gathered difference and weight
-            ws.dfVec[count] = df_neighbors[global_idx]
-            ws.wVec[count]  = w_all_full[global_idx]
-        end
+        # Store the flux difference in dfVec
+        ws.dxVec[local_idx] = dx_k
+        ws.dfVec[local_idx] = flux_num - flux_i # <-- Store F_num - F_i
+        ws.wVec[local_idx]  = w_all_full[global_idx]
     end
 
-    num_upwind = count
-
-    if num_upwind < upwind.order; return 0.0; end
+    if num_nb < upwind.order; return 0.0; end
     
     local res1
-    # The interpolator works with the unscaled distances
     if upwind.order == 1
-        # Interpolator{1, 1, 1} returns 1 value (df/dx)
-        res1 = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec; scale = pg.dx)
+        res1 = interp(1:num_nb, ws.dxVec, ws.wVec, ws.dfVec; scale = pg.dx)
     elseif upwind.order == 2
-        # Interpolator{1, 2, 1} returns 2 values (df/dx, d2f/dx2)
-        res_tuple = interp(1:num_upwind, ws.dxVec, ws.wVec, ws.dfVec; scale = pg.dx)
+        res_tuple = interp(1:num_nb, ws.dxVec, ws.wVec, ws.dfVec; scale = pg.dx)
         res1 = res_tuple[1]
-        # res_tuple[2] is the curvature, which we ignore in the functor
     end
     
-    # --- NO SCALING ---
-    ddx = res1
-    
-    # Return the final divergence (v * df/dx)
-    return vel * ddx
+    # The interpolator gives res1 ≈ (F_num - F_i) / dx
+    # The divergence formula is 2 * (F_num - F_i) / dx (from old code)
+    return 2.0 * res1
 end
 
 """
@@ -323,73 +347,98 @@ function _init_buffers_internal!(workspaces::Vector{WS}, max_neighbors::Int) whe
     end
 end
 
+"""
+Functor for 2D UpwindGradient (ClassicAlgorithm) using the 'fused' signature.
+Calculates the divergence for a single particle `i` by interpolating
+flux differences, which is stable for non-linear equations.
+"""
 function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm})(
     eq::PDE,
     i::Int,                         # Current particle index
     f_i::Real,                      # Value of f at particle i
     nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
-    pg::ParticleGrid2D,             # Grid object to access global arrays and range_factor
-    f_neighbors::AbstractVector,    # (Not used by ClassicAlgorithm)
-    df_neighbors::AbstractVector,   # Pre-gathered view of (f_j - f_i)
+    pg::ParticleGrid2D,             # Grid object
+    f_neighbors::AbstractVector,    # Pre-gathered f_j
+    df_neighbors::AbstractVector    # Pre-gathered f_j - f_i (NOT USED)
 )::Real where {PDE <: ScalarHyperbolicPDE}
-    
-    # Cast equation type to access velocity
-    vel = velocity(eq,f_i)
-    
-    # --- 1. Get thread-local workspace, interpolator, and scaling factor ---
+
+    # --- 1. Get workspace, interpolator, and refs ---
     thread_idx = mod1(Threads.threadid(),Threads.nthreads())
     ws = upwind.workspaces[thread_idx]
     interp = upwind.interpolator
+    nFlux = upwind.numericalFlux
 
-    # Get references to GLOBAL grid data arrays
     dx_all_full = pg.neighbor_xdistance
     dy_all_full = pg.neighbor_ydistance
-    w_all_full = pg.neighbor_weights # Use pre-gathered weights
+    w_all_full = pg.neighbor_weights
 
     num_nb = length(nb_slice)
+    # Need at least 2 points for 1st order 2D LSQ
+    if num_nb < upwind.order; return 0.0; end 
     
-    if num_nb == 0; return 0.0; end
-    
-    # Ensure the *internal* buffers are large enough
     ensure_capacity!(ws, num_nb)
+    
+    # Get local handles to workspace buffers
+    dx_buf = ws.dxVec
+    dy_buf = ws.dyVec
+    w_buf = ws.wVec
+    df_buf = ws.dfVec # This will hold flux differences
 
-    # --- 2. The Filter & Compact Loop ---
-    # This loop filters neighbors based on the *unscaled* distances
-    # but stores the *scaled* distances in the workspace.
-    count = 0
-    for global_idx in nb_slice
-        dx_k_unscaled = dx_all_full[global_idx]
-        dy_k_unscaled = dy_all_full[global_idx]
+    # --- 2. Get central flux ---
+    flux_i_x, flux_i_y = flux(eq, f_i)
 
-        # Upwind check uses unscaled distances
-        tmp = dx_k_unscaled * vel[1]
-        if tmp + dy_k_unscaled * vel[2] < 0
-            count += 1
-            # Store SCALED distances in the workspace
-            ws.dxVec[count] = dx_k_unscaled
-            ws.dyVec[count] = dy_k_unscaled
-            # Store pre-gathered difference and weight
-            ws.dfVec[count] = df_neighbors[global_idx] # df needs local index
-            ws.wVec[count]  = w_all_full[global_idx]
-        end
+    # --- 3. Fill buffers for X-Flux Interpolation ---
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        dx_k = dx_all_full[global_idx]
+        dy_k = dy_all_full[global_idx]
+        f_j = f_neighbors[global_idx]
+
+        # Store geometry and weight
+        dx_buf[local_idx] = dx_k
+        dy_buf[local_idx] = dy_k
+        w_buf[local_idx]  = w_all_full[global_idx]
+        
+        # Sort states for flux function
+        fmx, fpx, fmy, fpy = sortFlux(f_i, f_j, dx_k, dy_k)
+        
+        # Calculate X-Flux difference
+        flux_num_x = nFlux(fmx, fpx, eq, 1) # Get X-flux
+        df_buf[local_idx] = flux_num_x - flux_i_x # Store Fx_num - Fx_i
     end
 
-    num_upwind = count
+    # --- 4. Calculate dFx/dx ---
+    scale = min(pg.dx, pg.dy)
+    # Call interpolator: res_Fx = (dFx/dx, dFx/dy)
+    res_Fx = interp(1:num_nb, dx_buf, dy_buf, w_buf, df_buf; scale = scale)
+    dFx_dx = res_Fx[1]
 
-    if num_upwind < upwind.order; return 0.0; end
+    # --- 5. Fill buffer for Y-Flux Interpolation ---
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        # Geometry is already in dx_buf, dy_buf, w_buf
+        # We just need to overwrite df_buf
+        
+        dx_k = dx_buf[local_idx] # Read from buffer
+        dy_k = dy_buf[local_idx] # Read from buffer
+        f_j = f_neighbors[global_idx] # Need to re-fetch f_j
+        
+        # Sort states for flux function
+        fmx, fpx, fmy, fpy = sortFlux(f_i, f_j, dx_k, dy_k)
+        
+        # Calculate Y-Flux difference
+        flux_num_y = nFlux(fmy, fpy, eq, 2) # Get Y-flux
+        df_buf[local_idx] = flux_num_y - flux_i_y # Store Fy_num - Fy_i
+    end
+
+    # --- 6. Calculate dFy/dy ---
+    # Call interpolator: res_Fy = (dFy/dx, dFy/dy)
+    # Pass the *same* geometry buffers, but the *new* df_buf
+    res_Fy = interp(1:num_nb, dx_buf, dy_buf, w_buf, df_buf; scale = scale)
+    dFy_dy = res_Fy[2]
     
-    scale = min(pg.dx,pg.dy)
-    # The interpolator works with the scaled distances
-    res = interp(1:num_upwind, ws.dxVec, ws.dyVec, ws.wVec, ws.dfVec; scale = scale)
-    
-    # --- SCALE the final derivative result ---
-    # res1 and res2 represent the scaled derivatives (d/d(x/L), d/d(y/L))
-    # Divide by interpRange to get the actual derivatives (d/dx, d/dy)
-    ddx = res[1]
-    ddy = res[2]
-    # --- END SCALE ---
-    #@assert ddx < 1e-5 "div Non zero $(vel[1] * ddx + vel[2] * ddy)"
-    return (vel[1] * ddx + vel[2] * ddy)
+    # --- 7. Final Divergence ---
+    # div(F) = dFx/dx + dFy/dy
+    # The correct formula from the old code is 2 * div(F)
+    return 2.0 * (dFx_dx + dFy_dy)
 end
 
 function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm})(
@@ -420,6 +469,7 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceTA, <:Any, TiwariAlgorithm}
     end
     
     scale = min(pg.dx,pg.dy)
+    scale = 1.
     ensure_capacity!(ws, num_neighbors) 
     
     # Get local handles to workspace buffers

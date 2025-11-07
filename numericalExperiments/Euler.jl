@@ -23,7 +23,7 @@ function main()
     sim_config_euler1d_system = SimulationConfig(
         runSystemSimulation,
         ParamDict(
-            "tmax" => 0.2, "N" => 1000, "bc" => :outflow,
+            "tmax" => 0.2, "N" => 1000, "bc" => :fixed_dirichlet,
             "xmin" => -0.5, "xmax" => .5, 
             "CFL" => 0.2, "snapshots" => 11, 
             "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
@@ -64,7 +64,7 @@ function main()
                 "relax_epsilon" => 1e-6
             ),
             "ARS222MUSCL2MOOD" => ParamDict(
-                "timestepper" => "ARS222",
+                "timestepper" => "ARS233",
                 "main_flux" => "Rusanov",
                 "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
                 "MOOD" => "U2", "delta_relax" => 0., 
@@ -165,9 +165,9 @@ function main()
                 "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
             )
         ),
-        "ARS222MUSCL2MOOD"
+        #"ARS222MUSCL2"
         #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4"]
-        #["SSWENO","ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD", "SSMUSCL2(minmod)"]
+        ["SSWENO","ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD", "SSMUSCL2(minmod)"]
         #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
     )
 

@@ -237,12 +237,13 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             # BUG FIX 2: Correctly initialize the kinetic particle grids to be in equilibrium.
             pgs_vec = [deepcopy(particleGrid) for _ in 1:N_total_kinetic]
-            for k in 1:N_kinetic
+            for k in 1:N_total_kinetic
                 for p_idx in 1:pgs_vec[k].N
                     # Get the macroscopic IC at this point
                     macro_ic_at_p = particleGrid.rhos[p_idx]
                     # Set the kinetic IC to be the Maxwellian evaluated at the macro IC
                     pgs_vec[k].rhos[p_idx] = M_funcs_vec[k]((macro_ic_at_p,))
+                    println(M_funcs_vec[k]((macro_ic_at_p,)))
                 end
             end
             pgs = Tuple(pgs_vec)

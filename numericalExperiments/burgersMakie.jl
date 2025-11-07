@@ -5,23 +5,31 @@ using IPlotPDESols
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 5., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
+        "tmax" => 10., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => .2, "snapshots" => 20, "interp_alpha" => 1.0,
         "interp_range" => 3.5, "remove_ghosts" => true,
         "init_func" => "riemann",
-        "init_params" => (1., 0.2, -2.),
+        "init_params" => (1., 0., -2.),
         #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
-        "randomness_factor" => 0.2,
+        "randomness_factor" => 0.,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :fixed_dirichlet, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
+        "order" => 1, "PDE" => "burgers", #"PDE_params" => 1.
     ),
 
     MethodDict(
         "RK2Upwind" => ParamDict(
             "timestepper" => "RalstonRK2",
             "main_gradient" => "Upwind",
-            "main_flux" => "Rusanov",
+            "order" => 1,
+            "main_flux" => "Upwind",
+            "MOOD" => "none",
+        ),
+        "RK2Central" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "Central",
+            "order" => 2,
+            "main_flux" => "Upwind",
             "MOOD" => "none",
         ),
         "RK2MUSCL2Smooth" => ParamDict(
@@ -163,18 +171,16 @@ sim_config_burgers = SimulationConfig(
         "ARS233WENO" => ParamDict(
             "timestepper" => "ARS233",
             "main_gradient" => "WENO",
-            "interp_range" => 3.5,
             "main_flux" => "Rusanov",
             "order" => 2,
             "save_relax" => false,
-            "relax_velocities" => (1.,-1.),
+            "relax_velocities" => [[2.,-2.]],
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
         ),
         "RK2WENO" => ParamDict(
             "timestepper" => "RalstonRK2",
             "main_gradient" => "WENO",
-            "interp_range" => 2.5,
             "main_flux" => "Rusanov",
             "order" => 2,
             "MOOD" => "none"
@@ -400,8 +406,8 @@ sim_config_burgers = SimulationConfig(
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
     #"RK2MUSCL2(minmod)"
-    #["ARS233MUSCL2","ARS233MUSCL2MOOD"]
-    ["Analytical Solution", "RK2Upwind", "ARS233MUSCL2"]
+    ["ARS233MUSCL2","ARS233MUSCL2MOOD"]
+    #["Analytical Solution", "RK2WENO", "RK2MUSCL2", "RK2Upwind", "ARS233WENO"]
 );
 scene_options = Dict{String, Any}()
 #scene_options = Dict{String, Any}("t" => 6.,"component" => 1, "x_key" => "N", "y_key" => "l2error")

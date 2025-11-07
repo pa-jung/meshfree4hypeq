@@ -379,7 +379,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         dt_bt = dt * bt.bt[i]
         dt_b  = dt * bt.b[i]
         
-        Threads.@threads for  p_idx in N_particles
+        Threads.@threads for  p_idx in 1:N_particles
             if system_pg[1].is_boundary[p_idx]; continue; end # Skip boundary
 
             for k in 1:N_components
