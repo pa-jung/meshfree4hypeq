@@ -122,13 +122,30 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             for speed in relax_velocities_config[i_macro]
                 kinetic_eqs_vec[global_k_idx] = LinearAdvection(speed)
                 
+                # In runSystemSimulation.jl and runScalarSimulation.jl
                 local i_dim::Int, relax_speed::Float64
+
                 if dimension == 1
                     i_dim = 1
                     relax_speed = speed
                 else # dimension == 2
-                    i_dim = abs(speed[1]) > 1e-12 ? 1 : 2
-                    relax_speed = speed[i_dim]
+                    abs_vx = abs(speed[1])
+                    abs_vy = abs(speed[2])
+
+                    if abs_vx > abs_vy
+                        i_dim = 1
+                        relax_speed = speed[1]
+                    else
+                        i_dim = 2
+                        relax_speed = speed[2]
+                    end
+                    
+                    # Critical check to prevent division by zero
+                    if abs(relax_speed) < 1e-14
+                        # If speed is (0,0), relax_speed is 0. We must handle this.
+                        # Option 1: Error out
+                        error("Relaxation speed for 2D velocity $speed is zero.")
+                    end
                 end
 
                 M_funcs_vec[global_k_idx] = MaxwellianFunctor(system_eq, i_macro, i_dim, relax_speed, coeff, int_factor)

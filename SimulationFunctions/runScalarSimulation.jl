@@ -243,13 +243,11 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                     macro_ic_at_p = particleGrid.rhos[p_idx]
                     # Set the kinetic IC to be the Maxwellian evaluated at the macro IC
                     pgs_vec[k].rhos[p_idx] = M_funcs_vec[k]((macro_ic_at_p,))
-                    println(M_funcs_vec[k]((macro_ic_at_p,)))
                 end
             end
             pgs = Tuple(pgs_vec)
             kinetic_eqs = Tuple(kinetic_eqs_vec)
 
-            source_term = RelaxationSourceTerm(M_funcs_vec, relax_eps, [collect(1:N_kinetic)])
             implicit_solver = LinearizedRelaxationImplicitSolver()
             system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
                             elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
@@ -293,7 +291,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         sim_data_result = createSimData(xs, us, ts, run_params)
         if !save_relax
             if dimension == 1
-                calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+                #calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             elseif dimension == 2
                 #calculateAllStats!(sim_data_result, (x,t) -> IC(x[1],x[2],t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             end

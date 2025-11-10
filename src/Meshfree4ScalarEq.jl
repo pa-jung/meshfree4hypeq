@@ -1,6 +1,6 @@
 module Meshfree4ScalarEq
 
-export runScalarSimulation, runSystemSimulation
+export runScalarSimulation, runSystemSimulation, GAS_GAMMA_EULER
 
 # Imports
 using Random

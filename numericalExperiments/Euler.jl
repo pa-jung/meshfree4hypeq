@@ -32,7 +32,7 @@ function main()
             #"init_params" => euler_smooth_params, 
             "init_params" => sod_euler_params, 
             "randomness_factor" => 0.2, 
-            "SEED" => SEED_value, "save_relax" => false, "weight_function" => "exponential",
+            "SEED" => SEED_value, "save_relax" => true, "weight_function" => "exponential",
             "relax_velocities" => [ [2.0, -2.0], [3.0, -3.0], [4.0, -4.0] ], # Pairs for rho, m, E kinetic components
         ),
         MethodDict( 

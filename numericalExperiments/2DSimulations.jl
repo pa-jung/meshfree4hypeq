@@ -55,7 +55,7 @@ function main()
                 "MOOD" => "none",
                 "limiter" => "VK",
             ),
-            "RK2Upwind(Tiwari)" => ParamDict(
+            "RK2Upwind" => ParamDict(
                 "timestepper" => "RalstonRK2",
                 "main_gradient" => "Upwind",
                 "upwind_alg_2d" => "Classic",
@@ -98,6 +98,15 @@ function main()
                 "relax_velocities" => (_relax_velocities(2.,1)[1],), "relax_epsilon" => 1e-6,
                 "save_relax" => false,
             ),    
+            "ARS222MUSCL2Limiter" => ParamDict(
+                "timestepper" => "ARS222",
+                "main_gradient" => "MUSCL",
+                "order" => 2,
+                "main_flux" => "Rusanov",
+                "MOOD" => "none", "limiter" => "VK",
+                "relax_velocities" => (_relax_velocities(2.,1)[1],), "relax_epsilon" => 1e-6,
+                "save_relax" => false,
+            ),    
             "ARS222Upwind" => ParamDict(
                 "timestepper" => "ARS222",
                 "main_gradient" => "Upwind",
@@ -131,10 +140,10 @@ function main()
                 "save_relax" => false,
             ),            
         ),
-        ["ARS222Upwind","RK2MUSCL2"]
+        #["ARS222Upwind","RK2MUSCL2"]
         #"RK2MUSCL2"
-        #["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind(Praveen)","ARS222MUSCL2"]
-        #["ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222MUSCL2TotalFallback","RK2MUSCL2","RK2MUSCL2MOOD","ARS222Upwind"] # Methods to run by default
+        #["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind"]
+        ["ARS222MUSCL2","ARS222MUSCL2MOOD","RK2MUSCL2","RK2MUSCL2MOOD","ARS222Upwind","ARS222MUSCL2Limiter"] # Methods to run by default
     );
     params = ParamDict(
             "tmax" => 2.0, "Nx" => 300, "Ny" => 300,

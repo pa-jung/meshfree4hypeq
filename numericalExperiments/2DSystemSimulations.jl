@@ -27,9 +27,9 @@ implosionInit = ((0.8, 1.0, 0.0, 0.0),
 
 # Reorder each inner tuple from (rho, p, u, v) to (rho, u, v, p)
 # The new order of indices is (0, 2, 3, 1)
-implosionNewOrder = tuple(
-    (item[0], item[2], item[3], item[1])
-    for item in implosionInit
+implosionNewOrder = Tuple([
+    (item[1], item[3], item[4], item[2])
+    for item in implosionInit ]
 )
 
 function main()
@@ -59,10 +59,10 @@ function main()
         (rho4, u4, v4, p4) = quadrant_data[4] # Top-Right (State 4)
 
         # Convert each state to conservative variables
-        state_BL = primToCons(rho1, p1, u1, v1)
-        state_BR = primToCons(rho2, p2, u2, v2)
-        state_TL = primToCons(rho3, p3, u3, v3)
-        state_TR = primToCons(rho4, p4, u4, v4)
+        state_BL = primToCons(rho1, u1, v1, p1)
+        state_BR = primToCons(rho2, u2, v2, p2)
+        state_TL = primToCons(rho3, u3, v3, p3)
+        state_TR = primToCons(rho4, u4, v4, p4)
 
         # Combine into the required output format
         initial_states_vector = (state_BL, state_BR, state_TL, state_TR)
@@ -72,18 +72,19 @@ function main()
 
 # Example SimulationConfig for 2D Linear Advection
 sim_config_2d = SimulationConfig(
+    runSystemSimulation,
     ParamDict(
-        "tmax" => .3, "Nx" => 100, "Ny" => 100,
-        "xmin" => 0., "xmax" => 1., "ymin" => 0., "ymax" => 1.,
-        #"xmin" => -0.5, "xmax" => .5, "ymin" => -0.5, "ymax" => .5,
+        "tmax" => .3, "Nx" => 300, "Ny" => 300,
+        #"xmin" => 0., "xmax" => 1., "ymin" => 0., "ymax" => 1.,
+        "xmin" => -0.5, "xmax" => .5, "ymin" => -0.5, "ymax" => .5,
         "CFL" => 0.1, "snapshots" => 20, "interp_alpha" => 1.0,
-        "interp_range" => 1.5,
+        "interp_range" => 3.5,
         "init_func" => "q_riemann", # Use the new 2D function name
         #"init_params" => (0.,1.,(0.,0.),(1.,1.)),
         #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
         #"init_params" => (duplicateTuple(0.,4),duplicateTuple(1.,4),(0.,0.),(1.,0.)),
-        "init_params" => (convertQuadrantInit(clain_riemann_init),(0.5,0.5)),
-        #"init_params" => (convertQuadrantInit(implosionInit),(0.,0.)),
+        #"init_params" => (convertQuadrantInit(clain_riemann_init),(0.5,0.5)),
+        "init_params" => (convertQuadrantInit(implosionNewOrder),(0.,0.)),
         "bc" => :outflow,
         "randomness_factor" => (0., 0.), # (x_rand, y_rand)
         "SEED" => 42,
@@ -111,6 +112,14 @@ sim_config_2d = SimulationConfig(
             "order" => 2,
             "main_flux" => "Rusanov",
             "MOOD" => "none",
+
+        ),    
+        "ARS222MUSCL2Limiter" => ParamDict(
+            "timestepper" => "ARS222",
+            "main_gradient" => "MUSCL",
+            "order" => 2,
+            "main_flux" => "Rusanov",
+            "MOOD" => "none", "limiter" => "VK"
 
         ),    
         "ARS222WENO2" => ParamDict(
@@ -156,15 +165,15 @@ sim_config_2d = SimulationConfig(
             "MOOD" => "U2","delta_relax" => 0.,
         ),            
     ),
-    #"ARS222MUSCL2MOOD(Tiwari)"
-    #"ARS222Upwind(Classic)"
-    ["ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Classic)","ARS222Upwind(Classic)","ARS222Upwind(Tiwari)"]
+    "ARS222MUSCL2Limiter"
+    #["ARS222Upwind(Classic)","ARS222MUSCL2Limiter","ARS222MUSCL2MOOD(Classic)"]
+    #["ARS222MUSCL2MOOD(Tiwari)", "ARS222MUSCL2MOOD(Classic)","ARS222Upwind(Classic)","ARS222Upwind(Tiwari)"]
 );
 
 # --- How to run this with your IPlotPDESols package ---
 # You would now pass `sim_config_2d` to your plotting functions.
 # For example:
-#show2DSolutionFig(sim_config_2d;)
+show2DSolutionFig(sim_config_2d;)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,0.)))
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
 
@@ -196,7 +205,7 @@ params = ParamDict(
         "upwind_alg_2d" => "Tiwari",
         "MOOD" => "U2", "delta_relax" => 0.
         #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
-    )
+    );
 #runSystemSimulation(params);
 #@profview runSystemSimulation(params);
 

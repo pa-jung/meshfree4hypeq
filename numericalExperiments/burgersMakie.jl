@@ -14,7 +14,7 @@ sim_config_burgers = SimulationConfig(
         "randomness_factor" => 0.,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :fixed_dirichlet, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "burgers", #"PDE_params" => 1.
+        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
     ),
 
     MethodDict(
@@ -318,7 +318,7 @@ sim_config_burgers = SimulationConfig(
             "save_relax" => false,
             "relax_velocities" => [[2.,-2.]],
             "relax_epsilon" => 10. ^ -8,
-            "MOOD" => "none", "save_relax" => false
+            "MOOD" => "none",
         ),
         "ARS233MUSCL3" => ParamDict(
             "timestepper" => "ARS233",
