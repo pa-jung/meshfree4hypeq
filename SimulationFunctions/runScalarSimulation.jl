@@ -57,17 +57,18 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             if dimension == 1
                 Nx = run_params["N"]
-                grid_analytic = ParticleGrid1D(xmin, xmax, Nx , bc, bc != :periodic)
+                grid_analytic = ParticleGrid1D(xmin, xmax, Nx , bc, 0.)
                 xs = grid_analytic.positions
                 us = [[IC(x, t, eq, grid_analytic) for x in xs] for t in ts]
             else # dimension == 2
                 Nx, Ny = run_params["Nx"], run_params["Ny"]
                 ymin, ymax = run_params["ymin"], run_params["ymax"]
-                grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, bc != :periodic)
+                grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, 0.)
                 xs = grid_analytic.positions
                 us = [[IC(p, t, eq, grid_analytic) for p in xs] for t in ts]
             end
             sim_data = createSimData([xs for _ in ts], us, ts, run_params)
+            calculateAllStats!(sim_data, (x,t) -> IC(x,t,eq,grid_analytic);quad_tol = 10e-9, dierckx_k = 3)
             sim_data.stats["time"] = 0.0
             #calculateAllStats!(sim_data, (x,t) -> IC(x,t,eq,grid_analytic); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, grid_analytic), quad_tol = 10e-9, dierckx_k = 4)
             return sim_data
@@ -291,9 +292,9 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         sim_data_result = createSimData(xs, us, ts, run_params)
         if !save_relax
             if dimension == 1
-                #calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+                calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             elseif dimension == 2
-                #calculateAllStats!(sim_data_result, (x,t) -> IC(x[1],x[2],t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+                calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             end
         end         
         

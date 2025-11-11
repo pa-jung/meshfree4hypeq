@@ -238,6 +238,21 @@ function (ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{2
         return ic(x0, y0)
     end
 end
+
+function (ic::InitialCondition)(pos::Union{Tuple{<:Real,<:Real},SVector{2,<:Real}}, t::Real, eq::LinearAdvection{2}, pg::ParticleGrid2D)
+    x = pos[1]
+    y = pos[2]
+    x0 = x - eq.vel[1] * t
+    y0 = y - eq.vel[2] * t
+    if pg.bc == :periodic
+        x0_wrapped = pg.xmin + mod(x0 - pg.xmin, pg.xmax - pg.xmin)
+        y0_wrapped = pg.ymin + mod(y0 - pg.ymin, pg.ymax - pg.ymin)
+        return ic(x0_wrapped, y0_wrapped)
+    else 
+        return ic(x0, y0)
+    end
+end
+
 (ic::InitialCondition)(x::Real, y::Real, t::Real, eq::LinearAdvection{1}, pg::ParticleGrid) = ic(x-eq.vel[1]*t, y) # Dispatch to 2D functor
 
 

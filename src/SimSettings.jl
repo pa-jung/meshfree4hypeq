@@ -1,8 +1,6 @@
 module SimSettings
 
-using FileIO, JLD2
-
-export SimSetting, saveSettings
+export SimSetting
 
 """
     SimSetting

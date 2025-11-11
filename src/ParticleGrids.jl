@@ -5,7 +5,6 @@ export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGr
        findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs, 
        determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBSlice, reorder_particles_for_locality!
 
-using FileIO, JLD2
 using Plots
 using Printf
 using LaTeXStrings
@@ -73,6 +72,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         # --- MODIFIED: Added default value ---
         weight_func::MLSWeightFunction = exponentialWeightFunction(1.,1.)
     )
+
         # --- (Existing constructor logic for N, interior_indices, dx) ---
         N_ghost::Int = bc == :periodic ? 0 : ceil(Int, interp_range_factor)
         local dx
@@ -82,7 +82,8 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             interior_indices = 1:N
             dx = (xmax - xmin) / (N_interior > 1 ? (N_interior) : 1.0)
         else
-            @assert N_ghost > 0 "N_ghost must be positive for non-periodic BCs."
+            @assert N_ghost >= 0 "N_ghost must be non-negative."
+            if N_ghost == 0; @warn "No ghost cells given for non-periodic BCs! This is only supported for Analytical Functions!" end
             N = N_interior + 2 * N_ghost
             interior_indices = (N_ghost + 1):(N_ghost + N_interior)
             dx = (xmax - xmin) / (N_interior > 1 ? (N_interior - 1) : 1.0)
@@ -196,7 +197,8 @@ mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
             dx_nominal = (xmax - xmin) / Nx_interior
             dy_nominal = (ymax - ymin) / Ny_interior
         else
-            @assert N_ghost > 0 "N_ghost must be positive for non-periodic BCs."
+            @assert N_ghost >= 0 "N_ghost must be non-negative."
+            if N_ghost == 0; @warn "No ghost cells given for non-periodic BCs! This is only supported for Analytical Functions!" end
             Nx_total = Nx_interior + 2*N_ghost
             Ny_total = Ny_interior + 2*N_ghost
             interior_indices = Int[]
@@ -207,7 +209,7 @@ mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
 
         positions = Vector{SVector{2, Float64}}(undef, N)
         is_boundary = falses(N)
-        interp_range = interp_range_factor * max(dx_nominal, dy_nominal)  
+        interp_range = interp_range_factor < 1e-10 ? max(dx_nominal, dy_nominal) : interp_range_factor * max(dx_nominal, dy_nominal)  
         # --- Populate Particle Positions ---
         if bc == :periodic
             # CORRECTED: Use cell-centered positions for periodic case
