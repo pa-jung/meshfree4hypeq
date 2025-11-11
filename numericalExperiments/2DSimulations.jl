@@ -14,21 +14,21 @@ function main()
     sim_config_2d = SimulationConfig(
         runScalarSimulation,
         ParamDict(
-            "tmax" => 10.0, "Nx" => 100, "Ny" => 100,
+            "tmax" => 3.0, "Nx" => 200, "Ny" => 200,
             "xmin" => -5.0, "xmax" => 5.0, "ymin" => -5.0, "ymax" => 5.0,
-            "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
+            "CFL" => 0.4, "snapshots" => 50, "interp_alpha" => 1.0,
             "interp_range" => 3.5, "remove_ghosts" => true,
-            "init_func" => "box", # Use the new 2D function name
+            "init_func" => "riemann", # Use the new 2D function name
             #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
-            "init_params" => (0.,1.,-2.,2.,-2.,2.),
-            #"init_params" => (0.,1.,(-3.,-3.),(1.,1.)),
-            "bc" => :periodic,
-            "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
+            #"init_params" => (0.,1.,-2.,2.,-2.,2.),
+            "init_params" => (-.9,1.,(0.,0.),(1.,1.)),
+            "bc" => :outflow,
+            "randomness_factor" => (0., 0.), # (x_rand, y_rand)
             "SEED" => 42,
             "weight_function" => "exponential",
             "sim_function" => "runScalarSimulation", # Point to the 2D run function
-            "PDE" => "linear",
-            "PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
+            "PDE" => "burgers2d",
+            #"PDE_params" => (1.0, 1.0) # 2D velocity vector (vx, vy)
         ),
         MethodDict(
             "RK2MUSCL2" => ParamDict(
@@ -142,12 +142,12 @@ function main()
         ),
         #["ARS222Upwind","RK2MUSCL2"]
         #"RK2MUSCL2"
-        ["RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind"]
+        ["Analytical Solution", "RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind"]
         #["Analytical Solution","ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222Upwind","ARS222MUSCL2Limiter","RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind"] # Methods to run by default
     );
     params = ParamDict(
             "tmax" => 2.0, "Nx" => 300, "Ny" => 300,
-            "xmin" => -5.0, "xmax" => 5.0, "ymin" => -5.0, "ymax" => 5.0,
+            "xmin" => -6.0, "xmax" => 6.0, "ymin" => -6.0, "ymax" => 6.0,
             "CFL" => 0.4, "snapshots" => 20, "interp_alpha" => 1.0,
             "interp_range" => 3.5,
             "init_func" => "riemann", # Use the new 2D function name
@@ -176,6 +176,6 @@ params, sim_config_2d = main()
 #@profview runScalarSimulation(params)
 # For example:
 #show2DSolutionFig(sim_config_2d;)
-showDynamicDependence(sim_config_2d;)
-#show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>2., "line_vector" =>(1.,1.)), ui_options  = :publication)
+#showDynamicDependence(sim_config_2d;ui_options  = :publication)
+show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>5., "line_vector" =>(1.,1.)), ui_options  = :publication)
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
