@@ -2,7 +2,7 @@ module FluxFunctions
 
 using ..Meshfree4ScalarEq.HyperbolicPDEs
 
-export NumericalFluxFunction, RusanovFlux, UpwindFlux, LaxFriedrichsFlux, LaxWendroffFlux
+export NumericalFluxFunction, RusanovFlux, UpwindFlux, RoeDiffusiveFlux
 
 abstract type NumericalFluxFunction end;
 

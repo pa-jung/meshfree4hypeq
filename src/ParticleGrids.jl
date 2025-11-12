@@ -85,7 +85,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             @assert N_ghost >= 0 "N_ghost must be non-negative."
             if N_ghost == 0; @warn "No ghost cells given for non-periodic BCs! This is only supported for Analytical Functions!" end
             N = N_interior + 2 * N_ghost
-            interior_indices = (N_ghost + 1):(N_ghost + N_interior)
+            interior_indices = N_ghost == 0 ? (2:(N-1)) : ((N_ghost + 1):(N_ghost + N_interior))
             dx = (xmax - xmin) / (N_interior > 1 ? (N_interior - 1) : 1.0)
         end
 
@@ -126,7 +126,6 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         num_neighbors = zeros(Int, N)
         neighbor_xdistance = Float64[]
         neighbor_weights = Float64[]
-        N_ghost
         # --- Create the new grid object ---
         pg = new{typeof(weight_func)}(
             positions, rhos, curvatures, is_boundary, volumes, mood_events,

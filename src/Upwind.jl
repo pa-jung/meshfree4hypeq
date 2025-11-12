@@ -4,7 +4,7 @@ abstract type TiwariAlgorithm <: UpwindAlgorithm end  # Split domain in left and
 abstract type PraveenAlgorithm <: UpwindAlgorithm end  # Praveen C. postive upwind scheme.
 abstract type NonLinearPraveenAlgorithm <: UpwindAlgorithm end  # Praveen C. postive upwind scheme.
 abstract type ClassicAlgorithm <: UpwindAlgorithm end  # Take all points 'behind' center point. 
-abstract type RusanovAlgorithm <: UpwindAlgorithm end # This is no upwinding of course but easy implementation in this framework (numerical Flux given does not have to be upwind)
+abstract type DecompositionAlgorithm <: UpwindAlgorithm end
 
 abstract type UpwindWorkspace end
 
@@ -161,7 +161,6 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
     # --- Modify the UpwindGradient Constructor ---
     function UpwindGradient(order, dimension; numericalFlux::NumericalFluxFunction=UpwindFlux(), algType::String="Classic")
         @assert order >= 1 "Order must be larger or equal to one."
-        @assert algType in ["Classic", "Tiwari", "Praveen", "NonLinearPraveen"]
         
         local alg_type
         local WS_eltype::Type 
@@ -176,6 +175,11 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
             alg_type = PraveenAlgorithm # <-- NEW
             WS_eltype = UpwindWorkspacePA # <-- NEW
             @assert order == 1
+        elseif algType == "Decomposition" # <-- ADD THIS CASE
+            alg_type = DecompositionAlgorithm
+            WS_eltype = UpwindWorkspaceCA
+            @assert dimension == 2 "DecompositionAlgorithm is for 2D only."
+            @assert order == 1 "DecompositionAlgorithm currently only supports order 1."
         else
             error("Algorithm type $algType not fully configured for workspace selection.")
         end
@@ -183,7 +187,14 @@ struct UpwindGradient{D, WS <: UpwindWorkspace, I <: Interpolator, Algorithm <: 
         n_threads = Threads.nthreads()
         workspaces = [WS_eltype(100) for _ in 1:n_threads] 
 
-        interpolator = Interpolator{dimension, order, 1}()
+        local interpolator
+        if algType == "Decomposition"
+            # This algorithm is 2D, but it MUST use a 1D interpolator
+            interpolator = Interpolator{1, order, 1}()
+        else
+            # Default behavior
+            interpolator = Interpolator{dimension, order, 1}()
+        end
         I = typeof(interpolator)
 
         new{dimension, WS_eltype, I, alg_type}(order, numericalFlux, workspaces, interpolator)
@@ -438,6 +449,104 @@ function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Any, ClassicAlgorithm
     # --- 7. Final Divergence ---
     # div(F) = dFx/dx + dFy/dy
     # The correct formula from the old code is 2 * div(F)
+    return 2.0 * (dFx_dx + dFy_dy)
+end
+
+"""
+Functor for 2D UpwindGradient (DecompositionAlgorithm) using the 'fused' signature.
+This algorithm avoids cross-derivative contamination by performing two
+separate 1D LSQ fits for dFx/dx and dFy/dy, using a 1D interpolator.
+"""
+function (upwind::UpwindGradient{2, <:UpwindWorkspaceCA, <:Interpolator{1,1,1}, DecompositionAlgorithm})(
+    eq::PDE,
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid2D,             # Grid object
+    f_neighbors::AbstractVector,    # Pre-gathered f_j
+    df_neighbors::AbstractVector    # Pre-gathered f_j - f_i (NOT USED)
+)::Real where {PDE <: ScalarHyperbolicPDE}
+
+    # --- 1. Get workspace, interpolator, and refs ---
+    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
+    ws = upwind.workspaces[thread_idx]
+    # 'interp' is the 1D interpolator: Interpolator{1, 1, 1} [cite: 546-548]
+    interp = upwind.interpolator
+    nFlux = upwind.numericalFlux
+
+    dx_all_full = pg.neighbor_xdistance
+    dy_all_full = pg.neighbor_ydistance
+    w_all_full = pg.neighbor_weights
+
+    num_nb = length(nb_slice)
+    # Need at least 1 point for 1D LSQ
+    if num_nb < 1; return 0.0; end 
+    
+    ensure_capacity!(ws, num_nb)
+    
+    # Get local handles to workspace buffers
+    dx_buf = ws.dxVec  # Will hold 'dx' for x-fit
+    dy_buf = ws.dyVec  # Will hold 'dy' for y-fit
+    w_buf = ws.wVec
+    df_buf = ws.dfVec # Will hold flux differences
+
+    # Get central flux
+    flux_i_x, flux_i_y = flux(eq, f_i)
+    
+    # --- 2. Scaling factors ---
+    scale_x = pg.dx
+    scale_y = pg.dy
+    if scale_x < 1e-14; scale_x = 1.0; end
+    if scale_y < 1e-14; scale_y = 1.0; end
+
+    # --- 3. Fill Buffers (Common to both passes) ---
+    # We fill dx_buf, dy_buf, and w_buf once.
+    # We fill df_buf twice (once for x, once for y).
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        dx_k = dx_all_full[global_idx]
+        dy_k = dy_all_full[global_idx]
+
+        # Store geometry
+        dx_buf[local_idx] = dx_k
+        dy_buf[local_idx] = dy_k
+        w_buf[local_idx]  = w_all_full[global_idx]
+    end
+
+    # --- 4. Calculate dFx/dx (1D LSQ fit) ---
+    # Fill df_buf with x-flux differences
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        dx_k = dx_buf[local_idx] # Read from buffer
+        dy_k = dy_buf[local_idx] # Read from buffer
+        f_j = f_neighbors[global_idx]
+        
+        fmx, fpx, fmy, fpy = sortFlux(f_i, f_j, dx_k, dy_k)
+        flux_num_x = nFlux(fmx, fpx, eq, 1)
+        df_buf[local_idx] = flux_num_x - flux_i_x
+    end
+
+    # Call the 1D INTERPOLATOR
+    # It expects (slice, dx_buffer, w_buffer, df_buffer)
+    # We must pass the 'dx' buffer.
+    dFx_dx = interp(1:num_nb, dx_buf, w_buf, df_buf; scale = scale_x)
+
+    # --- 5. Calculate dFy/dy (1D LSQ fit) ---
+    # Refill df_buf with y-flux differences
+    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+        dx_k = dx_buf[local_idx] # Read from buffer
+        dy_k = dy_buf[local_idx] # Read from buffer
+        f_j = f_neighbors[global_idx]
+
+        fmx, fpx, fmy, fpy = sortFlux(f_i, f_j, dx_k, dy_k)
+        flux_num_y = nFlux(fmy, fpy, eq, 2)
+        df_buf[local_idx] = flux_num_y - flux_i_y
+    end
+
+    # Call the 1D INTERPOLATOR again.
+    # This time we must pass the 'dy' buffer as the geometry.
+    dFy_dy = interp(1:num_nb, dy_buf, w_buf, df_buf; scale = scale_y)
+
+    # --- 6. Final Divergence ---
+    # The correct formula from the 1D code is 2 * div(F) [cite: 741]
     return 2.0 * (dFx_dx + dFy_dy)
 end
 

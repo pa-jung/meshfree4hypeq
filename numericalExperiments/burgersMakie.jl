@@ -5,16 +5,16 @@ using IPlotPDESols
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 10., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
+        "tmax" => 3., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
         "CFL" => .2, "snapshots" => 20, "interp_alpha" => 1.0,
         "interp_range" => 3.5, "remove_ghosts" => true,
         "init_func" => "riemann",
-        "init_params" => (1., 0., -2.),
+        "init_params" => (-1., 1., 0.),
         #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
-        "randomness_factor" => 0.,
+        "randomness_factor" => 0.2,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :fixed_dirichlet, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
+        "order" => 1, "PDE" => "burgers", #"PDE_params" => 1.
     ),
 
     MethodDict(
@@ -22,7 +22,7 @@ sim_config_burgers = SimulationConfig(
             "timestepper" => "RalstonRK2",
             "main_gradient" => "Upwind",
             "order" => 1,
-            "main_flux" => "Upwind",
+            "main_flux" => "Rusanov",
             "MOOD" => "none",
         ),
         "RK2Central" => ParamDict(
@@ -406,7 +406,8 @@ sim_config_burgers = SimulationConfig(
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
     #"RK2MUSCL2(minmod)"
-    ["ARS233MUSCL2","ARS233MUSCL2MOOD"]
+    #["ARS233MUSCL2","ARS233MUSCL2MOOD"]
+    "ARS233Upwind"
     #["Analytical Solution", "RK2WENO", "RK2MUSCL2", "RK2Upwind", "ARS233WENO"]
 );
 scene_options = Dict{String, Any}()

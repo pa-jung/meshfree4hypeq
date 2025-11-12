@@ -196,6 +196,7 @@ function _limit_slopes(
     f_neighbors::AbstractVector, # View of neighbor f-values
     pg::ParticleGrid2D
 )
+
     dx = pg.neighbor_xdistance
     dy = pg.neighbor_ydistance
     slope_x = slopes[1]
