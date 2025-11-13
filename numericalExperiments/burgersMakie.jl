@@ -5,16 +5,16 @@ using IPlotPDESols
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 3., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => .2, "snapshots" => 20, "interp_alpha" => 1.0,
-        "interp_range" => 3.5, "remove_ghosts" => true,
-        "init_func" => "riemann",
-        "init_params" => (-1., 1., 0.),
+        "tmax" => 10., "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "CFL" => .2, "snapshots" => 10, "interp_alpha" => 1.0,
+        "interp_range" => 4.5, "remove_ghosts" => true,
+        "init_func" => "gauss",
+        "init_params" => (1., 0., 1.),
         #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "randomness_factor" => 0.2,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
-        "bc" => :fixed_dirichlet, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "burgers", #"PDE_params" => 1.
+        "bc" => :periodic, "weight_function" => "exponential",
+        "order" => 1, "PDE" => "linear", "PDE_params" => 1.
     ),
 
     MethodDict(
@@ -206,29 +206,22 @@ sim_config_burgers = SimulationConfig(
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
         ),
-        "RK2MUSCL2" => ParamDict(
-            "timestepper" => "RalstonRK2",
-            "main_gradient" => "MUSCL",
-            "main_flux" => "Rusanov",
-            "MOOD" => "none",
-            "order" => 2
-        ),
         "RK4MUSCL2" => ParamDict(
-            "timestepper" => "RalstonRK2",
+            "timestepper" => "RK4",
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "MOOD" => "none",
             "order" => 2,
         ),
         "RK4MUSCL3" => ParamDict(
-            "timestepper" => "RalstonRK2",
+            "timestepper" => "RK4",
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "MOOD" => "none",
             "order" => 3,
         ),
         "RK4MUSCL4" => ParamDict(
-            "timestepper" => "RalstonRK2",
+            "timestepper" => "RK4",
             "main_gradient" => "MUSCL",
             "main_flux" => "Rusanov",
             "MOOD" => "none",
@@ -392,7 +385,7 @@ sim_config_burgers = SimulationConfig(
 
     ),
     #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4","ARS233MUSCL5"],
-    #["RK4MUSCL2","RK4MUSCL3","RK4MUSCL4","RK4MUSCL5"]
+    ["RK4MUSCL2","RK4MUSCL3","RK4MUSCL4","RK4MUSCL5"]
     #["Analytical Solution", "ARS233WENO", "ARS233MUSCL2MOOD", "RK2MUSCL2(Superbee)", "RK2MUSCL2(VKLimiter)"]
     #["ARS233MUSCL2","IMEXRK2MUSCL2Limiter", "RK2MUSCL2(Superbee)","ARS233MUSCL2Limiter", "ARS233WENO","SimpleSplittingMUSCL2Limiter", "ARS233MUSCL2MOOD"]#,"ARS233MUSCL2","ARS233Upwind"]
     #"RK2MUSCL2(Superbee)"
@@ -407,19 +400,19 @@ sim_config_burgers = SimulationConfig(
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
     #"RK2MUSCL2(minmod)"
     #["ARS233MUSCL2","ARS233MUSCL2MOOD"]
-    "ARS233Upwind"
+    #"ARS233Upwind"
     #["Analytical Solution", "RK2WENO", "RK2MUSCL2", "RK2Upwind", "ARS233WENO"]
 );
 scene_options = Dict{String, Any}()
-#scene_options = Dict{String, Any}("t" => 6.,"component" => 1, "x_key" => "N", "y_key" => "l2error")
+scene_options = Dict{String, Any}("t" => 10.,"component" => 1, "x_key" => "N", "y_key" => "l2error")
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication, scene_options = scene_options);
+#show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication, scene_options = scene_options);
 #showDynamicDependence(sim_config_burgers; ui_options = :publication, scene_options = scene_options)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2); calc_stats = false, force_int_param = true)
-#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.75:.25:3); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)
+#showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.25:3.5); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)
 #showConvergencePlot(sim_config_burgers, "delta_relax", (0.:10^-51:10^-50); force_int_param = false, initial_calc = true, ui_options = :publication)
 #showConvergencePlot(sim_config_burgers, "switch_tol", 10. .^(-5:.1:-2); force_int_param = false, initial_calc = true, ui_options = :publication)
-#showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,20); force_int_param = true, initial_calc = true, ui_options = :publication);
+showConvergencePlot(sim_config_burgers, "SEED", range(1,10000,1000); force_int_param = true, initial_calc = true, ui_options = :publication);
 #showConvergencePlot(sim_config_burgers, "relax_velocities", 10. .^(-3:.25:0.); force_int_param = false, initial_calc = true, ui_options = :publication);
 
 # using IPlotPDESols

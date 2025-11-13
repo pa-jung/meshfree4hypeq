@@ -14,16 +14,16 @@ function main()
     sim_config_2d = SimulationConfig(
         runScalarSimulation,
         ParamDict(
-            "tmax" => 5.0, "Nx" => 100, "Ny" => 100,
+            "tmax" => 3.0, "Nx" => 200, "Ny" => 200,
             "xmin" => -5.0, "xmax" => 5.0, "ymin" => -5.0, "ymax" => 5.0,
             "CFL" => 0.4, "snapshots" => 50, "interp_alpha" => 1.0,
             "interp_range" => 3.5, "remove_ghosts" => true,
             "init_func" => "riemann", # Use the new 2D function name
             #"init_params" => (1.0, (0.0, 0.0), 1.5), # amp, center (x,y), width
             #"init_params" => (0.,1.,-2.,2.,-2.,2.),
-            "init_params" => (1.,0.,(0.,0.),(1.,1.)),
+            "init_params" => (-.5,.6,(0.,0.),(1.,1.)),
             "bc" => :outflow,
-            "randomness_factor" => (0.001, 0.001), # (x_rand, y_rand)
+            "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
             "SEED" => 42,
             "weight_function" => "exponential",
             "sim_function" => "runScalarSimulation", # Point to the 2D run function
@@ -55,7 +55,7 @@ function main()
                 "MOOD" => "none",
                 "limiter" => "VK",
             ),
-            "RK2Upwind(Classic)" => ParamDict(
+            "RK2Upwind" => ParamDict(
                 "timestepper" => "RalstonRK2",
                 "main_gradient" => "Upwind",
                 "upwind_alg_2d" => "Classic",
@@ -163,8 +163,8 @@ function main()
         #["ARS222MUSCL2Limiter","Analytical Solution"]
         #"RK2MUSCL2"
         #["Analytical Solution","RK2Upwind(Classic)", "RK2Upwind(Tiwari)", "ARS222Upwind(Classic)", "ARS222Upwind(Tiwari)"]
-        #["Analytical Solution", "RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind"]
-        ["Analytical Solution","ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222Upwind","ARS222MUSCL2Limiter"] # Methods to run by default
+        ["Analytical Solution", "RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind"]
+        #["Analytical Solution","ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222Upwind","ARS222MUSCL2Limiter"] # Methods to run by default
     );
     params = ParamDict(
             "tmax" => 2.0, "Nx" => 300, "Ny" => 300,
@@ -197,6 +197,6 @@ params, sim_config_2d = main()
 #@profview runScalarSimulation(params)
 # For example:
 #show2DSolutionFig(sim_config_2d;)
-#showDynamicDependence(sim_config_2d;ui_options  = :publication)
-show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>5., "line_vector" =>(1.,1.), "deviation" => 1.), ui_options  = :publication)
+showDynamicDependence(sim_config_2d;ui_options  = :publication)
+#show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>5., "line_vector" =>(1.,1.), "deviation" => 1.), ui_options  = :publication)
 # showConvergencePlot(sim_config_2d, "Nx", [20, 30, 40, 50]; ...)
