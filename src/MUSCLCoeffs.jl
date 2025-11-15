@@ -712,22 +712,3 @@ function _compute_coeffs!(
         gammaij[k]    = c5
     end
 end
-
-"""
-(2D Helper) Helper function to zero out 2D coefficients.
-"""
-@inline function _zero_coeffs!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace2D1O)
-    @inbounds for k in nb_slice
-        ws.alfaijs[k] = 0.0
-        ws.betaijs[k] = 0.0
-    end
-end
-@inline function _zero_coeffs!(nb_slice::UnitRange{Int}, ws::MUSCLWorkspace2D2O)
-    @inbounds for k in nb_slice
-        ws.alfaijs[k] = 0.0
-        ws.betaijs[k] = 0.0
-        ws.alfaij_bars[k] = 0.0
-        ws.betaij_bars[k] = 0.0
-        ws.gammaijs[k] = 0.0
-    end
-end

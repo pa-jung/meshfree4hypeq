@@ -61,7 +61,12 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                 xs = grid_analytic.positions
                 us = [[IC(x, t, eq, grid_analytic) for x in xs] for t in ts]
             else # dimension == 2
-                Nx, Ny = run_params["Nx"], run_params["Ny"]
+                local Nx,Ny
+                if haskey(run_params, "N")
+                    Nx, Ny = run_params["N"], run_params["N"]
+                else
+                    Nx, Ny = run_params["Nx"], run_params["Ny"]
+                end
                 ymin, ymax = run_params["ymin"], run_params["ymax"]
                 grid_analytic = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, 0.)
                 xs = grid_analytic.positions
@@ -107,7 +112,12 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             delta_relax = dx_nominal * delta_relax_factor
             upwind_alg_2d = "Classic"
         else # dimension == 2
-            Nx, Ny = run_params["Nx"], run_params["Ny"]
+            local Nx,Ny
+            if haskey(run_params, "N")
+                Nx, Ny = run_params["N"], run_params["N"]
+            else
+                Nx, Ny = run_params["Nx"], run_params["Ny"]
+            end
             ymin, ymax = run_params["ymin"], run_params["ymax"]
             dx_nominal = (xmax - xmin) / Nx
             dy_nominal = (ymax - ymin) / Ny

@@ -79,7 +79,7 @@ end
 
 """
 Workspace for 1D, 3rd Order MUSCL.
-[cite: 9] Includes thread-local buffers for stable QR decomposition.
+Includes thread-local buffers for stable QR decomposition.
 """
 struct MUSCLWorkspace1D3O <: MUSCLWorkspace1D
     # --- Coeffs ---
@@ -572,9 +572,8 @@ end
 # --- In MUSCL.jl, replace the old 1D functor ---
 
 """
-    (muscl::MUSCL{1, ORDER})(...)
-
-(1D Implementation) Calculates the divergence for a single particle `i`
+    (muscl::MUSCL{D, ORDER})(...)
+Calculates the divergence for a single particle `i`
 using pre-calculated slopes and neighbor data.
 """
 function (muscl::MUSCL{1, ORDER})(
@@ -627,13 +626,6 @@ function (muscl::MUSCL{1, ORDER})(
     return 2 * div
 end
 
-# --- NEW: Localized 2D Functor ---
-"""
-    (muscl::MUSCL{2, ORDER})(...)
-
-Calculates the divergence for a single particle `i` using pre-calculated slopes
-and neighbor data provided as views.
-"""
 function (muscl::MUSCL{2, ORDER})(
     eq::ScalarHyperbolicPDE,
     i::Int,                         # Current particle index
