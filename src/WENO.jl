@@ -119,184 +119,184 @@ function initGIBuffers!(g::WENO, pg::ParticleGrid)
 end
 # --- 2. Refactored WENO Functors (Dispatched for 1D and 2D) ---
 
-"""
-Functor for 1D WENO (nonlinear) using the 'fused' signature.
-Calculates the divergence by interpolating two different flux-difference
-fields:
-1. (S) A stable upwind numerical flux stencil (dissipative)
-2. (C) A central analytical flux stencil (non-dissipative)
-...and combining them with WENO weights.
-"""
-function (weno::WENO{1, <:WENOWorkspace1D, <:Interpolator, <:NumericalFluxFunction})(
-    eq::ScalarHyperbolicPDE,
-    i::Int,                         # Current particle index
-    f_i::Real,                      # Value of f at particle i
-    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
-    pg::ParticleGrid1D,             # Grid object
-    f_neighbors::AbstractVector,    # Pre-gathered f_j
-    df_neighbors::AbstractVector    # Pre-gathered f_j - f_i (NOT USED)
-)::Real
-    
-    # --- 1. Get Workspace, Interpolator, and Global Refs ---
-    thread_idx = mod1(Threads.threadid(),Threads.nthreads())
-    ws = weno.workspaces[thread_idx] 
-    interp = weno.interpolator
-    nFlux = weno.numericalFlux 
-
-    dx_all_full = pg.neighbor_xdistance
-    w_all_full = pg.neighbor_weights 
-    
-    num_neighbors = length(nb_slice)
-    if num_neighbors < weno.order; return 0.0; end 
-    
-    ensure_capacity!(ws, num_neighbors)
-
-    # --- 2. Get central flux ---
-    flux_i = flux(eq, f_i) 
-
-    # --- 3. Get workspace buffers ---
-    dx_s = ws.dx_stencil
-    df_s = ws.df_stencil
-    w_s  = ws.w_stencil 
-    
-    # --- 4. COMPUTE STENCIL C (Central Analytical Flux) ---
-    # This stencil is non-dissipative and is used in smooth regions.
-    # It interpolates the difference of the ANALYTICAL flux.
-    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
-        f_j = f_neighbors[global_idx]
-        
-        flux_j = flux(eq, f_j) #nFlux(f_i, f_j, eq) # Get analytical flux at neighbor
-
-        dx_s[local_idx] = dx_all_full[global_idx]
-        df_s[local_idx] = flux_j - flux_i # Store F(f_j) - F(f_i)
-        w_s[local_idx]  = w_all_full[global_idx] 
-    end
-    
-    # Interpolate the dF_C field
-    resC_tuple = interp(1:num_neighbors, dx_s, w_s, df_s; scale=pg.dx) 
-    resC1, resC2 = resC_tuple[1], resC_tuple[2]
-
-    # --- 5. COMPUTE STENCIL S (Stable Upwind Flux) ---
-    # This stencil is dissipative and used at shocks.
-    # It interpolates the difference of the NUMERICAL flux.
-    @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
-        dx_k = dx_all_full[global_idx]
-        f_j = f_neighbors[global_idx]
-
-        # Sort states correctly for a stable upwind flux
-        f_L, f_R = sortFlux(f_i, f_j, dx_k) 
-        flux_num_S = nFlux(f_L, f_R, eq) 
-
-        # Overwrite the buffer with the new flux difference
-        # dx_s and w_s are the same as before
-        df_s[local_idx] = flux_num_S - flux_i 
-    end
-    
-    # Interpolate the dF_S field
-    resS_tuple = interp(1:num_neighbors, dx_s, w_s, df_s; scale=pg.dx) 
-    resS1, resS2 = resS_tuple[1], resS_tuple[2]
-    
-    # --- 6. WENO Combination ---
-    e = 1e-6; dx2 = pg.dx^2; dx4 = dx2^2 
-    
-    # Smoothness indicator for Stencil S
-    betaS = 0.5 / ((resS1^2 * dx2 + resS2^2 * dx4 + e)^2) 
-    
-    # Smoothness indicator for Stencil C
-    betaC = 0.5 / ((resC1^2 * dx2 + resC2^2 * dx4 + e)^2) 
-    
-    sum_beta = betaC + betaS
-    
-    ω_s, ω_c = if sum_beta < 1e-14
-        (1.0, 0.0) # Fallback to stable stencil
-    else
-        (betaS / sum_beta, betaC / sum_beta) 
-    end
-    #ω_s, ω_c = (0. ,1.)
-    # --- !! FIX: Return the combined gradient WITHOUT the 2.0 factor !! ---
-    return ( 2. * resS1*ω_s + resC1*ω_c)
-end
-# function (weno::WENO{1})(
-#     eq, #::LinearAdvection{1}
+# """
+# Functor for 1D WENO (nonlinear) using the 'fused' signature.
+# Calculates the divergence by interpolating two different flux-difference
+# fields:
+# 1. (S) A stable upwind numerical flux stencil (dissipative)
+# 2. (C) A central analytical flux stencil (non-dissipative)
+# ...and combining them with WENO weights.
+# """
+# function (weno::WENO{1, <:WENOWorkspace1D, <:Interpolator, <:NumericalFluxFunction})(
+#     eq::ScalarHyperbolicPDE,
 #     i::Int,                         # Current particle index
 #     f_i::Real,                      # Value of f at particle i
 #     nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
 #     pg::ParticleGrid1D,             # Grid object
-#     f_neighbors::AbstractVector,    # (Not used)
-#     df_neighbors::AbstractVector    # Pre-gathered diffs
+#     f_neighbors::AbstractVector,    # Pre-gathered f_j
+#     df_neighbors::AbstractVector    # Pre-gathered f_j - f_i (NOT USED)
 # )::Real
     
-#     # --- 1. Get Workspace, Interpolator, Velocity ---
-#     ws = weno.workspaces[mod1(Threads.threadid(),Threads.nthreads())]::WENOWorkspace1D # Get thread-local ws
+#     # --- 1. Get Workspace, Interpolator, and Global Refs ---
+#     thread_idx = mod1(Threads.threadid(),Threads.nthreads())
+#     ws = weno.workspaces[thread_idx] 
 #     interp = weno.interpolator
-#     vel = velocity(eq, f_i)
+#     nFlux = weno.numericalFlux 
 
-#     # --- 2. Get Global Array References ---
 #     dx_all_full = pg.neighbor_xdistance
 #     w_all_full = pg.neighbor_weights 
     
 #     num_neighbors = length(nb_slice)
-#     if num_neighbors < weno.order; return 0.0; end
+#     if num_neighbors < weno.order; return 0.0; end 
     
-#     # --- 3. Ensure workspace capacity (for S-stencil) ---
 #     ensure_capacity!(ws, num_neighbors)
-    
-#     # --- 4. Central Stencil (C-stencil) Calculation ---
-#     # Call the "bufferless" interpolator directly on the global arrays.
-#     # This assumes the interpolator is thread-safe or uses its own local buffers.
-#     resC_tuple = interp(nb_slice, dx_all_full, w_all_full, df_neighbors)
-#     resC1, resC2 = resC_tuple[1], resC_tuple[2]
 
-#     # --- 5. Build One-Sided Stencil (S-Stencil) ---
-#     # Get local buffer handles for the scratch space
+#     # --- 2. Get central flux ---
+#     flux_i = flux(eq, f_i) 
+
+#     # --- 3. Get workspace buffers ---
 #     dx_s = ws.dx_stencil
 #     df_s = ws.df_stencil
-#     w_s  = ws.w_stencil
-
-#     stencil_size = 0
-#     use_left_stencil = vel > 0.0
+#     w_s  = ws.w_stencil 
     
-#     @inbounds for global_idx in nb_slice
+#     # --- 4. COMPUTE STENCIL C (Central Analytical Flux) ---
+#     # This stencil is non-dissipative and is used in smooth regions.
+#     # It interpolates the difference of the ANALYTICAL flux.
+#     @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
+#         f_j = f_neighbors[global_idx]
+        
+#         flux_j = flux(eq, f_j) #nFlux(f_i, f_j, eq) # Get analytical flux at neighbor
+
+#         dx_s[local_idx] = dx_all_full[global_idx]
+#         df_s[local_idx] = flux_j - flux_i # Store F(f_j) - F(f_i)
+#         w_s[local_idx]  = w_all_full[global_idx] 
+#     end
+    
+#     # Interpolate the dF_C field
+#     resC_tuple = interp(1:num_neighbors, dx_s, w_s, df_s; scale=pg.dx) 
+#     resC1, resC2 = resC_tuple[1], resC_tuple[2]
+
+#     # --- 5. COMPUTE STENCIL S (Stable Upwind Flux) ---
+#     # This stencil is dissipative and used at shocks.
+#     # It interpolates the difference of the NUMERICAL flux.
+#     @inbounds for (local_idx, global_idx) in enumerate(nb_slice)
 #         dx_k = dx_all_full[global_idx]
-        
-#         # Filter-and-compact loop
-#         if (use_left_stencil && dx_k < 0.0) || (!use_left_stencil && dx_k >= 0.0)
-#             stencil_size += 1
-#             dx_s[stencil_size] = dx_k
-#             df_s[stencil_size] = df_neighbors[global_idx]
-#             w_s[stencil_size]  = w_all_full[global_idx]
-#         end
-#     end
+#         f_j = f_neighbors[global_idx]
 
-#     # --- 6. Call Interpolator (S-stencil) ---
-#     local resS1, resS2, betaS
-#     if stencil_size < weno.order
-#         betaS = 0.0 # Not enough points, disable this stencil
-#         resS1 = 0.0; resS2 = 0.0 # Set to zero
-#     else
-#         # Call interpolator using the populated scratch buffers
-#         resS_tuple = interp(1:stencil_size, dx_s, w_s, df_s)
-#         resS1, resS2 = resS_tuple[1], resS_tuple[2]
-        
-#         # Calculate beta (smoothness)
-#         e = 1e-6
-#         dx2 = pg.dx^2; dx4 = dx2^2
-#         betaS = 0.5 / ((resS1^2 * dx2 + resS2^2 * dx4 + e)^2)
-#     end
+#         # Sort states correctly for a stable upwind flux
+#         f_L, f_R = sortFlux(f_i, f_j, dx_k) 
+#         flux_num_S = nFlux(f_L, f_R, eq) 
 
-#     # --- 7. Calculate Weights & Final Divergence ---
-#     e = 1e-6
-#     dx2 = pg.dx^2; dx4 = dx2^2
-#     betaC = 0.5 / ((resC1^2 * dx2 + resC2^2 * dx4 + e)^2)
+#         # Overwrite the buffer with the new flux difference
+#         # dx_s and w_s are the same as before
+#         df_s[local_idx] = flux_num_S - flux_i 
+#     end
+    
+#     # Interpolate the dF_S field
+#     resS_tuple = interp(1:num_neighbors, dx_s, w_s, df_s; scale=pg.dx) 
+#     resS1, resS2 = resS_tuple[1], resS_tuple[2]
+    
+#     # --- 6. WENO Combination ---
+#     e = 1e-6; dx2 = pg.dx^2; dx4 = dx2^2 
+    
+#     # Smoothness indicator for Stencil S
+#     betaS = 0.5 / ((resS1^2 * dx2 + resS2^2 * dx4 + e)^2) 
+    
+#     # Smoothness indicator for Stencil C
+#     betaC = 0.5 / ((resC1^2 * dx2 + resC2^2 * dx4 + e)^2) 
     
 #     sum_beta = betaC + betaS
-#     if sum_beta < 1e-14; return 0.0; end
     
-#     ω_s = betaS / sum_beta
-#     ω_c = betaC / sum_beta
-    
-#     return (resS1*ω_s + resC1*ω_c) * vel
+#     ω_s, ω_c = if sum_beta < 1e-14
+#         (1.0, 0.0) # Fallback to stable stencil
+#     else
+#         (betaS / sum_beta, betaC / sum_beta) 
+#     end
+#     #ω_s, ω_c = (0. ,1.)
+#     # --- !! FIX: Return the combined gradient WITHOUT the 2.0 factor !! ---
+#     return ( 2. * resS1*ω_s + resC1*ω_c)
 # end
+function (weno::WENO{1})(
+    eq, #::LinearAdvection{1}
+    i::Int,                         # Current particle index
+    f_i::Real,                      # Value of f at particle i
+    nb_slice::UnitRange{Int},       # Slice into GLOBAL neighbor arrays
+    pg::ParticleGrid1D,             # Grid object
+    f_neighbors::AbstractVector,    # (Not used)
+    df_neighbors::AbstractVector    # Pre-gathered diffs
+)::Real
+    
+    # --- 1. Get Workspace, Interpolator, Velocity ---
+    ws = weno.workspaces[mod1(Threads.threadid(),Threads.nthreads())]::WENOWorkspace1D # Get thread-local ws
+    interp = weno.interpolator
+    vel = velocity(eq, f_i)
+
+    # --- 2. Get Global Array References ---
+    dx_all_full = pg.neighbor_xdistance
+    w_all_full = pg.neighbor_weights 
+    
+    num_neighbors = length(nb_slice)
+    if num_neighbors < weno.order; return 0.0; end
+    
+    # --- 3. Ensure workspace capacity (for S-stencil) ---
+    ensure_capacity!(ws, num_neighbors)
+    
+    # --- 4. Central Stencil (C-stencil) Calculation ---
+    # Call the "bufferless" interpolator directly on the global arrays.
+    # This assumes the interpolator is thread-safe or uses its own local buffers.
+    resC_tuple = interp(nb_slice, dx_all_full, w_all_full, df_neighbors)
+    resC1, resC2 = resC_tuple[1], resC_tuple[2]
+
+    # --- 5. Build One-Sided Stencil (S-Stencil) ---
+    # Get local buffer handles for the scratch space
+    dx_s = ws.dx_stencil
+    df_s = ws.df_stencil
+    w_s  = ws.w_stencil
+
+    stencil_size = 0
+    use_left_stencil = vel > 0.0
+    
+    @inbounds for global_idx in nb_slice
+        dx_k = dx_all_full[global_idx]
+        
+        # Filter-and-compact loop
+        if (use_left_stencil && dx_k < 0.0) || (!use_left_stencil && dx_k >= 0.0)
+            stencil_size += 1
+            dx_s[stencil_size] = dx_k
+            df_s[stencil_size] = df_neighbors[global_idx]
+            w_s[stencil_size]  = w_all_full[global_idx]
+        end
+    end
+
+    # --- 6. Call Interpolator (S-stencil) ---
+    local resS1, resS2, betaS
+    if stencil_size < weno.order
+        betaS = 0.0 # Not enough points, disable this stencil
+        resS1 = 0.0; resS2 = 0.0 # Set to zero
+    else
+        # Call interpolator using the populated scratch buffers
+        resS_tuple = interp(1:stencil_size, dx_s, w_s, df_s)
+        resS1, resS2 = resS_tuple[1], resS_tuple[2]
+        
+        # Calculate beta (smoothness)
+        e = 1e-6
+        dx2 = pg.dx^2; dx4 = dx2^2
+        betaS = 0.5 / ((resS1^2 * dx2 + resS2^2 * dx4 + e)^2)
+    end
+
+    # --- 7. Calculate Weights & Final Divergence ---
+    e = 1e-6
+    dx2 = pg.dx^2; dx4 = dx2^2
+    betaC = 0.5 / ((resC1^2 * dx2 + resC2^2 * dx4 + e)^2)
+    
+    sum_beta = betaC + betaS
+    if sum_beta < 1e-14; return 0.0; end
+    
+    ω_s = betaS / sum_beta
+    ω_c = betaC / sum_beta
+    
+    return (resS1*ω_s + resC1*ω_c) * vel
+end
 
 
 """

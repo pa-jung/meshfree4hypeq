@@ -1,64 +1,70 @@
-# Analysis of Mass Conservation for the Burgers' Equation
+# Final Summary: Visual Analysis of 1D Burgers' Shock
 
 ## Introduction
 
-This experiment investigates a critical aspect of numerical schemes for conservation laws: the preservation of conserved quantities, such as mass or momentum. Using the inviscid Burgers' equation, we simulate the propagation and steepening of a profile into a shock. The primary goal is to diagnose and analyze mass loss observed in certain meshfree high-resolution schemes. The test is run with different initial conditions and on both uniform and irregular grids to isolate the cause of the non-conservative behavior.
+This document provides a final summary of all previous quantitative studies by connecting them to the visual evidence in the 1D Burgers' shock solution plots. All the abstract findings—such as systematic mass loss, convergence order, and mitigation—have clear, observable consequences on the final shock profile.
 
 ## Experimental Setup
 
-The simulation solves the 1D inviscid Burgers' equation, $\partial_t u + \partial_x (u^2/2) = 0$, on a periodic domain. Three scenarios are considered: a step function from 1 to 0 on both uniform and irregular grids, and a step function from 1 to 0.5 on a uniform grid.
-
-### Shared Parameters
-- **PDE**: Burgers' Equation
-- **Domain**: `[-4, 4]` (periodic)
-- **Particles (`N`)**: 100
-- **Grid (Scenarios 1 & 2)**: Uniform and Irregular (`randomness_factor = 0.2`)
-- **Grid (Scenario 3)**: Uniform
-- **Timestepper**: `ARS233` (IMEX)
-- **Spatial Scheme Base**: 2nd order `MUSCL` (linear reconstruction)
-
-### Method-Specific Parameters and Initial Conditions
-
-1.  **Shock (1 to 0)**: `init_func = box`, `tmax = 0.5`
-    - `MUSCL-Superbee`: `limiter = superbee`
-    - `MUSCL-VK`: `limiter = VK`
-    - `MOOD`: `fallback_gradient = Upwind`, `MOOD = U1`
-    - `WENO`: `main_gradient = WENO`, `order = 2`
-
-2.  **Small Step (1 to 0.5)**: `init_func = step`, `init_params = [1.0, 0.5]`, `tmax = 1.0`
-    - `MOOD`: `fallback_gradient = Upwind`, `MOOD = U1`
-    - `WENO`: `main_gradient = WENO`, `order = 2`
+-   **PDE**: 1D Burgers'
+-   **Initial Condition**: Shock
+-   **Timesteppers**: `RK4` (Direct) and `ARS233` (IMEX)
+-   **Methods**: `Upwind`, `Limiter` (VK), and `MOOD` (various orders)
 
 ---
 
-## Observation of Plots
+## Part 1: The Core Trade-off (Direct Solver)
 
-### Shock Profile (1 to 0)
+This plot compares the fundamental behavior of the different stabilization methods.
 
-![Uniform Grid, 1 to 0 Shock](./figures/burgers_shock_allmethods_uniform.svg)
-![Irregular Grid, 1 to 0 Shock](./figures/burgers_shock_allmethods_irregular.svg)
+![Direct Solver (RK) Shock Solution](./figures/burgers_shock_solution.svg)
 
-In both the uniform and irregular grid simulations, a clear pattern of mass loss emerges for specific methods.
-- **`MUSCL-Superbee` & `MUSCL-VK`**: These limiter-based schemes perform very well. They accurately capture the shock speed and strength, and the area under the curve (representing the total mass) appears well-preserved. The solutions are sharp and non-oscillatory.
-- **`MOOD` & `WENO`**: Both of these methods exhibit significant and visually obvious mass loss. While the height of the profile is correct, the shock position appears to lag behind, which is a classic symptom of incorrect shock speed due to non-conservation. The effect is present on both uniform and irregular grids.
-
-### Small Step Profile (1 to 0.5)
-
-![Uniform Grid, 1 to 0.5 Step](./figures/burgers_shock_small_step.svg)
-
-This scenario tests the `MOOD` and `WENO` schemes with an initial condition that does not go down to zero.
-- **`MOOD` & `WENO`**: In this case, the mass loss is substantially reduced. While there might be some minor dissipation, the severe loss of mass seen in the 1-to-0 shock case is no longer apparent. The solutions largely maintain their profile height.
+-   **`RK4Upwind` (Purple)**: The profile is extremely smeared. This is the visual representation of the **high numerical diffusion** observed in all previous studies (e.g., the high mass gain in the rarefaction plots).
+-   **`RK4MUSCL2(VK)` (Green)**: This is the "all-rounder."
+    1.  It is **non-oscillatory**, showing the limiter is working.
+    2.  Its shock profile is **perfectly aligned with the analytical solution**. This is the critical visual proof of its **conservation**, which was confirmed in the mass-vs-time and mass-vs-N plots (where its error oscillated around 1.0 and converged to 1.0, respectively).
+-   **`RK4MUSCL2MOOD` (Yellow)**: This plot perfectly illustrates the `MOOD` pathology.
+    1.  It is **non-oscillatory**.
+    2.  It is visibly the **sharpest** (least diffusive) scheme.
+    3.  It is **visibly non-conservative**. The shock front **lags behind the analytical solution**. This *lag* is the direct, visual consequence of the **systematic mass loss** we quantified in the time- and N-dependence plots (where its mass converged to a value < 1.0).
 
 ---
 
-## Analysis
+## Part 2: Visualizing IMEX Mitigation
 
-The results indicate that the mass loss is not an inherent flaw of the meshfree method itself, but rather a specific consequence of the formulation of the `MOOD` and `WENO` schemes, particularly when dealing with regions of near-zero solution values.
+This plot compares the `Limiter` and `MOOD` schemes when using the `ARS233` IMEX solver.
 
-- **Conservation in Meshfree Methods**: Finite volume methods are conservative by construction because they evolve cell averages based on fluxes at cell interfaces. This telescope sum property guarantees that the total mass is preserved. The implemented meshfree method, however, is a point-collocation or finite-difference-like scheme that approximates the divergence operator at each particle. It does not inherently enforce a strict conservation property.
+![IMEX Solver (ARS233) Shock Solution](./figures/burgers_shock_imex.svg)
 
-- **Source of Mass Loss in MOOD/WENO**: The `MUSCL-Superbee` and `MUSCL-VK` limiters successfully conserve mass, demonstrating that the underlying divergence approximation can be non-dissipative. The issue with `MOOD` and `WENO` likely stems from how they handle the state near the shock.
-    - **MOOD**: The MOOD scheme operates by replacing the high-order update with a robust, first-order upwind update when a physical violation is detected. This first-order update is known to be dissipative. In the 1-to-0 shock case, the shock moves into a region where the solution is zero. The dissipative fallback at the shock front clips the solution profile, and because the value ahead of it is zero, this clipped mass is not compensated for elsewhere, leading to a net loss.
-    - **WENO**: Similarly, the WENO scheme uses non-linear weights that effectively blend stencils. At a strong shock, the scheme also introduces dissipation to maintain stability. When this dissipation acts at the foot of the shock where the solution is zero, it can lead to a similar clipping effect and loss of total mass.
+-   **`ARS233MUSCL2(VK)` (Green)**: The `Limiter` scheme is again perfectly conservative, with its position matching the analytical solution.
+-   **`ARS233MUSCL2MOOD` (Yellow)**:
+    1.  The shock *still lags*, confirming the mass loss is systematic and **not cured** by the IMEX solver.
+    2.  However, the lag is **visibly smaller** than in the `RK4` plot. This is the visual proof of **mitigation**. The IMEX solver makes the scheme *more* conservative, just as the quantitative plots showed (e.g., ~1% mass loss instead of ~6%).
 
-- **The "Zero Value" Problem**: The "Small Step" experiment is the key diagnostic. By changing the downstream state from 0 to 0.5, the dissipative effects at the shock front no longer entirely remove mass from the system but rather average it with a non-zero value. This significantly lessens the net mass loss, confirming that the interaction of the scheme's numerical dissipation with the zero-valued region is the primary cause of the non-conservative behavior, rather than the step size itself. The use of IMEX schemes, while not the focus here, likely helps mitigate this by providing a more stable time integration that may reduce the severity of the dissipation required by MOOD/WENO at each stage, thus lessening the mass loss.
+---
+
+## Part 3: Visualizing High-Order Mass Loss
+
+This plot shows the `MOOD` scheme paired with `MUSCL` orders 2, 3, 4, and 5.
+
+![High-Order MOOD Shock Comparison](./figures/burgers_shock_mood_comparison.svg)
+
+This plot provides the final, stunning visual confirmation of the quantitative mass loss study. The non-conservative shock lag is not only present, but its *magnitude* perfectly correlates with our findings:
+
+-   **`RK4MUSCL2MOOD` (Blue)**: Has the **smallest lag** (most conservative).
+-   **`RK4MUSCL4MOOD` (Orange)**: Has the second-smallest lag.
+-   **`RK4MUSCL3MOOD` (Green)**: Has a larger lag.
+-   **`RK4MUSCL5MOOD` (Purple)**: Has the **largest lag** (least conservative).
+
+This confirms the entire hypothesis: the **even orders are more conservative than the odd**, and the **lower orders are more conservative** because their base schemes are less oscillatory, triggering the non-conservative `MOOD` fallback less often.
+
+## Final Conclusion
+
+All the quantitative studies are perfectly reflected in the final solution plots.
+
+1.  **Conservation** is visible as the **correct shock speed**.
+2.  **Systematic mass loss** is visible as a **shock lag**.
+3.  **Mitigation** (via IMEX) is visible as a **reduced shock lag**.
+4.  **Diffusion** is visible as the **smearing** of the shock profile.
+
+The final conclusion is that `MOOD` is the sharpest scheme but is fundamentally non-conservative for shocks, a flaw visible as an incorrect shock speed. The `Limiter` (VK) scheme is the most robust, as it is provably conservative (correct shock speed) and stable, at the minor cost of a slight increase in diffusion.

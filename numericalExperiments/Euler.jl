@@ -23,7 +23,7 @@ function main()
     sim_config_euler1d_system = SimulationConfig(
         runSystemSimulation,
         ParamDict(
-            "tmax" => 0.2, "N" => 1000, "bc" => :fixed_dirichlet,
+            "tmax" => 0.2, "N" => 500, "bc" => :fixed_dirichlet,
             "xmin" => -0.5, "xmax" => .5, 
             "CFL" => 0.2, "snapshots" => 11, 
             "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
@@ -32,7 +32,7 @@ function main()
             #"init_params" => euler_smooth_params, 
             "init_params" => sod_euler_params, 
             "randomness_factor" => 0.2, 
-            "SEED" => SEED_value, "save_relax" => true, "weight_function" => "exponential",
+            "SEED" => SEED_value, "save_relax" => false, "weight_function" => "exponential",
             "relax_velocities" => [ [2.0, -2.0], [3.0, -3.0], [4.0, -4.0] ], # Pairs for rho, m, E kinetic components
         ),
         MethodDict( 
@@ -59,8 +59,8 @@ function main()
             ),
             "ARS222WENO2" => ParamDict(
                 "timestepper" => "ARS222",
-                "main_gradient" => "WENO", "order" => 2, # MUSCL(1) for 2nd order spatial
-                "MOOD" => "none", "interp_range" => 2.5,
+                "main_gradient" => "WENO", "order" => 2,
+                "MOOD" => "none",
                 "relax_epsilon" => 1e-6
             ),
             "ARS222MUSCL2MOOD" => ParamDict(
@@ -167,12 +167,12 @@ function main()
         ),
         #"ARS222MUSCL2"
         #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4"]
-        ["SSWENO","ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD", "SSMUSCL2(minmod)"]
+        ["ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD"]
         #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
     )
 
     params = ParamDict(
-            "tmax" => 0.2, "N" => 1000, "bc" => :outflow,
+            "tmax" => 0.2, "N" => 100, "bc" => :outflow,
             "xmin" => -0.5, "xmax" => .5, 
             "CFL" => 0.2, "snapshots" => 11, 
             "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
@@ -197,7 +197,7 @@ function main()
 end
 
 sim_config_euler1d_system = main()
-show1DSolutionFig(sim_config_euler1d_system; ui_options = :default) 
+show1DSolutionFig(sim_config_euler1d_system; ui_options = :publication) 
 #showDynamicDependence(sim_config_euler1d_system; calc_stats = true)
 #showConvergencePlot(sim_config_euler1d_system, "N", 10. .^(1.:.25:2.5); force_int_param = true, initial_calc = true, ui_options = :default)
 #showConvergencePlot(sim_config_euler1d_system, "SEED", 100:50:10000; force_int_param = true, initial_calc = true, ui_options = :default)

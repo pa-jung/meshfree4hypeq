@@ -14,7 +14,7 @@ function main()
     sim_config_2d = SimulationConfig(
         runScalarSimulation,
         ParamDict(
-            "tmax" => 10.0, "N" => 70, #"Nx" => 200, "Ny" => 200,
+            "tmax" => 10.0, "N" => 100, #"Nx" => 200, "Ny" => 200,
             "xmin" => -5.0, "xmax" => 5.0, "ymin" => -5.0, "ymax" => 5.0,
             "CFL" => 0.4, "snapshots" => 50, "interp_alpha" => 1.0,
             "interp_range" => 3.5, "remove_ghosts" => true,
@@ -23,7 +23,7 @@ function main()
             #"init_params" => (0.,1.,-2.,2.,-2.,2.),
             #"init_params" => (-.5,.6,(0.,0.),(1.,1.)),
             "bc" => :periodic,
-            "randomness_factor" => (0.2, 0.2), # (x_rand, y_rand)
+            "randomness_factor" => (0.5, 0.5), # (x_rand, y_rand)
             "SEED" => 42,
             "weight_function" => "exponential",
             "sim_function" => "runScalarSimulation", # Point to the 2D run function
@@ -192,7 +192,7 @@ function main()
         ),
         #["ARS222MUSCL2Limiter","Analytical Solution"]
         #"RK3MUSCL2"
-        ["RK3MUSCL2","RK3MUSCL3", "RK2Upwind2","RK2Upwind1"]
+        ["RK3MUSCL2","RK3MUSCL3"]#, "RK2Upwind2","RK2Upwind1"]
         #["Analytical Solution","RK2Upwind(Classic)", "RK2Upwind(Tiwari)", "ARS222Upwind(Classic)", "ARS222Upwind(Tiwari)"]
         #["Analytical Solution", "RK2MUSCL2","RK2MUSCL2MOOD","RK2MUSCL2Limiter","RK2Upwind"]
         #["Analytical Solution","ARS222MUSCL2","ARS222MUSCL2MOOD","ARS222Upwind","ARS222MUSCL2Limiter"] # Methods to run by default
@@ -231,4 +231,5 @@ params, sim_config_2d = main()
 #showDynamicDependence(sim_config_2d;ui_options  = :publication)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>5., "line_vector" =>(1.,1.), "deviation" => 1.), ui_options  = :publication)
 scene_options = Dict{String, Any}("t" => 10.,"component" => 1, "x_key" => "N", "y_key" => "l2error")
-showConvergencePlot(sim_config_2d, "N", 10. .^(1.5:.125:2.75); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)
+#showConvergencePlot(sim_config_2d, "N", 10. .^(1.5:.125:2.75); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)
+showConvergencePlot(sim_config_2d, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);

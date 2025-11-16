@@ -152,7 +152,7 @@ function _limit_slopes(
 )
     dx = pg.neighbor_xdistance
     if isempty(nb_slice) || abs(slope_x) < 1e-12
-        return 0.0, 0.0
+        return 0.0
     end
 
     u_max_stencil = f_i
@@ -180,7 +180,6 @@ function _limit_slopes(
     end
     
     limited_slope_x = slope_x * clamp(phi_i, 0.0, 1.0)
-    
     return limited_slope_x
 end
 
@@ -196,7 +195,6 @@ function _limit_slopes(
     f_neighbors::AbstractVector, # View of neighbor f-values
     pg::ParticleGrid2D
 )
-
     dx = pg.neighbor_xdistance
     dy = pg.neighbor_ydistance
     slope_x = slopes[1]
