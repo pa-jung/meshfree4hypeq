@@ -165,9 +165,9 @@ function main()
                 "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
             )
         ),
-        #"ARS222MUSCL2"
+        "ARS222MUSCL2"
         #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4"]
-        ["ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD"]
+        #["ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD"]
         #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
     )
 

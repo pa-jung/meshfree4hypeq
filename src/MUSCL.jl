@@ -1,11 +1,90 @@
 export MUSCLORDER, MUSCLORDER1, MUSCLORDER2, MUSCLORDER3, MUSCLORDER4, AbstractSlopeLimiter, BarthJespersenLimiter, VenkatakrishnanLimiter, SuperbeeLimiter, MinmodLimiter, NoLimiter
 
 abstract type MUSCLORDER end
+struct MUSCLORDER0 <: MUSCLORDER end
 struct MUSCLORDER1 <: MUSCLORDER end
 struct MUSCLORDER2 <: MUSCLORDER end
 struct MUSCLORDER3 <: MUSCLORDER end
 struct MUSCLORDER4 <: MUSCLORDER end
 
+abstract type MOODCriterion end
+
+function initMOOD!(mood::MOODCriterion, d)
+    return
+end
+
+# --- MOODu1 (Simple DMP Check) ---
+mutable struct MOODu1 <: MOODCriterion 
+    count::Int64
+    const d::Float64
+    function MOODu1(;deltaRelax::Real)
+        new(0, convert(Float64, deltaRelax))
+    end
+end
+
+# MOODu1 functor signature now includes particleGrid
+function (mood::MOODu1)(
+    g::GradientInterpolator,        # The primary gradient interpolator
+    i::Int,                         # Current particle index
+    rho_i::Float64,                 # Value of rho at particle i
+    nb_slice::UnitRange{Int},
+    newRho::Float64,                # Proposed new value
+    particleGrid::ParticleGrid,     # Grid to access neighbor info
+    neighbor_fs::AbstractVector{Float64} # Full neighbor rho vector
+)::Bool
+    
+    num_nb = particleGrid.num_neighbors[i]
+    if num_nb == 0; return false; end # If no neighbors, DMP cannot be violated
+    
+    # Calculate local extrema using the helper with direct indexing
+    minU, maxU = findLocalExtrema(rho_i, nb_slice, neighbor_fs)
+    
+    δ = mood.d # Relaxation parameter
+
+    # Basic DMP check with relaxation delta
+    moodEvent = (newRho < minU - δ) || (newRho > maxU + δ)
+    
+    # Flatness check
+    if abs(maxU - minU) < δ^3 
+        moodEvent = false
+    end
+
+    if moodEvent; mood.count += 1 end
+    
+    return moodEvent
+end
+
+"""
+    NoMOOD
+
+No MOOD. Results in a standard time integration routine.
+"""
+struct NoMOOD <: MOODCriterion 
+    count::Int64
+    function NoMOOD()
+        new(0)
+    end
+end
+
+function (mood::NoMOOD)(kwargs...)::Bool
+    return false
+end
+
+"""
+OnlyMOOD
+
+Test case for always using the fallback Interpolator
+"""
+struct OnlyMOOD <: MOODCriterion
+    count::Int64
+    function OnlyMOOD()
+        new(0)
+    end
+end
+
+function (mood::OnlyMOOD)(kwargs...)::Bool
+    return true
+end
 
 abstract type AbstractSlopeLimiter end
 abstract type RealSlopeLimiter <: AbstractSlopeLimiter end
@@ -26,6 +105,17 @@ abstract type MUSCLWorkspace end
 
 # --- NEW: 1D Workspaces split by order ---
 abstract type MUSCLWorkspace1D <: MUSCLWorkspace end
+
+# 1D Workspace for Order 0
+struct MUSCLWorkspace1D0O <: MUSCLWorkspace1D
+    # Only stores geometric coefficients for divergence
+    alfaij_bars::Vector{Float64} 
+
+    function MUSCLWorkspace1D0O(initial_flat_cap::Int = 1000)
+        new(zeros(initial_flat_cap))
+    end
+end
+
 
 """
 Workspace for 1D, 1st/2nd Order MUSCL.
@@ -146,6 +236,17 @@ end
 
 # --- NEW: 2D Workspaces split by order ---
 abstract type MUSCLWorkspace2D <: MUSCLWorkspace end
+
+# 2D Workspace for Order 0
+struct MUSCLWorkspace2D0O <: MUSCLWorkspace2D
+    # Only stores geometric coefficients for divergence
+    alfaijs::Vector{Float64}
+    betaijs::Vector{Float64}
+
+    function MUSCLWorkspace2D0O(initial_flat_cap::Int = 1000)
+        new(zeros(initial_flat_cap), zeros(initial_flat_cap))
+    end
+end
 
 """
 Workspace for 2D, 1st Order MUSCL.
@@ -361,6 +462,7 @@ struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, NFF <: NumericalFluxF
     res::Vector{Float64}
     numericalFlux::NFF
     workspace::WS
+    mood::MOODCriterion
 end
 # --- In MUSCL.jl, replace the old Constructor ---
 
@@ -371,10 +473,12 @@ function MUSCL(
     numericalFlux=RusanovFlux()
 ) where {L<:AbstractSlopeLimiter}
     
-    local ws::MUSCLWorkspace # Declare ws with abstract type
+    local ws::MUSCLWorkspace 
     
     if dimension == 1
-        if order == 1
+        if order == 0
+            ws = MUSCLWorkspace1D0O()
+        elseif order == 1
             ws = MUSCLWorkspace1D1O()
         elseif order == 2
             ws = MUSCLWorkspace1D2O()
@@ -386,7 +490,9 @@ function MUSCL(
             error("Order $order not supported for 1D workspace.")
         end
     elseif dimension == 2
-        if order == 1
+        if order == 0
+             ws = MUSCLWorkspace2D0O()
+        elseif order == 1
             ws = MUSCLWorkspace2D1O()
         elseif order == 2
             ws = MUSCLWorkspace2D2O()
@@ -398,18 +504,24 @@ function MUSCL(
     end
     
     res_size = (dimension == 1) ? order : (order == 1 ? 2 : 5)
+    # For order 0, res_size can be 0 or 1, it doesn't matter much as we don't store gradients
+    if order == 0; res_size = 1; end 
+    mood = MOODu1(;deltaRelax = 0.)
+    #mood = NoMOOD()
     WS = typeof(ws)
     
-    if order == 1
-        return MUSCL{dimension, MUSCLORDER1, L, typeof(numericalFlux), WS}(MUSCLORDER1(), limiter, zeros(res_size), numericalFlux, ws)
+    if order == 0
+        return MUSCL{dimension, MUSCLORDER0, L, typeof(numericalFlux), WS}(MUSCLORDER0(), limiter, zeros(res_size), numericalFlux, ws, mood)
+    elseif order == 1
+        return MUSCL{dimension, MUSCLORDER1, L, typeof(numericalFlux), WS}(MUSCLORDER1(), limiter, zeros(res_size), numericalFlux, ws, mood)
     elseif order == 2
-        return MUSCL{dimension, MUSCLORDER2, L, typeof(numericalFlux), WS}(MUSCLORDER2(), limiter, zeros(res_size), numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER2, L, typeof(numericalFlux), WS}(MUSCLORDER2(), limiter, zeros(res_size), numericalFlux, ws, mood)
     elseif order == 3
-        return MUSCL{dimension, MUSCLORDER3, L, typeof(numericalFlux), WS}(MUSCLORDER3(), limiter, zeros(res_size), numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER3, L, typeof(numericalFlux), WS}(MUSCLORDER3(), limiter, zeros(res_size), numericalFlux, ws, mood)
     elseif order == 4
-        return MUSCL{dimension, MUSCLORDER4, L, typeof(numericalFlux), WS}(MUSCLORDER4(), limiter, zeros(res_size), numericalFlux, ws)
+        return MUSCL{dimension, MUSCLORDER4, L, typeof(numericalFlux), WS}(MUSCLORDER4(), limiter, zeros(res_size), numericalFlux, ws, mood)
     else
-        error("Order must be 1, 2, 3, or 4.")
+        error("Order must be 0, 1, 2, 3, or 4.")
     end
 end
 
@@ -448,7 +560,28 @@ function initGIBuffers!(ws::MUSCLWorkspace, pg::ParticleGrid)
     
     return nothing
 end
+# --- Buffer Initialization ---
 
+function initGIBuffers!(ws::MUSCLWorkspace1D0O, pg::ParticleGrid1D)
+    M = length(pg.neighbor_indices)
+    if length(ws.alfaij_bars) < M
+        resize!(ws.alfaij_bars, M)
+    end
+end
+
+function initGIBuffers!(ws::MUSCLWorkspace2D0O, pg::ParticleGrid)
+    # Order 0 only needs coefficient capacity, no particle arrays
+    ensure_coefficients_capacity!(ws, pg)
+end
+
+# Helper for 2D0O
+function ensure_coefficients_capacity!(ws::MUSCLWorkspace2D0O, grid::ParticleGrid2D)
+    required_len = length(grid.neighbor_indices)
+    if length(ws.alfaijs) < required_len
+        new_capacity = required_len + required_len ÷ 4
+        resize!.((ws.alfaijs, ws.betaijs), new_capacity)
+    end
+end
 # --- NEW: initGIBuffers! for 1D workspaces ---
 function initGIBuffers!(ws::Union{MUSCLWorkspace1D1O,MUSCLWorkspace1D2O}, pg::ParticleGrid1D)
     N = pg.N
@@ -507,7 +640,6 @@ include("MUSCLCoeffs.jl")
 include("MUSCLUtils.jl")
 include("MUSCLLimiter.jl")
 
-
 """
     initGI!(muscl::MUSCL{2}, ...)
 
@@ -523,7 +655,6 @@ function initGI!(
     neighbor_dfs::AbstractVector    # The flat neighbor-difference buffer
 ) where D
     ws = muscl.workspace # ws will be MUSCLWorkspace2D1O or MUSCLWorkspace2D2O
-
     if pg.is_boundary[i]
         # 1. Set 1st-order slopes to zero [cite: 76]
         slopes = D == 1 ? 0. : ntuple(x -> 0., D)
@@ -613,8 +744,12 @@ function (muscl::MUSCL{1, ORDER})(
         
         # This call uses pre-calculated slopes/curves from the workspace
         # It dispatches on ws's concrete type (e.g., MUSCLWorkspace1D2O)
+        
         fij, fji = reconstruct_interface_states(muscl.order, ws, f_i, f_j, i, nbIndex, deltaPos)
 
+        if muscl.mood(muscl, i, fij, neighbor_slice, fji, pg, f_neighbors)
+            fij, fji = reconstruct_interface_states(MUSCLORDER0(), ws, f_i, f_j, i, nbIndex, deltaPos)
+        end
         # 1D sortFlux
         fm, fp = sortFlux(fij, fji, deltaPos)
         

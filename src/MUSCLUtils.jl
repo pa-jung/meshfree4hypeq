@@ -226,6 +226,57 @@ end
     ws.curves_xy[i] = higher_derivatives[3]
 end
 
+# --- In MUSCLUtils.jl ---
+
+# 1D Slope Calculation for Order 0 (Returns 0)
+@inline function _calculate_slopes(
+    nb_slice::UnitRange{Int},
+    df_neighbors::AbstractVector,
+    ws::MUSCLWorkspace1D0O
+)
+    return 0.0
+end
+
+# 2D Slope Calculation for Order 0 (Returns 0,0)
+@inline function _calculate_slopes(
+    nb_slice::UnitRange{Int64},
+    df_neighbors::AbstractVector, 
+    ws::MUSCLWorkspace2D0O
+)
+    return 0.0, 0.0
+end
+
+# 1D Higher Derivs for Order 0 (Returns empty)
+@inline function _calculate_higher_derivatives(
+    ::MUSCLORDER0, nb_slice, df_neighbors, ws::MUSCLWorkspace1D0O
+)
+    return ()
+end
+
+# 2D Higher Derivs for Order 0 (Returns empty)
+@inline function _calculate_higher_derivatives(
+    ::MUSCLORDER0, nb_slice, df_neighbors, ws::MUSCLWorkspace2D0O
+)
+    return ()
+end
+
+# Save Derivatives (No-op for Order 0 as we don't store slopes)
+@inline function _save_derivatives!(
+    ws::Union{MUSCLWorkspace1D0O, MUSCLWorkspace2D0O}, i::Int, slopes, higher_derivatives
+)
+    return
+end
+
+# Reconstruction (1D) - Already exists in your code, but ensuring coverage
+function reconstruct_interface_states(::MUSCLORDER0, ws, fi, fj, p_idx, nb_idx, deltaPos)
+    return fi, fj
+end
+
+# Reconstruction (2D)
+function reconstruct_interface_states(::MUSCLORDER0, ws, fi, fj, p_idx, nb_idx, deltaX, deltaY)
+    return fi, fj
+end
+
 # --- Reconstruction Helpers for fij and fji (2D) ---
 # These are kept as they are called by the new functor
 # It uses pre-calculated slopes.

@@ -40,6 +40,86 @@ end
     end
 end
 
+# --- In MUSCLCoeffs.jl ---
+
+# 1D Order 0: Same as Order 1
+function _compute_coeffs!(
+    ::MUSCLORDER0,
+    nb_slice::UnitRange{Int},
+    ws::MUSCLWorkspace1D0O,
+    pg::ParticleGrid1D
+)
+    # Re-use the Linear Least Squares logic from Order 1
+    # This computes the weights 'c' such that sum(c * dx) = 1
+    dx = pg.neighbor_xdistance
+    w = pg.neighbor_weights
+    
+    N11 = 0.0
+    @inbounds for k in nb_slice
+        N11 += w[k] * dx[k]^2
+    end
+    
+    if N11 < 1e-14
+        @inbounds for k in nb_slice; ws.alfaij_bars[k] = 0.0; end
+        return
+    end
+    invN11 = 1.0 / N11
+
+    @inbounds for k in nb_slice
+        ws.alfaij_bars[k] = (dx[k] * w[k]) * invN11
+    end
+end
+
+# 2D Order 0: Same as Order 1
+function _compute_coeffs!(
+    ::MUSCLORDER0,
+    nb_slice::UnitRange{Int},
+    ws::MUSCLWorkspace2D0O,
+    pg::ParticleGrid2D
+)
+    # Re-use the Linear Least Squares logic from Order 1
+    dx = pg.neighbor_xdistance
+    dy = pg.neighbor_ydistance
+    w = pg.neighbor_weights
+    
+    N11 = 0.0; N12 = 0.0; N22 = 0.0
+
+    @inbounds for k in nb_slice
+        wk = w[k]
+        if wk == 0.0; continue; end
+        dxk = dx[k]; dyk = dy[k]
+        N11 += wk * dxk^2
+        N12 += wk * dxk * dyk
+        N22 += wk * dyk^2
+    end
+
+    D = N11*N22 - N12^2
+    if D < 1e-14
+        @inbounds for k in nb_slice
+            ws.alfaijs[k] = 0.0
+            ws.betaijs[k] = 0.0
+        end
+        return
+    end
+    invD = 1.0 / D
+
+    @inbounds for k in nb_slice
+        wk = w[k]
+        dxk = dx[k]; dyk = dy[k]
+        
+        b1 = dxk * wk
+        b2 = dyk * wk
+        
+        # Cramer's rule / Inverse for 2x2
+        # c = N^-1 * b
+        # c1 = (N22*b1 - N12*b2) / D
+        # c2 = (N11*b2 - N12*b1) / D
+        
+        ws.alfaijs[k] = (N22 * b1 - N12 * b2) * invD
+        ws.betaijs[k] = (N11 * b2 - N12 * b1) * invD
+    end
+end
+
 # --- ORDER 1 (1D) ---
 function _compute_coeffs!(
     ::MUSCLORDER1,
