@@ -529,7 +529,7 @@ function (ic::EulerShockTube)(x::Real, t::Real, eq::Euler1D, pg::ParticleGrid1D)
                 rho_final, u_final, p_final = rho_star_R, u_star, p_star
             else # Inside rarefaction fan
                 u_final = (2.0 / (gamma + 1.0)) * (-c_R + (gamma - 1.0) / 2.0 * u_R + s_query)
-                c_final = c_R + (gamma - 1.0) / 2.0 * (u_R - u_final)
+                c_final = c_R + (gamma - 1.0) / 2.0 * (u_final - u_R)
                 rho_final = rho_R * (c_final / c_R)^(2.0 / (gamma - 1.0))
                 p_final = p_R * (rho_final / rho_R)^gamma
             end

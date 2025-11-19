@@ -37,17 +37,19 @@ function initFs!(ts::MeshfreeTimeStepper, i, f_i, fVec, pg::ParticleGrid)
     end
 end
 # A simple example for EulerUpwind adapted to the new structure
-struct EulerUpwind{G <: GradientInterpolator} <: MeshfreeTimeStepper
-    gradientInterpolator::G
+struct EulerUpwind{G1 <: GradientInterpolator, G2 <: GradientInterpolator, M <: MOODCriterion} <: MeshfreeTimeStepper
+    gradientInterpolator::G1
+    fallbackInterpolator::G2
+    mood::M
     
     # Buffers are now part of the struct to be reused
     rhoInit::Vector{Float64}      # Stores the state at the beginning of the step
     neighbor_fs::Vector{Float64}  # Pre-gathered neighbor values
     neighbor_dfs::Vector{Float64} # Pre-gathered neighbor differences
 
-    function EulerUpwind(gradientInterpolator::G) where {G <: GradientInterpolator}
+    function EulerUpwind(gradientInterpolator::G1; fallbackInterpolator::G2 = NoFallbackGrad(), mood::M = NoMOOD()) where {G1 <: GradientInterpolator, G2 <: GradientInterpolator, M <: MOODCriterion}
         # Initialize with empty buffers
-        new{G}(gradientInterpolator, Float64[], Float64[], Float64[])
+        new{G1, G2, M}(gradientInterpolator, fallbackInterpolator, mood, Float64[], Float64[], Float64[])
     end
 end
 
@@ -111,7 +113,6 @@ function (eu::EulerUpwind)(
             end
             
             # --- This code now only runs for INTERIOR particles ---
-            
             # Get neighbor slice
             nb_slice = getNBSlice(particleGrid, p_idx)
 
@@ -125,9 +126,13 @@ function (eu::EulerUpwind)(
                 eu.neighbor_fs, 
                 eu.neighbor_dfs
             )
-            
+            rho_candidate = rho_initial - dt * div
+            if !(eu.fallbackInterpolator isa NoFallbackGrad) && eu.mood(eu.gradientInterpolator, p_idx, rho_initial, nb_slice, rho_candidate, particleGrid, eu.neighbor_fs)
+                div = eu.fallbackInterpolator(eq, p_idx, rho_initial, nb_slice, particleGrid, eu.neighbor_fs, eu.neighbor_dfs)
+                rho_candidate = rho_initial -dt * div
+            end           
             # Update particle state directly in the grid
-            particleGrid.rhos[p_idx] = rho_initial - dt * div
+            particleGrid.rhos[p_idx] = rho_candidate
         end
     end
 
@@ -696,7 +701,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
             rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
             if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, ralston.neighbor_fs)
                 div2 = ralston.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
-                rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
+                rho_final = ralston.rhoInit[p_idx] - dt *  div2 / 3
             end
             # Directly write the final result for this particle into the grid
             particleGrid.rhos[p_idx] = rho_final

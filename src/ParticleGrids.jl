@@ -151,6 +151,7 @@ mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
     positions::Vector{SVector{2, Float64}}
     rhos::Vector{Float64}
     is_boundary::BitVector
+    #mood_events::Bitvector
 
     neighbor_system::S
     weight_func::WF

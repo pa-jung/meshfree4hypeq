@@ -38,6 +38,9 @@ using .SimSettings
 include("ParticleGrids.jl")
 using .ParticleGrids
 
+include("MOOD.jl")
+using .MOOD
+
 include("Interpolations.jl")
 using .Interpolations
 
@@ -46,9 +49,6 @@ using .SourceTerms
 
 include("ImplicitSolvers.jl")
 using .ImplicitSolvers
-
-include("MOOD.jl")
-using .MOOD
 
 include("TimeIntegration.jl")
 using .TimeIntegration

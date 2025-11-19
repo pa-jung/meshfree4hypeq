@@ -16,24 +16,26 @@ sod_euler_params = ( # Sod shock tube for 1D Euler
     # Typical Sod domain [-0.5, 0.5], tmax ~ 0.2
 )
 SEED_value = 10
-
+as1 = collect(0.05:0.05:3.)
+as = [as1; -as1]
 function main()
 
 
     sim_config_euler1d_system = SimulationConfig(
         runSystemSimulation,
         ParamDict(
-            "tmax" => 0.2, "N" => 500, "bc" => :fixed_dirichlet,
+            "tmax" => 0.2, "N" => 200, "bc" => :fixed_dirichlet,
             "xmin" => -0.5, "xmax" => .5, 
             "CFL" => 0.2, "snapshots" => 11, 
-            "interp_alpha" => 1.0, "interp_range" => 3.5, # Factor for dx
+            "interp_alpha" => 1.0, "interp_range" => 4.5, # Factor for dx
             "init_func" => "eulerShockTube",
             "PDE" => "euler1d", "sim_function" => "runSystemSimulation",
             #"init_params" => euler_smooth_params, 
             "init_params" => sod_euler_params, 
-            "randomness_factor" => 0.2, 
+            "randomness_factor" => 0., 
             "SEED" => SEED_value, "save_relax" => false, "weight_function" => "exponential",
-            "relax_velocities" => [ [2.0, -2.0], [3.0, -3.0], [4.0, -4.0] ], # Pairs for rho, m, E kinetic components
+            #"relax_velocities" => [as, as, as]
+            "relax_velocities" => [ [3.0, -3.0, 4., -4.], [3.0, -3.0, 4., -4.], [3.0, -3.0, 4., -4.] ], # Pairs for rho, m, E kinetic components
         ),
         MethodDict( 
             "ARS222MUSCL2(minmod)" => ParamDict(
@@ -47,14 +49,22 @@ function main()
                 "timestepper" => "SimpleSplitting",
                 "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
                 "main_flux" => "Rusanov", "limiter" => "minmod",
-                "MOOD" => "none",
+                "MOOD" => "none", 
                 "relax_epsilon" => 1e-6
             ),
-            "SSWENO" => ParamDict(
+            "SSMUSCL2MOOD" => ParamDict(
                 "timestepper" => "SimpleSplitting",
-                "main_gradient" => "WENO", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
+                "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
                 "main_flux" => "Rusanov", #"limiter" => "minmod",
-                "MOOD" => "none",
+                "MOOD" => "U1", "delta_relax" => 0., #"MOOD" => "none",
+                "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
+                "relax_epsilon" => 1e-6 
+            ),
+            "SSMUSCL4MOOD" => ParamDict(
+                "timestepper" => "SimpleSplitting",
+                "main_gradient" => "MUSCL", "order" => 4, # MUSCLlimited recon order is 1. this order param is for general MUSCL
+                "main_flux" => "Rusanov", #"limiter" => "minmod",
+                "MOOD" => "U1", "delta_relax" => 0.,
                 "relax_epsilon" => 1e-6
             ),
             "ARS222WENO2" => ParamDict(
@@ -64,12 +74,31 @@ function main()
                 "relax_epsilon" => 1e-6
             ),
             "ARS222MUSCL2MOOD" => ParamDict(
-                "timestepper" => "ARS233",
+                "timestepper" => "ARS222",
                 "main_flux" => "Rusanov",
                 "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
-                "MOOD" => "U2", "delta_relax" => 0., 
+                "MOOD" => "U1", "delta_relax" => 0., #"MOOD" => "none",
                         "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
-                "relax_epsilon" => 1e-6
+                "relax_epsilon" => 1e-10,
+                #"relax_velocities" => [ [10.0, -10.0,], [10.0, -10.0], [10.0, -10.0] ]
+            ),
+            "ARS222MUSCL2MOOD2" => ParamDict(
+                "timestepper" => "ARS222",
+                "main_flux" => "Rusanov",
+                "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
+                "MOOD2" => "U1", "delta_relax" => 0., "MOOD" => "none",
+                        "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+                "relax_epsilon" => 1e-10,
+                #"relax_velocities" => [ [10.0, -10.0,], [10.0, -10.0], [10.0, -10.0] ]
+            ),
+            "SSP3MUSCL2MOOD" => ParamDict(
+                "timestepper" => "PRSSP3",
+                "main_flux" => "Rusanov",
+                "main_gradient" => "MUSCL", "order" => 2, # MUSCL(1) for 2nd order spatial
+                "MOOD" => "U1", "delta_relax" => 0., #"MOOD" => "none",
+                        "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
+                "relax_epsilon" => 1e-10,
+                #"relax_velocities" => [ [10.0, -10.0,], [10.0, -10.0], [10.0, -10.0] ]
             ),
             "ARS222MUSCL2" => ParamDict(
                 "timestepper" => "ARS222",
@@ -144,7 +173,7 @@ function main()
                 "relax_epsilon" => 1e-6
             ),
             "SSP3MUSCL5MOOD" => ParamDict(
-                "timestepper" => "SSP3",
+                "timestepper" => "PRSSP3",
                         "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov", # Fallback for MOOD inside ARS2IMEX
                 "main_flux" => "Rusanov",
                 "main_gradient" => "MUSCL", "order" => 5, # MUSCL(1) for 2nd order spatial
@@ -165,9 +194,11 @@ function main()
                 "ignore" => ["interp_range", "interp_alpha", "randomness_factor", "SEED", "order"]
             )
         ),
-        "ARS222MUSCL2"
+        #"Analytical Solution"
+        #"ARS222MUSCL2"
+        #["SSMUSCL2MOOD","Analytical Solution"]
         #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4"]
-        #["ARS222Upwind","ARS222WENO2","Analytical Solution", "ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD"]
+        ["ARS222MUSCL2MOOD2", "SSMUSCL4MOOD","SSP3MUSCL2MOOD", "ARS222Upwind","Analytical Solution", "SSMUSCL2MOOD","ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD"]
         #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
     )
 

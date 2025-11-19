@@ -227,9 +227,9 @@ params, sim_config_2d = main()
 
 #@profview runScalarSimulation(params)
 # For example:
-#show2DSolutionFig(sim_config_2d;)
+show2DSolutionFig(sim_config_2d;)
 #showDynamicDependence(sim_config_2d;ui_options  = :publication)
 #show2DCutFig(sim_config_2d; scene_options = ParamDict("t"=>5., "line_vector" =>(1.,1.), "deviation" => 1.), ui_options  = :publication)
 scene_options = Dict{String, Any}("t" => 10.,"component" => 1, "x_key" => "N", "y_key" => "l2error")
 #showConvergencePlot(sim_config_2d, "N", 10. .^(1.5:.125:2.75); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)
-showConvergencePlot(sim_config_2d, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);
+#showConvergencePlot(sim_config_2d, "SEED", range(1,10000,500); force_int_param = true, initial_calc = true, ui_options = :publication);

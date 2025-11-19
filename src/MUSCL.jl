@@ -7,85 +7,6 @@ struct MUSCLORDER2 <: MUSCLORDER end
 struct MUSCLORDER3 <: MUSCLORDER end
 struct MUSCLORDER4 <: MUSCLORDER end
 
-abstract type MOODCriterion end
-
-function initMOOD!(mood::MOODCriterion, d)
-    return
-end
-
-# --- MOODu1 (Simple DMP Check) ---
-mutable struct MOODu1 <: MOODCriterion 
-    count::Int64
-    const d::Float64
-    function MOODu1(;deltaRelax::Real)
-        new(0, convert(Float64, deltaRelax))
-    end
-end
-
-# MOODu1 functor signature now includes particleGrid
-function (mood::MOODu1)(
-    g::GradientInterpolator,        # The primary gradient interpolator
-    i::Int,                         # Current particle index
-    rho_i::Float64,                 # Value of rho at particle i
-    nb_slice::UnitRange{Int},
-    newRho::Float64,                # Proposed new value
-    particleGrid::ParticleGrid,     # Grid to access neighbor info
-    neighbor_fs::AbstractVector{Float64} # Full neighbor rho vector
-)::Bool
-    
-    num_nb = particleGrid.num_neighbors[i]
-    if num_nb == 0; return false; end # If no neighbors, DMP cannot be violated
-    
-    # Calculate local extrema using the helper with direct indexing
-    minU, maxU = findLocalExtrema(rho_i, nb_slice, neighbor_fs)
-    
-    δ = mood.d # Relaxation parameter
-
-    # Basic DMP check with relaxation delta
-    moodEvent = (newRho < minU - δ) || (newRho > maxU + δ)
-    
-    # Flatness check
-    if abs(maxU - minU) < δ^3 
-        moodEvent = false
-    end
-
-    if moodEvent; mood.count += 1 end
-    
-    return moodEvent
-end
-
-"""
-    NoMOOD
-
-No MOOD. Results in a standard time integration routine.
-"""
-struct NoMOOD <: MOODCriterion 
-    count::Int64
-    function NoMOOD()
-        new(0)
-    end
-end
-
-function (mood::NoMOOD)(kwargs...)::Bool
-    return false
-end
-
-"""
-OnlyMOOD
-
-Test case for always using the fallback Interpolator
-"""
-struct OnlyMOOD <: MOODCriterion
-    count::Int64
-    function OnlyMOOD()
-        new(0)
-    end
-end
-
-function (mood::OnlyMOOD)(kwargs...)::Bool
-    return true
-end
-
 abstract type AbstractSlopeLimiter end
 abstract type RealSlopeLimiter <: AbstractSlopeLimiter end
 struct BarthJespersenLimiter <: RealSlopeLimiter end
@@ -456,13 +377,13 @@ function ensure_capacity!(ws::MUSCLWorkspace2D1O, n::Int)
 end
 
 
-struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, NFF <: NumericalFluxFunction, WS<:MUSCLWorkspace} <: GradientInterpolator
+struct MUSCL{D,ORDER<:MUSCLORDER, L<:AbstractSlopeLimiter, NFF <: NumericalFluxFunction, WS<:MUSCLWorkspace, M<:MOODCriterion} <: GradientInterpolator
     order::ORDER
     limiter::L
     res::Vector{Float64}
     numericalFlux::NFF
     workspace::WS
-    mood::MOODCriterion
+    mood::M
 end
 # --- In MUSCL.jl, replace the old Constructor ---
 
@@ -470,8 +391,9 @@ function MUSCL(
     order::Int, 
     dimension::Int; 
     limiter::L=NoLimiter(), 
-    numericalFlux=RusanovFlux()
-) where {L<:AbstractSlopeLimiter}
+    numericalFlux=RusanovFlux(),
+    mood::M = NoMOOD(),
+) where {L<:AbstractSlopeLimiter, M <: MOODCriterion}
     
     local ws::MUSCLWorkspace 
     
@@ -506,20 +428,18 @@ function MUSCL(
     res_size = (dimension == 1) ? order : (order == 1 ? 2 : 5)
     # For order 0, res_size can be 0 or 1, it doesn't matter much as we don't store gradients
     if order == 0; res_size = 1; end 
-    mood = MOODu1(;deltaRelax = 0.)
-    #mood = NoMOOD()
     WS = typeof(ws)
     
     if order == 0
-        return MUSCL{dimension, MUSCLORDER0, L, typeof(numericalFlux), WS}(MUSCLORDER0(), limiter, zeros(res_size), numericalFlux, ws, mood)
+        return MUSCL{dimension, MUSCLORDER0, L, typeof(numericalFlux), WS, M}(MUSCLORDER0(), limiter, zeros(res_size), numericalFlux, ws, mood)
     elseif order == 1
-        return MUSCL{dimension, MUSCLORDER1, L, typeof(numericalFlux), WS}(MUSCLORDER1(), limiter, zeros(res_size), numericalFlux, ws, mood)
+        return MUSCL{dimension, MUSCLORDER1, L, typeof(numericalFlux), WS, M}(MUSCLORDER1(), limiter, zeros(res_size), numericalFlux, ws, mood)
     elseif order == 2
-        return MUSCL{dimension, MUSCLORDER2, L, typeof(numericalFlux), WS}(MUSCLORDER2(), limiter, zeros(res_size), numericalFlux, ws, mood)
+        return MUSCL{dimension, MUSCLORDER2, L, typeof(numericalFlux), WS, M}(MUSCLORDER2(), limiter, zeros(res_size), numericalFlux, ws, mood)
     elseif order == 3
-        return MUSCL{dimension, MUSCLORDER3, L, typeof(numericalFlux), WS}(MUSCLORDER3(), limiter, zeros(res_size), numericalFlux, ws, mood)
+        return MUSCL{dimension, MUSCLORDER3, L, typeof(numericalFlux), WS, M}(MUSCLORDER3(), limiter, zeros(res_size), numericalFlux, ws, mood)
     elseif order == 4
-        return MUSCL{dimension, MUSCLORDER4, L, typeof(numericalFlux), WS}(MUSCLORDER4(), limiter, zeros(res_size), numericalFlux, ws, mood)
+        return MUSCL{dimension, MUSCLORDER4, L, typeof(numericalFlux), WS, M}(MUSCLORDER4(), limiter, zeros(res_size), numericalFlux, ws, mood)
     else
         error("Order must be 0, 1, 2, 3, or 4.")
     end

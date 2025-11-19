@@ -115,10 +115,11 @@ function runSystemSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         kinetic_to_macro_map = create_kinetic_map(num_kinetic_per_macro)
         
         # Set Maxwellian parameters based on dimension
-        coeff, int_factor = dimension == 1 ? (0.5, 1.0) : (0.25, 2.)
+        int_factor = dimension == 1 ? 1.0 :  2.
 
         global_k_idx = 1
         for i_macro in 1:N_macro_vars
+            coeff = 1 / num_kinetic_per_macro[i_macro]
             for speed in relax_velocities_config[i_macro]
                 kinetic_eqs_vec[global_k_idx] = LinearAdvection(speed)
                 

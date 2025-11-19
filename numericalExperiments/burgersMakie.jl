@@ -5,7 +5,7 @@ using IPlotPDESols
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 10., "N" => 1000, "xmin" => -5.0, "xmax" => 8.0,
+        "tmax" => 10., "N" => 200, "xmin" => -5.0, "xmax" => 8.0,
         "CFL" => .1, "snapshots" => 50, "interp_alpha" => 1.0,
         "interp_range" => 4.5, "remove_ghosts" => true,
         "init_func" => "riemann",
@@ -15,7 +15,7 @@ sim_config_burgers = SimulationConfig(
         "randomness_factor" => 0.2,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :outflow, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "burgers", #"PDE_params" => 1.
+        "order" => 1, "PDE" => "burgers", #"PDE_params" => .5
     ),
 
     MethodDict(
@@ -93,6 +93,26 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Rusanov",
             "fallback_flux" => "Rusanov",
             "MOOD" => "U2",
+            "delta_relax" => 0.,
+            "order" => 2,
+        ),
+        "RK2MUSCL2MOOD2" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD2" => "U2",
+            "delta_relax" => 0.,
+            "order" => 2,
+        ),
+        "RK2MUSCL2OnlyMOOD2" => ParamDict(
+            "timestepper" => "RalstonRK2",
+            "main_gradient" => "MUSCL",
+            "fallback_gradient" => "Upwind",
+            "main_flux" => "Rusanov",
+            "fallback_flux" => "Rusanov",
+            "MOOD2" => "only",
             "delta_relax" => 0.,
             "order" => 2,
         ),
@@ -206,6 +226,18 @@ sim_config_burgers = SimulationConfig(
             "relax_velocities" => (1.,-1.),
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none"
+        ),
+        "SSMUSCL2MOOD" => ParamDict(
+            "timestepper" => "SimpleSplitting",
+            "main_gradient" => "MUSCL",
+            "main_flux" => "Rusanov",
+            "order" => 2,
+            "save_relax" => false,
+            "relax_velocities" => [[1.,-1.]],
+            "fallback_gradient" => "Upwind",
+            "fallback_flux" => "Rusanov",
+            "relax_epsilon" => 10. ^ -8,
+            "MOOD" => "U2", "delta_relax" => 0.
         ),
         "RK2MUSCL2" => ParamDict(
             "timestepper" => "RalstonRK2",
@@ -448,6 +480,17 @@ sim_config_burgers = SimulationConfig(
             "MOOD" => "U2", "delta_relax" => 0.,
             "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
         ),
+        "ARS233MUSCL2MOOD2" => ParamDict(
+            "timestepper" => "ARS233",
+            "main_gradient" => "MUSCL",
+            "main_flux" => "Rusanov",
+            "order" => 2,
+            "save_relax" => false,
+            "relax_velocities" => [[1.,-1.]],
+            "relax_epsilon" => 10. ^ -8,
+            "MOOD2" => "U2", "delta_relax" => 0.,
+            #"fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
+        ),
         "ARS233MUSCL3MOOD" => ParamDict(
             "timestepper" => "ARS233",
             "main_gradient" => "MUSCL",
@@ -496,13 +539,13 @@ sim_config_burgers = SimulationConfig(
     #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4","ARS233MUSCL5"],
     #["RK4MUSCL2","RK4MUSCL3","RK4MUSCL4","RK4MUSCL5"]
     #["RK4MUSCL2MOOD","RK4MUSCL3MOOD","RK4MUSCL4MOOD","RK4MUSCL5MOOD"]
-    #["ARS233MUSCL2MOOD","ARS233MUSCL3MOOD","ARS233MUSCL4MOOD","ARS233MUSCL5MOOD"]
+    ["ARS233MUSCL2MOOD","ARS233MUSCL3MOOD","ARS233MUSCL4MOOD","ARS233MUSCL5MOOD"]
     #"RK4MUSCL5"
     #["RK4MUSCL2Limiter","RK4MUSCL3Limiter","RK4MUSCL4Limiter","RK4MUSCL5Limiter"]
     #["Analytical Solution", "ARS233WENO", "ARS233MUSCL2MOOD", "RK2MUSCL2(Superbee)", "RK2MUSCL2(VKLimiter)"]
-    #["ARS233MUSCL2","IMEXRK2MUSCL2Limiter", "RK2MUSCL2(Superbee)","ARS233MUSCL2Limiter", "ARS233WENO","SimpleSplittingMUSCL2Limiter", "ARS233MUSCL2MOOD"]#,"ARS233MUSCL2","ARS233Upwind"]
-    "RK2MUSCL2"
-    #["RK2MUSCL2MOOD", "RK2MUSCL2(superbee)", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter","Analytic Solution", "ARS233Upwind"]
+    #["SSMUSCL2MOOD", "ARS233MUSCL2", "ARS233MUSCL2MOOD", "ARS233MUSCL2MOOD2"]#,"ARS233MUSCL2","ARS233Upwind"]
+    #["Analytical Solution", "RK2MUSCL2MOOD2","RK2MUSCL2MOOD", "RK2MUSCL2", "RK2MUSCL2OnlyMOOD2"]
+    #["RK2MUSCL2MOOD","RK2MUSCL2MOOD2", "RK2MUSCL2(superbee)", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter","Analytic Solution", "ARS233Upwind"]
     #["ARS233MUSCL2", "ARS233MUSCL2MOOD", "ARS233MUSCL2Limiter", "EulerUpwind","Analytic Solution"]#,"LW", "EulerUpwind"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK4MUSCL5MOOD"]
     #["LWMOOD","RK2MUSCL2", "LW","ARS233MUSCL2MOOD", "Analytic Solution", "RK2MUSCL2MOOD(U1)", "RK2MUSCL2MOOD(U2)", "RK2MUSCL2MOOD(U2Relax)", "RK2MUSCL2MOOD(U1Relax)", "RK4MUSCL5MOOD"]#["RK2MUSCL2MOOD", "RK2MUSCL2", "RK4MUSCL5MOOD", "Analytic Solution"] #, "Relax Method 2", "Relax Method 3rd order","Classic","SlopeLimiter","SmoothSwitching","Regular MOOD", "OnlyFallback"]

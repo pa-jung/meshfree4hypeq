@@ -8,6 +8,7 @@ using ..Meshfree4ScalarEq.SimSettings
 using ..Meshfree4ScalarEq.HyperbolicPDEs
 using ..Meshfree4ScalarEq.FluxFunctions
 using ..Meshfree4ScalarEq.MLSWeightFunctions
+using ..Meshfree4ScalarEq.MOOD
 
 export functionInterpolation!, gradInterpolation!, setCurvatures!, GradientInterpolator, initTimeStep, UpwindGradient, CentralGradient, WENO, MUSCL, AxelMUSCL, DumbserWENO, getStencil, LaxFriedrichsGradient, MUSCLlimited,
     NoFallbackGrad, Interpolator, initGI!, initGIBuffers!

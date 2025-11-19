@@ -1,7 +1,6 @@
 module MOOD
 
 using ..ParticleGrids
-using ..Interpolations
 
 
 export MOODCriterion, MOODu1, MOODu2, NoMOOD, MOODLoubertU2, OnlyMOOD, FirstStageNoMOOD, initMOOD!
@@ -29,7 +28,7 @@ end
 
 # MOODu1 functor signature now includes particleGrid
 function (mood::MOODu1)(
-    g::GradientInterpolator,        # The primary gradient interpolator
+    g,        # The primary gradient interpolator
     i::Int,                         # Current particle index
     rho_i::Float64,                 # Value of rho at particle i
     nb_slice::UnitRange{Int},
@@ -70,17 +69,17 @@ mutable struct MOODu2 <: MOODCriterion
 end
 
 # Helper to check for curvature remains the same
-function _has_curvature(g::MUSCL{D, O, L, NFF, WS}) where {D, O<:Union{MUSCLORDER2, MUSCLORDER3, MUSCLORDER4}, L, NFF, WS}
-    return hasproperty(g.workspace, :curves_xx) &&
-           hasproperty(g.workspace, :curves_yy) 
-end
-function _has_curvature(g::GradientInterpolator)
-    return false
+function _has_curvature(g)
+    if hasproperty(g, :workspace)
+        return hasproperty(g.workspace, :curves_xx) && hasproperty(g.workspace, :curves_yy)
+    else 
+        return false
+    end 
 end
 
 # --- MOODu2 Functor (1D) ---
 function (mood::MOODu2)(
-    g::GradientInterpolator,     # The primary gradient interpolator (1D)
+    g,     # The primary gradient interpolator (1D)
     i::Int,                         # Current particle index
     rho_i::Float64,                 # Value of rho at particle i
     nb_slice::UnitRange{Int},
@@ -123,7 +122,7 @@ end
 
 # --- MOODu2 Functor (2D) ---
 function (mood::MOODu2)(
-    g::GradientInterpolator,     # The primary gradient interpolator (2D)
+    g,     # The primary gradient interpolator (2D)
     i::Int,                         # Current particle index
     rho_i::Float64,                 # Value of rho at particle i
     nb_slice::UnitRange{Int},

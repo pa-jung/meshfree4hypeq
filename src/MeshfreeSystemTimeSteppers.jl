@@ -247,19 +247,22 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
 
         initTSBuffer!(imex_ts, system_pg) # Resizes neighbor_fs/dfs        
         current_Y_i_sys = imex_ts.Y_stages_sys[i]
-       Threads.@threads for particle_range in chunks
-            @inbounds for p_idx in particle_range
+       Threads.@threads for p_idx in 1:N_particles
                 
-                # Loop over each component (rho, rho_u, ...)
-                for k in 1:N_components
-                    grid_k = system_pg[k]
-                    
-                    # 1. Initialize stage value with U_n
-                    #    (We read from U_n_sys, which holds the pristine U_n state)
-                    y_particle_k = grid_k.rhos[p_idx]
-                    
-                    # 2. Accumulate K terms (only for interior particles)
-                    if !grid_k.is_boundary[p_idx]
+            # Loop over each component (rho, rho_u, ...)
+            for k in 1:N_components
+                grid_k = system_pg[k]
+                
+                # 1. Initialize stage value with U_n
+                #    (We read from U_n_sys, which holds the pristine U_n state)
+                y_particle_k = grid_k.rhos[p_idx]
+                
+                # 2. Accumulate K terms (only for interior particles)
+                if !grid_k.is_boundary[p_idx]
+                    if grid_k.mood_events[p_idx] && i != 1
+                        y_particle_k += dt * (bt.ct[i] - bt.ct[i-1]) * imex_ts.K_E_stages_sys[i-1][p_idx, k]
+                        grid_k.mood_events[p_idx] = false
+                    else
                         for j in 1:(i-1)
                             if bt.At[i,j] != 0.0
                                 y_particle_k += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][p_idx, k]
@@ -268,11 +271,11 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                                 y_particle_k += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][p_idx, k]
                             end
                         end
-                    end # (end boundary check)
-                    
-                    # 3. Write the final accumulated value for Y_i(p_idx, k)
-                    current_Y_i_sys[p_idx, k] = y_particle_k
-                end
+                    end
+                end # (end boundary check)
+                
+                # 3. Write the final accumulated value for Y_i(p_idx, k)
+                current_Y_i_sys[p_idx, k] = y_particle_k
             end
         end
         
@@ -298,8 +301,6 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                     system_pg[1].positions[p_idx], 
                     time_implicit, N_components
                 )
-                # 4. No copy-back needed, solver wrote to the view
-                #  current_Y_i_sys[p_idx, :] .= u_iter_buffer # <-- REMOVED
             end
         end
         # ==================================================================
@@ -332,28 +333,29 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
 
         # 3. Threaded loop to calculate divergence
         Threads.@threads for p_idx in 1:N_particles
-                for k in 1:N
-                    grid_k = system_pg[k]
-                    if grid_k.is_boundary[p_idx]; continue; end
-                    
-                    eq_k = scalar_equations[k]
-                    fi = current_Y_i_sys[p_idx,k]
-                    nb_slice = getNBSlice(grid_k, p_idx)
-                    neighbor_fs = @view imex_ts.all_neighbor_fs[:,k]
-                    neighbor_dfs = @view imex_ts.all_neighbor_dfs[:,k]
+            for k in 1:N
+                grid_k = system_pg[k]
+                if grid_k.is_boundary[p_idx]; continue; end
+                
+                eq_k = scalar_equations[k]
+                fi = current_Y_i_sys[p_idx,k]
+                nb_slice = getNBSlice(grid_k, p_idx)
+                neighbor_fs = @view imex_ts.all_neighbor_fs[:,k]
+                neighbor_dfs = @view imex_ts.all_neighbor_dfs[:,k]
 
-                    interp = imex_ts.gradientInterpolator[k]
-                    div_high = interp(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
-                    
-                    rho_candidate = fi - dt * div_high # Candidate for MOOD
-                    
-                    if !(imex_ts.fallbackInterpolator isa NoFallbackGrad) && imex_ts.mood(imex_ts.gradientInterpolator[k], p_idx, fi, nb_slice, rho_candidate, grid_k, neighbor_fs)
-                        fallback = imex_ts.fallbackInterpolator[k]
-                        div_fallback = fallback(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
-                        imex_ts.K_E_stages_sys[i][p_idx, k] = -div_fallback
-                    else
-                        imex_ts.K_E_stages_sys[i][p_idx, k] = -div_high
-                    end
+                interp = imex_ts.gradientInterpolator[k]
+                div_high = interp(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
+                
+                rho_candidate = fi - dt * div_high # Candidate for MOOD
+                
+                if !(imex_ts.fallbackInterpolator isa NoFallbackGrad) && imex_ts.mood(imex_ts.gradientInterpolator[k], p_idx, fi, nb_slice, rho_candidate, grid_k, neighbor_fs)
+                    fallback = imex_ts.fallbackInterpolator[k]
+                    div_fallback = fallback(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
+                    imex_ts.K_E_stages_sys[i][p_idx, k] = -div_fallback
+                    grid_k.mood_events[p_idx] = true
+                else
+                    imex_ts.K_E_stages_sys[i][p_idx, k] = -div_high
+                end
             end
         end # End of component loop for K_E    
         # ==================================================================
@@ -391,12 +393,8 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                 # rhos_vec[p_idx] = rhos_vec[p_idx] + dt*b1*K1
                 # (which is U_n + dt*b1*K1)
                 # On subsequent loops, it adds the other terms.
-                if abs(bt.bt[i]) > 1e-14
-                    rhos_vec[p_idx] += dt_bt * imex_ts.K_E_stages_sys[i][p_idx, k]
-                end
-                if abs(bt.b[i]) > 1e-14
-                    rhos_vec[p_idx] += dt_b * imex_ts.K_I_stages_sys[i][p_idx, k]
-                end
+                rhos_vec[p_idx] += dt_bt * imex_ts.K_E_stages_sys[i][p_idx, k]
+                rhos_vec[p_idx] += dt_b * imex_ts.K_I_stages_sys[i][p_idx, k]
             end
         end
     end

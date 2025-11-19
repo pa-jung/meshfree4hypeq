@@ -87,6 +87,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         interp_range_factor = get(run_params, "interp_range", 1.5)
         randomness_factor = get(run_params, "randomness_factor", 0.0)
         mood_name = get(run_params, "MOOD", nothing)
+        mood_name2 = get(run_params, "MOOD2", nothing)
         delta_relax_factor = get(run_params, "delta_relax", 0)
         main_grad_name = get(run_params,"main_gradient",nothing)
         fallback_grad_name = get(run_params, "fallback_gradient", nothing)
@@ -165,6 +166,13 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                      elseif mood_name == "none" || isnothing(mood_name); NoMOOD()
                      else error("MOOD '$mood_name' not recognized for 2D.")
                      end
+        mood_fun2 =   if mood_name2 == "U2"; MOODu2(deltaRelax=delta_relax)
+                     elseif mood_name2 == "LoubertU2"; mood_fun = MOODLoubertU2(deltaRelax = delta_relax)
+                     elseif mood_name2 == "U1"; MOODu1(deltaRelax = delta_relax)
+                     elseif mood_name2 == "only"; OnlyMOOD()
+                     elseif mood_name2 == "none" || isnothing(mood_name2); NoMOOD()
+                     else error("MOOD '$mood_name2' not recognized for 2D.")
+                     end
 
         MainFlux = if main_flux_name == "Rusanov"; RusanovFlux()
                      elseif main_flux_name == "Upwind"; UpwindFlux()
@@ -178,7 +186,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                          end
         
         is_classic = timestepper_name == "LW" || timestepper_name == "Classic" || timestepper_name == "LF"
-        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension;numericalFlux = MainFlux, limiter = limiter)
+        MainGrad = if main_grad_name == "MUSCL"; MUSCL(order-1, dimension;numericalFlux = MainFlux, limiter = limiter, mood = mood_fun2)
                      elseif main_grad_name == "Upwind"; UpwindGradient(order, dimension; numericalFlux=MainFlux, algType=upwind_alg_2d)
                      elseif main_grad_name == "Central"; CentralGradient(order, dimension;)
                      elseif main_grad_name == "WENO"; WENO(order, dimension;)
@@ -264,7 +272,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                             elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
                             elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
                             elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
-                            elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(RalstonRK2(MainGrad; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term)
+                            elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(EulerUpwind(MainGrad; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term)
                             else error("Unknown TimeStepper name for system: '$timestepper_name'") 
                             end
             elapsed_time, sys_xs, sys_us, ts = mainTimeIntegrator!(system_method, kinetic_eqs, pgs, settings; snapshots = snapshots, remove_ghosts = remove_ghosts)
