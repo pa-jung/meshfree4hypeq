@@ -155,6 +155,7 @@ mutable struct GeneralIMEXTimeStepper{N, G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeS
     K_E_stages_sys::Vector{Matrix{Float64}}
     K_I_stages_sys::Vector{Matrix{Float64}}
     rho_buffer::Vector{Float64} # Scalar buffer (size N_particles)
+    mood_triggered::BitArray{3}
     
 # --- THREAD-LOCAL buffers for implicit solve ---
     # One buffer set per thread
@@ -181,7 +182,7 @@ mutable struct GeneralIMEXTimeStepper{N, G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeS
             source_term_object, butcher_tableau,
             Matrix{Float64}(undef,0,0), [Matrix{Float64}(undef,0,0) for _ in 1:s],
             [Matrix{Float64}(undef,0,0) for _ in 1:s], [Matrix{Float64}(undef,0,0) for _ in 1:s], 
-            Vector{Float64}(undef, 0), # rho_buffer
+            Vector{Float64}(undef, 0), falses(0, N, s),
             [Float64[] for _ in 1:n_threads], # thread_u_particle_buffers
             [Float64[] for _ in 1:n_threads], # thread_Y_i_base_buffers
             Matrix{Float64}(undef,0,N), Matrix{Float64}(undef,0,N), # neighbor_fs, neighbor_dfs
@@ -206,6 +207,7 @@ function initAddTSBuffer!(imex_ts::GeneralIMEXTimeStepper, pgs::Tuple)
             imex_ts.K_E_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
             imex_ts.K_I_stages_sys[i] = Matrix{Float64}(undef, N_particles, N_components)
         end
+        imex_ts.mood_triggered = falses(N_particles, N_components, imex_ts.num_stages)
         
         n_threads = Threads.nthreads()
         # Resize the outer vector if thread count changed
@@ -241,7 +243,7 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
     chunk_size = 50 
     chunks = collect(Iterators.partition(1:N_particles, chunk_size))
     initTSBuffer!(imex_ts, system_pg) # Resizes neighbor_fs/dfs
-
+    fill!(imex_ts.mood_triggered, false)
     # --- Loop through stages i = 1 to s ---
     for i in 1:s
 
@@ -259,17 +261,14 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                 
                 # 2. Accumulate K terms (only for interior particles)
                 if !grid_k.is_boundary[p_idx]
-                    if grid_k.mood_events[p_idx] && i != 1
-                        y_particle_k += dt * (bt.ct[i] - bt.ct[i-1]) * imex_ts.K_E_stages_sys[i-1][p_idx, k]
-                        grid_k.mood_events[p_idx] = false
-                    else
-                        for j in 1:(i-1)
-                            if bt.At[i,j] != 0.0
-                                y_particle_k += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][p_idx, k]
-                            end
-                            if bt.A[i,j] != 0.0
-                                y_particle_k += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][p_idx, k]
-                            end
+                    for j in 1:(i-1)
+                        if imex_ts.mood_triggered[p_idx,k,j]
+                            y_particle_k += dt * (bt.ct[j+1] - bt.ct[j]) * imex_ts.K_E_stages_sys[j][p_idx, k]
+                        else
+                            y_particle_k += dt * bt.At[i,j] * imex_ts.K_E_stages_sys[j][p_idx, k]
+                        end
+                        if bt.A[i,j] != 0.0
+                            y_particle_k += dt * bt.A[i,j] * imex_ts.K_I_stages_sys[j][p_idx, k]
                         end
                     end
                 end # (end boundary check)
@@ -302,6 +301,22 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                     time_implicit, N_components
                 )
             end
+        end
+        # ==================================================================
+        # --- Evaluate and store implicit tendency K_I ---
+        # ==================================================================
+        # (This part is sequential and remains unchanged)
+        time_implicit_for_KI = time_n + bt.c[i] * dt 
+        
+        Threads.@threads for p_idx in 1:N_particles
+                # This loop CANNOT skip boundary particles, as the source
+                # term might apply to all particles (e.g., gravity)
+                imex_ts.source_term_object(
+                    @view(imex_ts.K_I_stages_sys[i][p_idx, :]), 
+                    @view(current_Y_i_sys[p_idx, :]), 
+                    system_pg[1].positions[p_idx], 
+                    time_implicit_for_KI
+                )
         end
         # ==================================================================
         # --- REFACTORED: Evaluate and store explicit tendency K_E ---
@@ -352,29 +367,16 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                     fallback = imex_ts.fallbackInterpolator[k]
                     div_fallback = fallback(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
                     imex_ts.K_E_stages_sys[i][p_idx, k] = -div_fallback
-                    grid_k.mood_events[p_idx] = true
+                    imex_ts.mood_triggered[p_idx,k,i] = true
                 else
                     imex_ts.K_E_stages_sys[i][p_idx, k] = -div_high
                 end
             end
         end # End of component loop for K_E    
-        # ==================================================================
-        # --- Evaluate and store implicit tendency K_I ---
-        # ==================================================================
-        # (This part is sequential and remains unchanged)
-        time_implicit_for_KI = time_n + bt.c[i] * dt 
-        
-        Threads.@threads for p_idx in 1:N_particles
-                # This loop CANNOT skip boundary particles, as the source
-                # term might apply to all particles (e.g., gravity)
-                imex_ts.source_term_object(
-                    @view(imex_ts.K_I_stages_sys[i][p_idx, :]), 
-                    @view(current_Y_i_sys[p_idx, :]), 
-                    system_pg[1].positions[p_idx], 
-                    time_implicit_for_KI
-                )
-        end
+
     end # End of stages loop
+
+    
     
     for i in 1:s
         # Pre-calculate factors

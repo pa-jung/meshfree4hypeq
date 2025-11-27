@@ -9,11 +9,23 @@ euler_smooth_params = (
 )
 
 sod_euler_params = ( # Sod shock tube for 1D Euler
-    (1.0, 0.0, 1.0),    
+    (1.0, 0.0, 1.6665),    # rho, u, p
+    (0.125, 0.0, 0.16666), 
+    0.0 
+    # Note: Your plotting range and tmax should be suitable for Sod's problem evolution.
+    # Typical Sod domain [-0.5, 0.5], tmax ~ 0.2
+)
+sod_euler_params = ( # Sod shock tube for 1D Euler
+    (1.0, 0.0, 1.),    # rho, u, p
     (0.125, 0.0, 0.1), 
     0.0 
     # Note: Your plotting range and tmax should be suitable for Sod's problem evolution.
     # Typical Sod domain [-0.5, 0.5], tmax ~ 0.2
+)
+sod_euler_params = (
+    (0.001, 0.0, 1.6665e-3),       # rho_L, u_L, p_L
+    (1/8 * 1e-3, 0.0, 1.6666e-4),  # rho_R, u_R, p_R
+    0.0                            # Discontinuity position x0
 )
 SEED_value = 10
 as1 = collect(0.05:0.05:3.)
@@ -24,9 +36,9 @@ function main()
     sim_config_euler1d_system = SimulationConfig(
         runSystemSimulation,
         ParamDict(
-            "tmax" => 0.2, "N" => 200, "bc" => :fixed_dirichlet,
+            "tmax" => 0.2, "N" => 300, "bc" => :fixed_dirichlet,
             "xmin" => -0.5, "xmax" => .5, 
-            "CFL" => 0.2, "snapshots" => 11, 
+            "CFL" => 0.5, "snapshots" => 11, 
             "interp_alpha" => 1.0, "interp_range" => 4.5, # Factor for dx
             "init_func" => "eulerShockTube",
             "PDE" => "euler1d", "sim_function" => "runSystemSimulation",
@@ -42,6 +54,13 @@ function main()
                 "timestepper" => "ARS222",
                 "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
                 "main_flux" => "Rusanov", "limiter" => "minmod",
+                "MOOD" => "none",
+                "relax_epsilon" => 1e-6
+            ),
+            "ARS222MUSCL2(VK)" => ParamDict(
+                "timestepper" => "ARS222",
+                "main_gradient" => "MUSCL", "order" => 2, # MUSCLlimited recon order is 1. this order param is for general MUSCL
+                "main_flux" => "Rusanov", "limiter" => "VK",
                 "MOOD" => "none",
                 "relax_epsilon" => 1e-6
             ),
@@ -196,9 +215,9 @@ function main()
         ),
         #"Analytical Solution"
         #"ARS222MUSCL2"
-        #["SSMUSCL2MOOD","Analytical Solution"]
+        ["ARS222MUSCL2MOOD","Analytical Solution","ARS222MUSCL2","ARS222Upwind"]
         #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4"]
-        ["ARS222MUSCL2MOOD2", "SSMUSCL4MOOD","SSP3MUSCL2MOOD", "ARS222Upwind","Analytical Solution", "SSMUSCL2MOOD","ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD"]
+        #["ARS222MUSCL2MOOD2","ARS222MUSCL2(VK)", "SSMUSCL4MOOD","SSP3MUSCL2MOOD", "ARS222Upwind","Analytical Solution", "SSMUSCL2MOOD","ARS222MUSCL2", "ARS222MUSCL2(minmod)", "ARS222MUSCL2MOOD"]
         #["ARS222Upwind(fixedGrid)", "ARS222MUSCL2limiter", "ARS233MUSCL5MOOD", "ARS222MUSCL2MOOD", "ARS222MUSCL5MOOD","ARS222MUSCL2"]
     )
 
