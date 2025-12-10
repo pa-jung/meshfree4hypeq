@@ -2,7 +2,7 @@ module ParticleGrids
 
 export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGrid, plotDensity, 
        animateDensity, getTimeStep, findLocalExtrema, updateVoxelInformation!, gridToLinearIndex, linearIndexToGrid, 
-       findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs, 
+       findneighboringVoxels, updateNeighbors!, getEuclideanDistance, logMOODEvents!, findLocalExtremaAbs, sort_1d_particles!,
        determineVolumes!, getDistance, apply_boundary_conditions!, ParticleGridSystem, set_df!, getNBSlice, reorder_particles_for_locality!
 
 using Plots
@@ -45,10 +45,12 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     volumes::Vector{Float64}
     mood_events::BitVector
 
-    # --- NEW: Flattened Neighbor Data Buffers (like 2D) ---
-    neighbor_indices::Vector{Int}
+    # Particle Sized Buffers
     neighbor_pointers::Vector{Int}
     num_neighbors::Vector{Int}
+
+    # --- NEW: Flattened Neighbor Data Buffers (like 2D) ---
+    neighbor_indices::Vector{Int}
     neighbor_xdistance::Vector{Float64}
     neighbor_weights::Vector{Float64}
 
@@ -142,12 +144,191 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         return pg
     end
 end
+"""
+    manage_particles!(pg::ParticleGrid1D)
 
+In-situ Adaptive Mesh Refinement (AMR).
+1. **Merge**: Iterates through particles. If neighbors are within `min_allowed_dist`, 
+   they are merged into the current particle (mass-weighted average). The grid is 
+   compacted in-place using a write pointer.
+2. **Split**: If a particle has fewer than `min_nb` neighbors, a new particle is 
+   spawned nearby and added to a buffer for appending.
+3. **Boundary**: Updates boundary status based on the majority of neighbors.
+
+This method is dimension-agnostic (relies on neighbor lists, not array order).
+"""
+function manage_particles!(pg::ParticleGrid1D)
+    # 1. Reset Buffers
+    fill!(pg.merged_buffer, false)
+    empty!(pg.split_buffer_pos)
+    empty!(pg.split_buffer_rho)
+    
+    # Accessors for speed
+    pos = pg.positions
+    rhos = pg.rhos
+    vols = pg.volumes
+    is_bd = pg.is_boundary
+    merged = pg.merged_buffer
+    
+    # Neighbor accessors
+    nb_indices = pg.neighbor_indices
+    nb_dists   = pg.neighbor_xdistance
+    nb_ptrs    = pg.neighbor_pointers
+    num_nbs    = pg.num_neighbors
+    
+    write_idx = 0 # The "In-Situ" Pointer
+
+    # --- MAIN COMPACTION LOOP ---
+    for i in 1:pg.N
+        # If this particle was already merged into a previous one, skip it (delete it)
+        if merged[i]
+            continue
+        end
+
+        # We are keeping this particle (at least for now).
+        write_idx += 1
+        
+        # Start Accumulators for Merging
+        # (Weighted average logic: sum(val * vol) / sum(vol))
+        current_vol  = vols[i]
+        weighted_pos = pos[i] * current_vol
+        weighted_rho = rhos[i] * current_vol
+        total_vol    = current_vol
+        
+        # Boundary voting
+        boundary_votes = is_bd[i] ? 1 : 0
+        total_votes    = 1
+        
+        # --- A. Check Neighbors for Merging ---
+        # We assume the neighbor list is valid.
+        start_ptr = nb_ptrs[i]
+        n_count   = num_nbs[i]
+        
+        if n_count > 0
+            end_ptr = start_ptr + n_count - 1
+            
+            for k in start_ptr:end_ptr
+                j = nb_indices[k]
+                
+                # CRITICAL: Only merge with FUTURE particles (j > i)
+                # If we merged with j < i, we would be double-counting or reading stale data.
+                # If j is already merged, we ignore it.
+                if j > i && !merged[j]
+                    dist = abs(nb_dists[k]) # 1D distance from buffer
+                    
+                    if dist < pg.min_allowed_dist
+                        # --- MERGE EVENT ---
+                        # Absorb particle j into particle i
+                        vj = vols[j]
+                        
+                        weighted_pos += pos[j] * vj
+                        weighted_rho += rhos[j] * vj
+                        total_vol    += vj
+                        
+                        if is_bd[j]; boundary_votes += 1; end
+                        total_votes += 1
+                        
+                        # Mark j as dead
+                        merged[j] = true
+                    end
+                end
+            end
+        end
+
+        # --- B. Write Result to Write Pointer ---
+        # Normalize weighted values
+        if total_vol > 1e-20 # Avoid div by zero
+            pos[write_idx] = weighted_pos / total_vol
+            rhos[write_idx] = weighted_rho / total_vol
+        else
+            pos[write_idx] = pos[i]
+            rhos[write_idx] = rhos[i]
+        end
+        
+        vols[write_idx] = total_vol
+        
+        # Boundary Logic: If > 50% of participants were boundary, new one is boundary
+        is_bd[write_idx] = (boundary_votes > total_votes / 2)
+
+        # --- C. Splitting (Refinement) Check ---
+        # We check the original neighbor count of 'i'.
+        # (If we just merged, the particle is definitely well-resolved now, 
+        # but checking the original count is a safe conservative heuristic).
+        if n_count < pg.min_nb
+            # --- SPLIT EVENT ---
+            # Particle is isolated. Add a helper particle.
+            
+            # Position: Random offset within the smoothing range to break symmetry
+            # We use `pg.range_factor * pg.dx` or similar as the scale.
+            smoothing_len = pg.range_factor * pg.dx
+            
+            # 1D Random offset [-0.5, 0.5] * len
+            offset = (rand() - 0.5) * smoothing_len 
+            
+            new_p = pos[write_idx] + offset
+            
+            # Handle Periodic BC for the new position
+            if pg.bc == :periodic
+                L = pg.xmax - pg.xmin
+                if new_p > pg.xmax; new_p -= L; end
+                if new_p < pg.xmin; new_p += L; end
+            end
+            
+            push!(pg.split_buffer_pos, new_p)
+            push!(pg.split_buffer_rho, rhos[write_idx]) # Copy rho
+        end
+    end
+
+    # --- 2. Finalize Grid Structure ---
+    
+    # A. Truncate arrays to the number of valid (merged) particles
+    N_merged = write_idx
+    
+    resize!(pg.positions, N_merged)
+    resize!(pg.rhos, N_merged)
+    resize!(pg.curvatures, N_merged)
+    resize!(pg.is_boundary, N_merged)
+    resize!(pg.volumes, N_merged)
+    resize!(pg.mood_events, N_merged)
+    
+    # B. Append New Particles
+    N_new = length(pg.split_buffer_pos)
+    if N_new > 0
+        append!(pg.positions, pg.split_buffer_pos)
+        append!(pg.rhos, pg.split_buffer_rho)
+        
+        # Initialize defaults for new particles
+        append!(pg.curvatures, zeros(Float64, N_new))
+        append!(pg.volumes, zeros(Float64, N_new)) # Will be recalculated
+        append!(pg.mood_events, falses(N_new))
+        
+        # Logic for boundary status of new particles? 
+        # Usually they start interior (false).
+        append!(pg.is_boundary, falses(N_new)) 
+    end
+    
+    # C. Update Global Counts
+    pg.N = N_merged + N_new
+    
+    # Update indices ranges (assuming ghost count logic holds)
+    if pg.bc == :periodic
+         pg.interior_indices = 1:pg.N
+    else
+         pg.interior_indices = (pg.N_ghost + 1):(pg.N - pg.N_ghost)
+    end
+
+    # --- 3. Sort and Rebuild ---
+    # Essential for 1D logic and putting appended particles in place
+    sort_1d_particles!(pg)
+    determineVolumes!(pg)
+    updateNeighbors!(pg)
+end
 #==============================================================================
   2D PARTICLE GRID (Struct of Arrays Implementation)
 ==============================================================================#
 
 mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
+    # --- Persistent State (SoA) ---
     positions::Vector{SVector{2, Float64}}
     rhos::Vector{Float64}
     is_boundary::BitVector
@@ -155,10 +336,12 @@ mutable struct ParticleGrid2D{S, WF} <: ParticleGrid{2}
 
     neighbor_system::S
     weight_func::WF
+
+    # Particle Sized Buffers
+    neighbor_pointers::Vector{Int}
+    num_neighbors::Vector{Int}    
     # --- Flattened Neighbor Data Buffers ---
     neighbor_indices::Vector{Int}
-    neighbor_pointers::Vector{Int}
-    num_neighbors::Vector{Int}
     neighbor_xdistance::Vector{Float64}
     neighbor_ydistance::Vector{Float64}
     neighbor_weights::Vector{Float64}
@@ -761,6 +944,43 @@ function updateNeighbors!(pg::ParticleGrid1D)
         end
     end
     determineVolumes!(pg)
+    return nothing
+end
+
+"""
+    sort_1d_particles!(pg::ParticleGrid1D)
+
+Sorts the persistent state arrays (positions, rhos, curvatures, etc.) based on
+position x_i < x_j for i < j. This is crucial for moving grids (Lagrangian
+or semi-Lagrangian) to ensure the 1D neighbor search and boundary handling
+remain valid.
+
+Note: This function invalidates the current neighbor graph. You must call 
+`updateNeighbors!(pg)` immediately after.
+"""
+function sort_1d_particles!(pg::ParticleGrid1D)
+    # 1. Determine the permutation that sorts the positions
+    # sortperm is robust and handles the indices logic for us
+    p = sortperm(pg.positions)
+
+    # Optimization: If already sorted (common in small time steps), exit early
+    if issorted(p)
+        return nothing
+    end
+
+    # 2. Permute all persistent state vectors in-place using the permutation `p`.
+    # Base.permute! handles the cycles efficiently.
+    Base.permute!(pg.positions, p)
+    Base.permute!(pg.rhos, p)
+    Base.permute!(pg.curvatures, p)
+    Base.permute!(pg.is_boundary, p)
+    Base.permute!(pg.volumes, p)
+    Base.permute!(pg.mood_events, p)
+
+    # Note: We do not permute neighbor buffers (indices/weights/pointers)
+    # because those are meaningless after a position swap and must be 
+    # totally rebuilt by updateNeighbors!().
+    
     return nothing
 end
 

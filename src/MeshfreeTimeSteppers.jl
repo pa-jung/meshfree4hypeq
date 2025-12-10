@@ -559,10 +559,11 @@ end
 
 
 # No longer needs Nx, Ny. Buffers are sized based on the grid passed during the call.
-struct RalstonRK2{G1, G2, MOOD} <: MeshfreeTimeStepper
+struct RalstonRK2{G1, G2, MOOD, GM} <: MeshfreeTimeStepper
     gradientInterpolator::G1
     fallbackInterpolator::G2
     mood::MOOD
+    moveGrid::GM
     
     # Buffers are now part of the struct to be reused
     rhoInit::Vector{Float64}
@@ -573,9 +574,9 @@ struct RalstonRK2{G1, G2, MOOD} <: MeshfreeTimeStepper
     neighbor_fs::Vector{Float64}
     neighbor_dfs::Vector{Float64}
 
-    function RalstonRK2(grad::G1, fallback::G2, mood::M) where {G1 <: GradientInterpolator, G2 <: GradientInterpolator, M <: MOODCriterion}
+    function RalstonRK2(grad::G1, fallback::G2, mood::M, gm::GM) where {G1 <: GradientInterpolator, G2 <: GradientInterpolator, M <: MOODCriterion, GM <: GridMover}
         # Initialize with empty buffers, they will be resized on the first step
-        new{G1, G2, M}(grad, fallback, mood, Float64[], Float64[], Float64[], Float64[], Float64[])
+        new{G1, G2, M, GM}(grad, fallback, mood, gm, Float64[], Float64[], Float64[], Float64[], Float64[])
     end
 end
 
@@ -621,6 +622,8 @@ end
 
 function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     N = particleGrid.N
+    moveGrid = ralston.moveGrid
+    moveGrid(particleGrid, 2/3 * dt)
     #initTS!(ralston.particleGrid)
     # --- Resize buffers only if necessary, using N ---
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
@@ -673,6 +676,8 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     apply_boundary_conditions!(particleGrid, ralston.rhos)
 
+    moveGrid(particleGrid, 1/3 * dt)
+    #updateNeighbors!(particleGrid)
     #initTS!(ralston.particleGrid)    
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
     initGIBuffers!(ralston.fallbackInterpolator, particleGrid)

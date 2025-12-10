@@ -38,8 +38,14 @@ using .SimSettings
 include("ParticleGrids.jl")
 using .ParticleGrids
 
+include("InitialConditions.jl")
+using .InitialConditions
+
 include("MOOD.jl")
 using .MOOD
+
+include("GridManagement.jl")
+using .GridManagement
 
 include("Interpolations.jl")
 using .Interpolations
@@ -55,9 +61,6 @@ using .TimeIntegration
 
 include("ParticleGridStability.jl")
 using .ParticleGridStability
-
-include("InitialConditions.jl")
-using .InitialConditions
 
 using IPlotPDESols
 

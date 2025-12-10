@@ -19,6 +19,8 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         initFunc_name::String = run_params["init_func"]
         init_params = get(run_params, "init_params", nothing)
         timestepper_name = get(run_params, "timestepper", nothing)
+        grid_mover_name = get(run_params, "grid_mover", nothing)
+        snapshots::Int = run_params["snapshots"]
         
         # --- 2. Determine Dimension and PDE Physics ---
         local dimension::Int
@@ -36,7 +38,8 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
             end
         elseif eq_name == "burgers"
             dimension = 1
-            eq = BurgersEquation()
+            a = get(run_params,"PDE_params", 0.)
+            eq = BurgersEquation(a)
         elseif eq_name == "burgers2d"
             dimension = 2
             eq = BurgersEquation2D()
@@ -45,7 +48,18 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         end
 
         IC = getInitialCondition(initFunc_name, init_params)
-        snapshots::Int = run_params["snapshots"]
+
+        if grid_mover_name == "physical"
+            grid_mover = PhysicalGridMover(eq,IC)
+        elseif grid_mover_name == "custom"
+            func = run_params["grid_mover_func"]
+            ps = run_params["grid_mover_params"]
+            grid_mover = CustomGridMover(func,ps)
+        elseif isnothing(grid_mover_name) || (grid_mover_name == "none")
+            grid_mover = NoGridMover()
+        else
+            error("Only physical, custom or none grid movers supported!")
+        end
         
         # --- 3. REFACTORED: Handle Analytic Solution Case Early ---
         if isnothing(timestepper_name) || timestepper_name == "Analytic"
@@ -98,6 +112,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         weight_func_name = get(run_params, "weight_function", nothing)
         lim = get(run_params, "limiter", nothing)
         remove_ghosts = get(run_params, "remove_ghosts", true)
+        
 
         #@assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
 
@@ -201,7 +216,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         
         local xs, us, ts, elapsed_time, save_relax
         if isnothing(relax_velocities_config)
-            method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun)
+            method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun, grid_mover)
             elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
             elseif timestepper_name == "RK3"; method = RK3(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "RK4"; method = RK4(MainGrad, FallbackGrad, mood_fun)
@@ -310,7 +325,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         sim_data_result = createSimData(xs, us, ts, run_params)
         if !save_relax
             if dimension == 1
-                calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
+                #calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             elseif dimension == 2
                 calculateAllStats!(sim_data_result, (x,t) -> IC(x,t,eq,particleGrid); discontinuity_points_func = t -> get_discontinuity_points(IC, eq, t, particleGrid), quad_tol = 10e-9, dierckx_k = 4)
             end

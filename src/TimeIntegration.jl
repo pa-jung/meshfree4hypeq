@@ -12,6 +12,7 @@ using ..SourceTerms
 using ..ImplicitSolvers
 using ..MOOD
 using ..MLSWeightFunctions
+using ..GridMovement
 
 export mainTimeIntegrator!, mainTimeIntegratorNew!
 

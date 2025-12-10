@@ -42,14 +42,37 @@ LinearAdvection(vel::Tuple{<:Real, <:Real}) = LinearAdvection{2}(Float64.(vel))
 @inline flux(eq::LinearAdvection{1}, u::Float64) = eq.vel[1] * u
 
 
-struct BurgersEquation <: ScalarHyperbolicPDE{1} end
-@inline velocity(eq::BurgersEquation, u::Float64) = u
-@inline flux(eq::BurgersEquation, u::Float64) = 0.5 * u^2
+
 
 struct BurgersEquation2D <: ScalarHyperbolicPDE{2} end
 @inline velocity(eq::BurgersEquation2D, u::Float64) = (u, u)
 @inline flux(eq::BurgersEquation2D, u::Float64) = (0.5 * u^2, 0.5 * u^2)
 
+# 1. Define the Parametric Struct
+# The 'A' parameter is part of the type definition.
+struct BurgersEquation{a} <: ScalarHyperbolicPDE{1} end
+
+# 2. Define Outer Constructors
+# This allows you to call BurgersEquation(0.5)
+BurgersEquation(a::Float64) = BurgersEquation{a}()
+
+# This allows you to call BurgersEquation() and get the classic behavior (A=0.0)
+BurgersEquation() = BurgersEquation{0.0}()
+
+# 3. Define the Physics using the Type Parameter
+# We extract 'A' from the type using the 'where {A}' syntax.
+
+@inline function velocity(::BurgersEquation{a}, u::Float64) where {a}
+    # Classic case (A=0): returns u
+    # Generalized case: returns (1-A) * u
+    return (1.0 - a) * u
+end
+
+@inline function flux(::BurgersEquation{a}, u::Float64) where {a}
+    # Classic case (A=0): returns 0.5 * u^2
+    # Generalized case: returns 0.5 * (1-A) * u^2
+    return 0.5 * (1.0 - a) * u^2
+end
 
 #--------------------------------#
 # --- System Equation Examples --- #

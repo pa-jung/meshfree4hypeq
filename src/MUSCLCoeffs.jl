@@ -18,7 +18,7 @@ end
 # --- In MUSCLCoeffs.jl ---
 
 # --- 1D _zero_coeffs! ---
-@inline function _zero_coeffs(nb_slice::UnitRange{Int}, ws::Union{MUSCLWorkspace1D2O,MUSCLWorkspace1D1O})
+@inline function _zero_coeffs!(nb_slice::UnitRange{Int}, ws::Union{MUSCLWorkspace1D2O,MUSCLWorkspace1D1O})
     @inbounds for k in nb_slice
         ws.alfaij_bars[k] = 0.0
         ws.betaijs[k] = 0.0

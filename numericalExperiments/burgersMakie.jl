@@ -1,6 +1,10 @@
 using Meshfree4ScalarEq
 using IPlotPDESols
 
+function grid_velocity(pos::Real, rho::Real, params::Tuple)
+    return 1/4
+end
+
 # Example SimulationConfig for Burgers
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
@@ -15,7 +19,8 @@ sim_config_burgers = SimulationConfig(
         "randomness_factor" => 0.2,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :outflow, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "burgers", #"PDE_params" => .5
+        "order" => 1, "PDE" => "burgers", "PDE_params" => 1., 
+        "grid_mover" => "physical", # "grid_mover_func" => grid_velocity, "grid_mover_params" => Tuple([]),
     ),
 
     MethodDict(
@@ -539,7 +544,7 @@ sim_config_burgers = SimulationConfig(
     #["ARS233MUSCL2","ARS233MUSCL3","ARS233MUSCL4","ARS233MUSCL5"],
     #["RK4MUSCL2","RK4MUSCL3","RK4MUSCL4","RK4MUSCL5"]
     #["RK4MUSCL2MOOD","RK4MUSCL3MOOD","RK4MUSCL4MOOD","RK4MUSCL5MOOD"]
-    ["ARS233MUSCL2MOOD","ARS233MUSCL3MOOD","ARS233MUSCL4MOOD","ARS233MUSCL5MOOD"]
+    #["ARS233MUSCL2MOOD","ARS233MUSCL3MOOD","ARS233MUSCL4MOOD","ARS233MUSCL5MOOD"]
     #"RK4MUSCL5"
     #["RK4MUSCL2Limiter","RK4MUSCL3Limiter","RK4MUSCL4Limiter","RK4MUSCL5Limiter"]
     #["Analytical Solution", "ARS233WENO", "ARS233MUSCL2MOOD", "RK2MUSCL2(Superbee)", "RK2MUSCL2(VKLimiter)"]
@@ -554,11 +559,11 @@ sim_config_burgers = SimulationConfig(
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
-    #"RK2MUSCL2(minmod)"
+    #"RK2Upwind"
     #["Analytical Solution", "ARS233MUSCL2","ARS233MUSCL2MOOD", "ARS233MUSCL2(VK)", "ARS233Upwind"]
     #"ARS233Upwind"
     #"RK2WENO"
-    #["Analytical Solution", "RK2MUSCL2", "RK2Upwind", "RK2MUSCL2MOOD", "RK2MUSCL2(minmod)", "RK2MUSCL2(VK)"]
+    ["RK2MUSCL2", "RK2Upwind", "RK2MUSCL2MOOD", "RK2MUSCL2(minmod)", "RK2MUSCL2(VK)"]
 );
 scene_options = Dict{String, Any}()
 scene_options = Dict{String, Any}("t" => 10.,"component" => 1, "x_key" => "SEED", "y_key" => "l2error")
