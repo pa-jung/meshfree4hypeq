@@ -621,7 +621,7 @@ function zero_vector_fields!(s)
 end
 
 function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
-    N = particleGrid.N
+    
     moveGrid = ralston.moveGrid
     moveGrid(particleGrid, 2/3 * dt)
     #initTS!(ralston.particleGrid)
@@ -632,32 +632,24 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     #zero_vector_fields!(ralston.gradientInterpolator)
     #zero_vector_fields!(ralston.gradientInterpolator.workspace)
 
-
+    N = particleGrid.N
     # --- First RK Stage ---
     # 1. Start with the current, correct state of the grid
-    ralston.rhoInit[1:N] .= particleGrid.rhos
+    ralston.rhoInit[1:N] .= particleGrid.rhos[1:N]
 
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     #apply_boundary_conditions!(particleGrid, ralston.rhoInit)
 
-
-    # Define a chunk size. 100 is a good starting point.
-    chunk_size = 50
-    chunks = collect(Iterators.partition(1:N, chunk_size))
-
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
-    Threads.@threads for particle_range in chunks
-        for p_idx in particle_range
+    Threads.@threads for p_idx in 1:N
             fi = ralston.rhoInit[p_idx]
             initFs!(ralston, p_idx, fi, ralston.rhoInit, particleGrid)
             initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
             initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
-        end
     end
     
     # 3. Calculate divergence for interior particles
-    Threads.@threads for particle_range in chunks
-        for p_idx in particle_range
+    Threads.@threads for p_idx in N
             if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
 
             fi = ralston.rhoInit[p_idx]
@@ -671,12 +663,13 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
                 rho_candidate = ralston.rhoInit[p_idx] - ralston.div1[p_idx] * dt * 2/3
             end
             ralston.rhos[p_idx] = rho_candidate # Store intermediate result in the 'rhos' buffer
-        end
     end
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     apply_boundary_conditions!(particleGrid, ralston.rhos)
 
     moveGrid(particleGrid, 1/3 * dt)
+
+    N = particleGrid.N
     #updateNeighbors!(particleGrid)
     #initTS!(ralston.particleGrid)    
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
@@ -685,32 +678,28 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     #zero_vector_fields!(ralston.gradientInterpolator)
     #zero_vector_fields!(ralston.gradientInterpolator.workspace)
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
-    Threads.@threads for particle_range in chunks
-        for p_idx in particle_range
+    Threads.@threads for p_idx in 1:N
             fi = ralston.rhos[p_idx]
             initFs!(ralston, p_idx, fi, ralston.rhos, particleGrid)
             initGI!(ralston.gradientInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs) # ERROR IS HERE
             initGI!(ralston.fallbackInterpolator, p_idx, fi, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
-        end
     end
 
     # 2. Calculate final divergence for interior particles
-    Threads.@threads for particle_range in chunks
-        for p_idx in particle_range
-            if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
-        
-            fi = ralston.rhos[p_idx]
-            nb_slice = getNBSlice(particleGrid, p_idx)
-            # Pass the intermediate state (ralston.rhos) to the gradient calculation
-            div2 = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
-            rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
-            if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, ralston.neighbor_fs)
-                div2 = ralston.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
-                rho_final = ralston.rhoInit[p_idx] - dt *  div2 / 3
-            end
-            # Directly write the final result for this particle into the grid
-            particleGrid.rhos[p_idx] = rho_final
+    Threads.@threads for p_idx in 1:N
+        if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
+    
+        fi = ralston.rhos[p_idx]
+        nb_slice = getNBSlice(particleGrid, p_idx)
+        # Pass the intermediate state (ralston.rhos) to the gradient calculation
+        div2 = ralston.gradientInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+        rho_final = ralston.rhoInit[p_idx] - dt * (ralston.div1[p_idx] / 4 + 3 * div2 / 4)
+        if !(ralston.fallbackInterpolator isa NoFallbackGrad) && ralston.mood(ralston.gradientInterpolator, p_idx, fi, nb_slice, rho_final, particleGrid, ralston.neighbor_fs)
+            div2 = ralston.fallbackInterpolator(eq, p_idx, fi, nb_slice, particleGrid, ralston.neighbor_fs, ralston.neighbor_dfs)
+            rho_final = ralston.rhoInit[p_idx] - dt *  div2 / 3
         end
+        # Directly write the final result for this particle into the grid
+        particleGrid.rhos[p_idx] = rho_final
     end
     # Final boundary condition application after the full step is complete
     apply_boundary_conditions!(particleGrid, particleGrid.rhos)

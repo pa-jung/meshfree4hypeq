@@ -559,11 +559,11 @@ sim_config_burgers = SimulationConfig(
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
-    #"RK2Upwind"
+    "RK2Upwind"
     #["Analytical Solution", "ARS233MUSCL2","ARS233MUSCL2MOOD", "ARS233MUSCL2(VK)", "ARS233Upwind"]
     #"ARS233Upwind"
     #"RK2WENO"
-    ["RK2MUSCL2", "RK2Upwind", "RK2MUSCL2MOOD", "RK2MUSCL2(minmod)", "RK2MUSCL2(VK)"]
+    #["RK2MUSCL2", "RK2Upwind", "RK2MUSCL2MOOD", "RK2MUSCL2(minmod)", "RK2MUSCL2(VK)"]
 );
 scene_options = Dict{String, Any}()
 scene_options = Dict{String, Any}("t" => 10.,"component" => 1, "x_key" => "SEED", "y_key" => "l2error")

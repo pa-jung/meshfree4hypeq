@@ -44,8 +44,8 @@ using .InitialConditions
 include("MOOD.jl")
 using .MOOD
 
-include("GridManagement.jl")
-using .GridManagement
+include("GridMovement.jl")
+using .GridMovement
 
 include("Interpolations.jl")
 using .Interpolations

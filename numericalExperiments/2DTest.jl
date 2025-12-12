@@ -50,23 +50,26 @@ function main()
         #"dt" => .001,
         "snapshots" => 20,
         "interp_alpha" => 1.0,
-        "interp_range" => 2.5,
-        "init_func" => "box", # Using the unified struct
+        "interp_range" => 3.5,
+        "init_func" => "riemann", # Using the unified struct
+        "init_params" => (1.,0.,-2.),
         #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
-        "init_params" => (0.,1.,-2.,2.),
-        "randomness_factor" => 0., # (x_rand_factor, y_rand_factor)
+        #"init_params" => (0.,1.,-2.,2.),
+        "randomness_factor" => 0.2, # (x_rand_factor, y_rand_factor)
         "SEED_value" => 42,
-        "PDE" => "linear",
+        "PDE" => "burgers",
         "weight_function" => "exponential",
-        "PDE_params" => 1.0, # 2D velocity vector (vx, vy)
+        "PDE_params" => .5, # 2D velocity vector (vx, vy)
         "bc" => :periodic,
         "sim_function" => "runScalarSimulation",
 
         # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
         "timestepper" => "RalstonRK2",
-        "main_gradient" => "MUSCL",
-        "order" =>2,
+        "main_gradient" => "Upwind",
+        "order" =>1,
         "main_flux" => "Rusanov",
+        "grid_mover" => "physical",
+        "remove_ghosts" => false
         #"MOOD" => "U2", "delta_relax" => 0., "fallback_gradient" => "Upwind", "fallback_flux" => "Rusanov",
         #"switch_tol" => 5.
         #"limiter" => "minmod",
@@ -82,8 +85,8 @@ function main()
     # 1. Configure the profiler to sample ALL threads
     #    We also give it a larger buffer (n) and a reasonable delay
     sim_data = nothing
-    #sim_data = runScalarSimulation(params);
-    @profview runScalarSimulation(params)
+    sim_data = runScalarSimulation(params);
+    #@profview runScalarSimulation(params)
 
     # 3. `sim_data` will now hold the results (a SimData2D object), which you can inspect.
     #
@@ -106,6 +109,6 @@ end
 sim_data, test_config = main()
 
 show1DSolutionFig(test_config)
-scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
+#scene_options = Dict{String, Any}("line_vector" => (1.,0.), "deviation" => 2)
 #show2DCutFig(test_config;scene_options = scene_options)
 #show2DSolutionFig(test_config)

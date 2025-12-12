@@ -50,7 +50,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         IC = getInitialCondition(initFunc_name, init_params)
 
         if grid_mover_name == "physical"
-            grid_mover = PhysicalGridMover(eq,IC)
+            grid_mover = PhysicalGridMover(eq)
         elseif grid_mover_name == "custom"
             func = run_params["grid_mover_func"]
             ps = run_params["grid_mover_params"]
