@@ -136,13 +136,15 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             end
         end
         
-        min_dist = dx * 0.1
+        min_dist = dx * 0.2
         # --- (Initialize other state fields) ---
         rhos = zeros(Float64, N)
         curvatures = zeros(Float64, N)
         volumes = zeros(Float64, N)
         mood_events = falses(N)
         regular = (randomness == 0.0)
+        xmin_tot = xmin - N_ghost * dx
+        xmax_tot = xmax + N_ghost * dx
 
         # --- NEW: Initialize flat neighbor buffers ---
         neighbor_indices = Int[]
@@ -157,9 +159,9 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             neighbor_xdistance, neighbor_weights,
             falses(N), Float64[], Float64[],
             weight_func,
-            xmin, xmax, N, N-N_interior, dx, regular, bc, 
+            xmin_tot, xmax_tot, N, N-N_interior, dx, regular, bc, 
             interior_indices,
-            convert(Float64, interp_range_factor), dx * interp_range_factor, min_dist, 0, ceil(Int,interp_range_factor)
+            convert(Float64, interp_range_factor), dx * interp_range_factor, min_dist, 0, 3
         )
 
         # --- Populate neighbor buffers ---
@@ -167,258 +169,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         return pg
     end
 end
-function manage_particles!(pg::ParticleGrid1D)
-    # 1. Reset Buffers
-    # We only need to clear the active region of the merged buffer
-    # But fill! is fast enough and safe.
-    if length(pg.merged_buffer) < pg.N
-        safe_resize!(pg.merged_buffer, pg.N)
-    end
-    fill!(view(pg.merged_buffer, 1:pg.N), false)
-    
-    empty!(pg.split_buffer_pos)
-    empty!(pg.split_buffer_rho)
-    
-    # Accessors for speed
-    pos = pg.positions
-    rhos = pg.rhos
-    vols = pg.volumes
-    is_bd = pg.is_boundary
-    merged = pg.merged_buffer
-    
-    # Neighbor accessors
-    nb_indices = pg.neighbor_indices
-    nb_dists   = pg.neighbor_xdistance
-    nb_ptrs    = pg.neighbor_pointers
-    num_nbs    = pg.num_neighbors
-    
-    write_idx = 0 # The "In-Situ" Pointer
 
-    # --- MAIN COMPACTION LOOP ---
-    # We iterate only up to the current active N
-    for i in 1:pg.N
-        # If this particle was already merged into a previous one, skip it (delete it)
-        if merged[i]
-            continue
-        end
-
-        # We are keeping this particle (at least for now).
-        write_idx += 1
-        
-        # Start Accumulators for Merging
-        current_vol  = vols[i]
-        weighted_pos = pos[i] * current_vol
-        weighted_rho = rhos[i] * current_vol
-        total_vol    = current_vol
-        
-        # Boundary voting
-        boundary_votes = is_bd[i] ? 1 : 0
-        total_votes    = 1
-        
-        # --- A. Check Neighbors for Merging ---
-        start_ptr = nb_ptrs[i]
-        n_count   = num_nbs[i]
-        
-        if n_count > 0
-            end_ptr = start_ptr + n_count - 1
-            
-            for k in start_ptr:end_ptr
-                j = nb_indices[k]
-                
-                # CRITICAL: Only merge with FUTURE particles (j > i)
-                if j > i && !merged[j]
-                    dist = abs(nb_dists[k]) 
-                    
-                    if dist < pg.min_dist
-                        # --- MERGE EVENT ---
-                        vj = vols[j]
-                        weighted_pos += pos[j] * vj
-                        weighted_rho += rhos[j] * vj
-                        total_vol    += vj
-                        
-                        if is_bd[j]; boundary_votes += 1; end
-                        total_votes += 1
-                        
-                        merged[j] = true
-                    end
-                end
-            end
-        end
-
-        # --- B. Write Result to Write Pointer ---
-        if total_vol > 1e-20
-            pos[write_idx] = weighted_pos / total_vol
-            rhos[write_idx] = weighted_rho / total_vol
-        else
-            pos[write_idx] = pos[i]
-            rhos[write_idx] = rhos[i]
-        end
-        
-        vols[write_idx] = total_vol
-        is_bd[write_idx] = (boundary_votes > total_votes / 2)
-
-        check_and_split_particle!(pg, i, num_nbs[i], nb_ptrs[i])
-    end
-
-    # --- 2. Finalize Grid Structure ---
-    
-    # Number of particles surviving the merge
-    N_merged = write_idx
-    
-    # Number of new particles to add
-    N_new = length(pg.split_buffer_pos)
-    N_total = N_merged + N_new
-    
-    # Ensure Capacity for ALL persistent fields
-    safe_resize!(pg.positions, N_total)
-    safe_resize!(pg.rhos, N_total)
-    safe_resize!(pg.curvatures, N_total)
-    safe_resize!(pg.is_boundary, N_total)
-    safe_resize!(pg.volumes, N_total)
-    safe_resize!(pg.mood_events, N_total)
-
-    # --- Manual Append (Avoids Allocations) ---
-    if N_new > 0
-        # Copy split particles into the "tail" of the arrays
-        for k in 1:N_new
-            idx = N_merged + k
-            pg.positions[idx]   = pg.split_buffer_pos[k]
-            pg.rhos[idx]        = pg.split_buffer_rho[k]
-            
-            # Initialize defaults
-            pg.curvatures[idx]  = 0.0
-            pg.is_boundary[idx] = false
-            pg.volumes[idx]     = 0.0 # Will be recalculated
-            pg.mood_events[idx] = false
-        end
-    end
-
-    # --- 3. Update Global State ---
-    pg.N = N_total
-    
-    if pg.N > 1000; error("Too many particles!") end
-    # Update indices ranges
-    if pg.bc == :periodic
-         pg.interior_indices = 1:pg.N
-    else
-         pg.interior_indices = (pg.N_ghost + 1):(pg.N - pg.N_ghost)
-    end
-    
-    # Resize auxiliary buffers for the NEW N (pointers is N+1)
-    safe_resize!(pg.num_neighbors, pg.N)
-    safe_resize!(pg.neighbor_pointers, pg.N + 1)
-    safe_resize!(pg.merged_buffer, pg.N)
-
-    # --- 4. Sort and Rebuild ---
-    # Essential for 1D logic: places appended particles into correct gaps
-    sort_1d_particles!(pg)
-    
-    updateNeighbors!(pg)
-    determineVolumes!(pg)
-end
-
-"""
-    check_and_split_particle!(pg, i, n_count, start_ptr)
-
-Analyzes the local neighborhood of particle `i`. If there are too few neighbors
-(globally or on either side), or large gaps, it adds new particles to the split buffer.
-"""
-function check_and_split_particle!(pg::ParticleGrid1D, i::Int, n_count::Int, start_ptr::Int)
-    # 1. Skip Boundary Particles
-    if pg.is_boundary[i]
-        return
-    end
-
-    R = pg.max_dist
-    
-    # Target density (neighbors per side)
-    # We want at least min_nb total, distributed roughly evenly.
-    # However, "missing on one side" triggers refinement.
-    # We'll use the Gap Logic to enforce this naturally.
-    
-    # 3. Collect Relative Positions
-    # We collect points in the interval [-R, R] relative to pos[i]
-    # Points always include the Horizon boundaries and the particle itself (0.0)
-    # Use a small vector to avoid allocs if possible, or just a standard Vector.
-    # Given typical min_nb is small (~2-5), Vector is fine.
-    
-    # relative_points = Float64[-R, 0.0, R]
-    # To avoid sorting overhead every time, we can collect then sort.
-    points_buffer = Vector{Float64}()
-    sizehint!(points_buffer, n_count + 3)
-    push!(points_buffer, -R)
-    push!(points_buffer, 0.0)
-    push!(points_buffer, R)
-
-    # Add Neighbors
-    if n_count > 0
-        end_ptr = start_ptr + n_count - 1
-        for k in start_ptr:end_ptr
-            # We access the PRE-CALCULATED distances from the neighbor buffer
-            # dist = x_j - x_i
-            dist = pg.neighbor_xdistance[k]
-            
-            # Only consider neighbors within the relevant horizon
-            if abs(dist) < R
-                push!(points_buffer, dist)
-            end
-        end
-    end
-    
-    sort!(points_buffer)
-
-    # 4. Iterative Gap Filling
-    # We continue adding particles until we satisfy the neighbor count
-    # AND ensure no single gap is too large.
-    # User requirement: "until you reach min_nb"
-    # Inferred requirement: "add if missing on sides" -> Gap check.
-    
-    # How many do we *currently* have?
-    # (Subtract 3 because of -R, 0, R markers)
-    current_nb = length(points_buffer) - 3
-    
-    # We loop until we reach min_nb
-    while current_nb < pg.min_nb
-        # Find the Largest Gap
-        max_gap = -1.0
-        gap_idx = -1
-        
-        # We search gaps between adjacent points
-        for k in 1:(length(points_buffer)-1)
-            gap = points_buffer[k+1] - points_buffer[k]
-            if gap > max_gap
-                max_gap = gap
-                gap_idx = k
-            end
-        end
-        
-        # Place new particle in the middle of the largest gap
-        # p_rel = (p_left + p_right) / 2
-        p_left = points_buffer[gap_idx]
-        p_right = points_buffer[gap_idx+1]
-        new_rel_pos = (p_left + p_right) / 2.0
-        
-        # 5. Add to Grid Buffer
-        # Convert relative -> absolute position
-        new_abs_pos = pg.positions[i] + new_rel_pos
-        
-        # Handle Periodic BC
-        if pg.bc == :periodic
-            L = pg.xmax - pg.xmin
-            if new_abs_pos > pg.xmax; new_abs_pos -= L; end
-            if new_abs_pos < pg.xmin; new_abs_pos += L; end
-        end
-        
-        push!(pg.split_buffer_pos, new_abs_pos)
-        push!(pg.split_buffer_rho, pg.rhos[i]) # Copy density
-        
-        # 6. Update Local State for next iteration
-        # Insert the new relative point into the sorted buffer to split the gap
-        # for the next pass (if we need to add more than 1)
-        insert!(points_buffer, gap_idx + 1, new_rel_pos)
-        current_nb += 1
-    end
-end
 #==============================================================================
   2D PARTICLE GRID (Struct of Arrays Implementation)
 ==============================================================================#
@@ -929,6 +680,138 @@ function getDistance(pg::ParticleGrid1D, i::Integer, j::Integer)
     return dist
 end
 
+# """
+#     updateNeighbors!(pg::ParticleGrid1D)
+
+# Robust, pairwise (N^2) neighbor search. Does NOT require particles to be sorted.
+# Also calculates volumes using the discovered neighbors.
+# """
+# function updateNeighbors!(pg::ParticleGrid1D)
+#     N = pg.N
+#     maxDist = pg.range_factor * pg.dx
+#     weightFunc = pg.weight_func
+    
+#     # --- PASS 1: Count Neighbors ---
+#     # We iterate N^2 to count valid neighbors.
+#     total_neighbors = 0
+#     max_nb = 0
+    
+#     for i in 1:N
+#         count = 0
+#         for j in 1:N
+#             if i == j; continue; end # Skip self
+            
+#             # getDistance handles periodic wrapping automatically
+#             dist = getDistance(pg, i, j)
+            
+#             if abs(dist) <= maxDist
+#                 count += 1
+#             end
+#         end
+        
+#         pg.num_neighbors[i] = count
+#         pg.neighbor_pointers[i] = total_neighbors + 1
+#         total_neighbors += count
+        
+#         if count > max_nb
+#             max_nb = count
+#         end
+#     end
+#     # Set the end pointer (essential for iteration logic)
+#     pg.neighbor_pointers[N+1] = total_neighbors + 1
+#     pg.max_nb = max_nb
+    
+#     # --- Resize Buffers ---
+#     if length(pg.neighbor_indices) < total_neighbors
+#         # Grow with 25% buffer
+#         new_cap = total_neighbors + (total_neighbors ÷ 4)
+#         resize!(pg.neighbor_indices, new_cap)
+#         resize!(pg.neighbor_xdistance, new_cap)
+#         resize!(pg.neighbor_weights, new_cap)
+#     end
+
+#     # --- PASS 2: Fill Neighbor Data ---
+#     for i in 1:N
+#         # Start writing at the pointer for particle i
+#         write_idx = pg.neighbor_pointers[i]
+        
+#         for j in 1:N
+#             if i == j; continue; end
+            
+#             dist = getDistance(pg, i, j)
+#             d_abs = abs(dist)
+            
+#             if d_abs <= maxDist
+#                 d2 = d_abs^2
+                
+#                 pg.neighbor_indices[write_idx]   = j
+#                 pg.neighbor_xdistance[write_idx] = dist
+#                 pg.neighbor_weights[write_idx]   = weightFunc(d2)
+                
+#                 write_idx += 1
+#             end
+#         end
+#     end
+    
+#     # Recalculate volumes using the new connectivity
+#     determineVolumes!(pg)
+    
+#     return nothing
+# end
+
+# """
+#     determineVolumes!(pg::ParticleGrid1D)
+
+# Calculates Voronoi volumes using the neighbor list. 
+# Robust to unsorted particles.
+# """
+# function determineVolumes!(pg::ParticleGrid1D)
+#     N = pg.N
+#     # Fallback if no neighbor is found (e.g. at boundaries or isolated)
+#     default_vol = pg.dx 
+    
+#     for i in 1:N
+#         # Find closest left and right neighbors from the neighbor list
+#         closest_neg_dist = -Inf
+#         closest_pos_dist = Inf
+        
+#         found_left  = false
+#         found_right = false
+        
+#         start_ptr = pg.neighbor_pointers[i]
+#         end_ptr   = start_ptr + pg.num_neighbors[i] - 1
+        
+#         for k in start_ptr:end_ptr
+#             d = pg.neighbor_xdistance[k]
+            
+#             # Check Left Neighbor (negative distance)
+#             if d < 0.0
+#                 if d > closest_neg_dist
+#                     closest_neg_dist = d
+#                     found_left = true
+#                 end
+#             # Check Right Neighbor (positive distance)
+#             elseif d > 0.0
+#                 if d < closest_pos_dist
+#                     closest_pos_dist = d
+#                     found_right = true
+#                 end
+#             end
+#         end
+        
+#         # Calculate Half-distances
+#         # If a neighbor is missing (boundary), we assume dx/2 from the particle center.
+#         # Alternatively, for non-periodic, you might use the distance to the wall.
+        
+#         dist_L = found_left  ? abs(closest_neg_dist) : (pg.dx)
+#         dist_R = found_right ? abs(closest_pos_dist) : (pg.dx)
+        
+#         # Volume is the average of the gap sizes (1D Voronoi)
+#         pg.volumes[i] = (dist_L + dist_R) / 2.0
+#     end
+#     return nothing
+# end
+
 """
 Finds all neighbors for particle `i` in a 1D grid within `maxDist`.
 This is a helper function for `updateNeighbors!`.
@@ -1417,5 +1300,6 @@ function findLocalExtremaAbs(
     return (mini1, maxi1, minAbs1, maxAbs1, mini2, maxi2, minAbs2, maxAbs2)
 end
 
+include("ParticleManagement.jl")
 
 end  # module ParticleGrids

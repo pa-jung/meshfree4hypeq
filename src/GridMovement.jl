@@ -29,9 +29,10 @@ function (gm::CustomGridMover)(pg::ParticleGrid, dt::Real);
         rho = rhos[p_idx]
         positions[p_idx] += vel_func(positons[p_idx],rho,gm.params) * dt
     end
-    #sort_1d_particles!(pg)
     updateNeighbors!(pg)
-    manage_particles!(pg)    
+    manage_particles!(pg)
+    sort_1d_particles!(pg)
+    updateNeighbors!(pg)    
     return
 end 
 

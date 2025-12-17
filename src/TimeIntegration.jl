@@ -98,27 +98,28 @@ end
 """
 Saves data from a SCALAR particle grid into pre-allocated storage slots.
 """
-function saveData!(xs_storage, us_storage, ts_storage, snap_idx::Int, 
-                   particle_grid, current_t, remove_ghosts::Bool)
+function saveData!(xs_storage::AbstractVector{X}, us_storage::AbstractVector{U}, ts_storage, snap_idx::Int, 
+                   pg, current_t, remove_ghosts::Bool) where {X,U}
     
     # Save the current time
     ts_storage[snap_idx] = current_t
-    
+    N = pg.N
+    xs_storage[snap_idx] = remove_ghosts ? Vector{X}(undef,N-pg.N_ghost) : Vector{X}(undef,N)
+    us_storage[snap_idx] = remove_ghosts ? Vector{U}(undef,N-pg.N_ghost) : Vector{U}(undef,N)
     # Get the destination vectors for this snapshot
     dest_pos = xs_storage[snap_idx]
     dest_rho = us_storage[snap_idx]
     
     if remove_ghosts
         # Get logical indices of non-ghost particles
-        indices = .!particle_grid.is_boundary
-        
+        indices = .!(pg.is_boundary[1:N])
         # Use views to copy only the non-ghost data
-        _copy_positions!(dest_pos, view(particle_grid.positions, indices))
-        copyto!(dest_rho, view(particle_grid.rhos, indices))
+        _copy_positions!(dest_pos, view(pg.positions, indices))
+        copyto!(dest_rho, view(pg.rhos, indices))
     else
         # Copy all data
-        _copy_positions!(dest_pos, particle_grid.positions)
-        copyto!(dest_rho, particle_grid.rhos)
+        _copy_positions!(dest_pos, view(pg.positions,1:N))
+        copyto!(dest_rho, view(pg.rhos,1:N))
     end
 end
 
@@ -177,8 +178,8 @@ function mainTimeIntegrator!(
     pos_type = D == 1 ? Float64 : Tuple{Float64,Float64}
     
     # Pre-allocate the storage vectors
-    xs = [Vector{pos_type}(undef, N_save) for _ in 1:snapshots+1]
-    us = [Vector{Float64}(undef, N_save) for _ in 1:snapshots+1]
+    xs = Vector{Vector{pos_type}}(undef, snapshots+1)
+    us = Vector{Vector{Float64}}(undef,snapshots+1)
     ts = Vector{Float64}(undef, snapshots+1)
 
     # --- Snapshot Time Points ---
@@ -234,13 +235,13 @@ function mainTimeIntegrator!(
     # --- Initialization ---
     # --- Pre-allocate Storage ---
     first_pg = system_pgs[1]
-    N_save = remove_ghosts ? (first_pg.N - first_pg.N_ghost) : first_pg.N
+    #N_save = remove_ghosts ? (first_pg.N - first_pg.N_ghost) : first_pg.N
     N_vars = N # Number of variables in the system
     
     pos_type = D == 1 ? Float64 : Tuple{Float64,Float64}
     
     # Pre-allocate storage
-    xs = [Vector{pos_type}(undef, N_save) for _ in 1:snapshots+1]
+    xs = Vector{Vector{pos_type}}(undef, snapshots+1)
     us_sys = [Matrix{Float64}(undef, N_save, N_vars) for _ in 1:snapshots+1]
     ts = Vector{Float64}(undef, snapshots+1)
 
