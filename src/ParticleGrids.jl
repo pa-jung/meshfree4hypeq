@@ -43,6 +43,41 @@ function safe_resize!(v::AbstractVector, n::Integer)
     end
     return nothing
 end
+
+"""
+    LocalVoxels
+
+Helper struct to manage the relative voxel map for gap detection.
+- `num_bins`: Total number of voxels (odd number to center one on the particle).
+- `half_bins`: Number of bins on one side (e.g., if num_bins=5, half_bins=2).
+- `voxel_size`: Spatial length of one voxel.
+- `occupation`: Re-usable boolean buffer to mark occupied voxels.
+"""
+mutable struct LocalVoxels
+    num_bins::Int
+    half_bins::Int
+    voxel_size::Float64
+    occupation::Vector{Bool}
+
+    function LocalVoxels(min_nb::Real, R::Float64)
+        # Formula: 2 * k + 1 ensures symmetry around 0.
+        # k = ceil(Int, min_nb) usually ensures we have 'min_nb' slots per side.
+        k = max(ceil(Int, min_nb), 2) # Ensure at least 2 neighbors per side support
+        
+        num_bins = 2 * k + 1
+        
+        # Total coverage is [-R, R], length 2*R
+        # voxel_size = (2 * R) / num_bins
+        voxel_size = (2.0 * R) / num_bins
+        
+        occupation = zeros(Bool, num_bins)
+        
+        new(num_bins, k, voxel_size, occupation)
+    end
+end
+
+
+
 #==============================================================================
   1D PARTICLE GRID (Struct of Arrays Implementation)
 ==============================================================================#
@@ -86,7 +121,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     max_dist::Float64
     min_dist::Float64
     max_nb::Int  
-    min_nb::Float64         
+    local_voxels::LocalVoxels       
 
     function ParticleGrid1D(
         xmin::Real, xmax::Real, N_interior::Integer, bc::Symbol,
@@ -137,6 +172,8 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         end
         
         min_dist = dx * 0.2
+        max_dist = dx * interp_range_factor
+        voxels = LocalVoxels(3, max_dist)
         # --- (Initialize other state fields) ---
         rhos = zeros(Float64, N)
         curvatures = zeros(Float64, N)
@@ -161,7 +198,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             weight_func,
             xmin_tot, xmax_tot, N, N-N_interior, dx, regular, bc, 
             interior_indices,
-            convert(Float64, interp_range_factor), dx * interp_range_factor, min_dist, 0, 3
+            convert(Float64, interp_range_factor), max_dist, min_dist, 0, voxels
         )
 
         # --- Populate neighbor buffers ---

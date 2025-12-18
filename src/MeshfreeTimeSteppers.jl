@@ -635,7 +635,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     N = particleGrid.N
     # --- First RK Stage ---
     # 1. Start with the current, correct state of the grid
-    ralston.rhoInit[1:N] .= particleGrid.rhos[1:N]
+    ralston.rhoInit[1:N] .= view(particleGrid.rhos, 1:N)
 
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     #apply_boundary_conditions!(particleGrid, ralston.rhoInit)
@@ -649,7 +649,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     end
     
     # 3. Calculate divergence for interior particles
-    Threads.@threads for p_idx in N
+    Threads.@threads for p_idx in 1:N
             if particleGrid.is_boundary[p_idx]; continue; end # Skip ghost particles
 
             fi = ralston.rhoInit[p_idx]

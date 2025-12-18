@@ -104,19 +104,25 @@ function saveData!(xs_storage::AbstractVector{X}, us_storage::AbstractVector{U},
     # Save the current time
     ts_storage[snap_idx] = current_t
     N = pg.N
-    xs_storage[snap_idx] = remove_ghosts ? Vector{X}(undef,N-pg.N_ghost) : Vector{X}(undef,N)
-    us_storage[snap_idx] = remove_ghosts ? Vector{U}(undef,N-pg.N_ghost) : Vector{U}(undef,N)
-    # Get the destination vectors for this snapshot
-    dest_pos = xs_storage[snap_idx]
-    dest_rho = us_storage[snap_idx]
+
     
     if remove_ghosts
+        indices = collect(1:N)[view(.!pg.is_boundary,1:N)]
+        N_save = length(indices)
+        xs_storage[snap_idx] = Vector{X}(undef,N_save)
+        us_storage[snap_idx] = Vector{U}(undef,N_save)
+        # Get the destination vectors for this snapshot
+        dest_pos = xs_storage[snap_idx]
+        dest_rho = us_storage[snap_idx]
         # Get logical indices of non-ghost particles
-        indices = .!(pg.is_boundary[1:N])
-        # Use views to copy only the non-ghost data
         _copy_positions!(dest_pos, view(pg.positions, indices))
         copyto!(dest_rho, view(pg.rhos, indices))
     else
+        xs_storage[snap_idx] = Vector{X}(undef,N)
+        us_storage[snap_idx] = Vector{U}(undef,N)
+        # Get the destination vectors for this snapshot
+        dest_pos = xs_storage[snap_idx]
+        dest_rho = us_storage[snap_idx]
         # Copy all data
         _copy_positions!(dest_pos, view(pg.positions,1:N))
         copyto!(dest_rho, view(pg.rhos,1:N))

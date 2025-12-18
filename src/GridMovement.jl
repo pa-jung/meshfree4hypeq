@@ -42,7 +42,7 @@ function (gm::PhysicalGridMover{BurgersEquation{a}})(pg::ParticleGrid1D, dt::Rea
     for p_idx = 1:pg.N
         positions[p_idx] += a * rhos[p_idx] * dt
     end
-    #sort_1d_particles!(pg)
+    sort_1d_particles!(pg)
     updateNeighbors!(pg)
     manage_particles!(pg)  
     return    

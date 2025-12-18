@@ -42,7 +42,7 @@ function main()
 
     params = ParamDict(
         # --- Shared Parameters ---
-        "tmax" => 10.,
+        "tmax" => 5.,
         "N" => 100,
         "xmin" => -5.0,
         "xmax" => 5.0,
@@ -52,21 +52,21 @@ function main()
         "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "riemann", # Using the unified struct
-        "init_params" => (1.,0.,-2.),
+        "init_params" => (0.,1.,-2.),
         #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
         #"init_params" => (0.,1.,-2.,2.),
         "randomness_factor" => 0.0, # (x_rand_factor, y_rand_factor)
         "SEED_value" => 42,
         "PDE" => "burgers",
         "weight_function" => "exponential",
-        "PDE_params" => .5, # 2D velocity vector (vx, vy)
+        "PDE_params" => 0.5, # 2D velocity vector (vx, vy)
         "bc" => :outflow,
         "sim_function" => "runScalarSimulation",
 
         # --- Method-Specific Parameters for "RK4-MUSCL2-2D" ---
         "timestepper" => "RalstonRK2",
-        "main_gradient" => "MUSCL",
-        "order" =>2,
+        "main_gradient" => "Upwind",
+        "order" =>1,
         "main_flux" => "Rusanov",
         "grid_mover" => "physical",
         "remove_ghosts" => false
