@@ -111,6 +111,8 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     weight_func::WF     
     xmin::Float64
     xmax::Float64
+    inner_xmin::Float64
+    inner_xmax::Float64
     N::Int # Total number of particles
     N_ghost::Int
     dx::Float64
@@ -173,7 +175,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         
         min_dist = dx * 0.2
         max_dist = dx * interp_range_factor
-        voxels = LocalVoxels(3, max_dist)
+        voxels = LocalVoxels(2, max_dist)
         # --- (Initialize other state fields) ---
         rhos = zeros(Float64, N)
         curvatures = zeros(Float64, N)
@@ -196,7 +198,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             neighbor_xdistance, neighbor_weights,
             falses(N), Float64[], Float64[],
             weight_func,
-            xmin_tot, xmax_tot, N, N-N_interior, dx, regular, bc, 
+            xmin_tot, xmax_tot, xmin, xmax, N, N-N_interior, dx, regular, bc, 
             interior_indices,
             convert(Float64, interp_range_factor), max_dist, min_dist, 0, voxels
         )
