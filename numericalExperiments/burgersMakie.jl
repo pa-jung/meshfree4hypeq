@@ -9,14 +9,14 @@ end
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 10., "N" => 200, "xmin" => -8.0, "xmax" => 8.0,
-        "CFL" => .1, "snapshots" => 50, "interp_alpha" => 1.0,
-        "interp_range" => 4.5, "remove_ghosts" => true,
+        "tmax" => 10., "N" => 50, "xmin" => -8.0, "xmax" => 8.0,
+        "CFL" => .1, "snapshots" => 500, "interp_alpha" => 1.0,
+        "interp_range" => 4.5, "remove_ghosts" => false,
         "init_func" => "riemann",
         #"init_params" => (1., 0., 1.),
         #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
-        "init_params" => (0., 1., -2.),
-        "randomness_factor" => 0.2,
+        "init_params" => (1., 0., -2.),
+        "randomness_factor" => 0.,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :outflow, "weight_function" => "exponential",
         "order" => 1, "PDE" => "burgers", "PDE_params" => 1., 
@@ -568,7 +568,7 @@ sim_config_burgers = SimulationConfig(
 scene_options = Dict{String, Any}()
 scene_options = Dict{String, Any}("t" => 10.,"component" => 1, "x_key" => "SEED", "y_key" => "l2error")
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :publication, scene_options = scene_options);
+show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :default, scene_options = scene_options);
 #showDynamicDependence(sim_config_burgers; ui_options = :publication, scene_options = scene_options)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2); calc_stats = false, force_int_param = true)
 #showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.125:4.); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)

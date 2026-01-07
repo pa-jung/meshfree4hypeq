@@ -595,6 +595,7 @@ function RalstonRK2(gradientInterpolator::G1; fallbackInterpolator::G2 = NoFallb
 end
 
 function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid)
+    sort_1d_particles!(particleGrid)
     updateNeighbors!(particleGrid)
 end
 
@@ -623,7 +624,7 @@ end
 function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     
     moveGrid = ralston.moveGrid
-    moveGrid(particleGrid, 2/3 * dt)
+    moveGrid(particleGrid, dt)
     #initTS!(ralston.particleGrid)
     # --- Resize buffers only if necessary, using N ---
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
@@ -667,7 +668,7 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     # 4. Apply boundary conditions to the intermediate result stored in the buffer
     apply_boundary_conditions!(particleGrid, ralston.rhos)
 
-    moveGrid(particleGrid, 1/3 * dt)
+    #moveGrid(particleGrid, 1/3 * dt)
 
     N = particleGrid.N
     #updateNeighbors!(particleGrid)

@@ -175,7 +175,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         
         min_dist = dx * 0.2
         max_dist = dx * interp_range_factor
-        voxels = LocalVoxels(2, max_dist)
+        voxels = LocalVoxels(3, max_dist)
         # --- (Initialize other state fields) ---
         rhos = zeros(Float64, N)
         curvatures = zeros(Float64, N)
@@ -202,7 +202,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             interior_indices,
             convert(Float64, interp_range_factor), max_dist, min_dist, 0, voxels
         )
-
+        sort_1d_particles!(pg)
         # --- Populate neighbor buffers ---
         updateNeighbors!(pg) # Call the new function
         return pg
@@ -981,7 +981,8 @@ Note: This function invalidates the current neighbor graph. You must call
 function sort_1d_particles!(pg::ParticleGrid1D)
     # 1. Determine the permutation that sorts the positions
     # sortperm is robust and handles the indices logic for us
-    p = sortperm(pg.positions)
+    range = pg.N+1:length(pg.positions)
+    p = [sortperm(pg.positions[1:pg.N]) ; collect(range) ]
 
     # Optimization: If already sorted (common in small time steps), exit early
     if issorted(p)
@@ -1024,10 +1025,10 @@ function determineVolumes!(particleGrid::ParticleGrid1D)
             volumes[i] = (deltaPosL + deltaPosR) / 2.0
         end
     else
-        # For non-periodic, only calculate for interior points
-        for i in particleGrid.interior_indices
-            volumes[i] = (positions[i+1] - positions[i-1]) / 2.0
-        end
+        # # For non-periodic, only calculate for interior points
+        # for i in particleGrid.interior_indices
+        #     volumes[i] = (positions[i+1] - positions[i-1]) / 2.0
+        # end
     end
     return
 end

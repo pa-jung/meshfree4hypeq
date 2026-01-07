@@ -1,17 +1,16 @@
 """
     manage_particles!(pg::ParticleGrid1D)
 
-Main management routine.
-1. Voxel Fill (Splitting) - fills gaps everywhere (Ghost & Interior).
+Main management routine. 
+1. Voxel Fill (Splitting) - Fills gaps using Linear Interpolation or delegates to neighbors.
 2. Merge - Coarsens dense regions everywhere.
-3. Update Boundaries - Enforces domain limits and sets boundary flags.
-4. Finalize - Rebuilds graph.
+3. Update Boundaries - Enforces domain limits, removes outliers, and sets flags.
+4. Finalize - Rebuilds graph and sorts.
 """
 function manage_particles!(pg::ParticleGrid1D)
     # =========================================================================
     # PHASE 1: VOXEL FILL (Splitting)
     # =========================================================================
-    # We apply this to ALL particles now.
     
     empty!(pg.split_buffer_pos)
     empty!(pg.split_buffer_rho)
@@ -28,7 +27,10 @@ function manage_particles!(pg::ParticleGrid1D)
         if !visited[i]
             reset_voxels!(lv)
             check_occupation!(lv, pg, i, visited)
-            fill_empty_voxels!(lv, pg, i)
+            
+            # Pass 'visited' so we can un-mark neighbors if needed
+            fill_empty_voxels!(lv, pg, i, visited)
+            
             visited[i] = true
         end
     end
@@ -39,6 +41,7 @@ function manage_particles!(pg::ParticleGrid1D)
         N_curr = pg.N
         N_total = N_curr + N_new
         
+        # Resize all persistent arrays
         safe_resize!(pg.positions, N_total)
         safe_resize!(pg.rhos, N_total)
         safe_resize!(pg.curvatures, N_total)
@@ -50,7 +53,7 @@ function manage_particles!(pg::ParticleGrid1D)
             idx = N_curr + k
             pg.positions[idx]   = pg.split_buffer_pos[k]
             pg.rhos[idx]        = pg.split_buffer_rho[k]
-            # Defaults (will be fixed by update_boundaries!)
+            # Defaults
             pg.curvatures[idx]  = 0.0
             pg.is_boundary[idx] = false 
             pg.volumes[idx]     = 0.0
@@ -65,13 +68,11 @@ function manage_particles!(pg::ParticleGrid1D)
         
         sort_1d_particles!(pg)
         updateNeighbors!(pg)
-        determineVolumes!(pg)
     end
 
     # =========================================================================
     # PHASE 2: MERGE (Coarsen)
     # =========================================================================
-    # We merge ANY particles that are too close, regardless of boundary status.
     
     safe_resize!(pg.merged_buffer, pg.N)
     fill!(view(pg.merged_buffer, 1:pg.N), false)
@@ -100,10 +101,6 @@ function manage_particles!(pg::ParticleGrid1D)
             for k in start_ptr:end_ptr
                 j = pg.neighbor_indices[k]
                 
-                # Simple Merge Condition:
-                # 1. Future particle
-                # 2. Not merged
-                # 3. Close enough
                 if j > i && !merged[j]
                     dist = abs(pg.neighbor_xdistance[k]) 
                     
@@ -127,7 +124,6 @@ function manage_particles!(pg::ParticleGrid1D)
                 rhos[write_idx] = rhos[i]
             end
         end
-        # Note: We don't care about is_boundary here; update_boundaries! fixes it.
     end
     
     pg.N = write_idx
@@ -135,8 +131,6 @@ function manage_particles!(pg::ParticleGrid1D)
     # =========================================================================
     # PHASE 3: BOUNDARY UPDATE (Cleanup)
     # =========================================================================
-    # 1. Remove particles outside [xmin, xmax]
-    # 2. Set is_boundary based on [xmin_inner, xmax_inner]
     
     update_boundaries!(pg)
 
@@ -147,17 +141,128 @@ function manage_particles!(pg::ParticleGrid1D)
     safe_resize!(pg.num_neighbors, pg.N)
     safe_resize!(pg.neighbor_pointers, pg.N + 1)
     
-    sort_1d_particles!(pg)
     
-    # Update indices ranges
+    
     if pg.bc == :periodic
          pg.interior_indices = 1:pg.N
     else
+         # Count actual ghost particles (Left)
+         ghost_count = 0
+         for i in 1:pg.N
+             if pg.positions[i] < pg.inner_xmin
+                 ghost_count += 1
+             else
+                 break
+             end
+         end
+         pg.N_ghost = ghost_count
          pg.interior_indices = (pg.N_ghost + 1):(pg.N - pg.N_ghost)
     end
-    
+    sort_1d_particles!(pg)
     updateNeighbors!(pg)
     determineVolumes!(pg)
+end
+
+"""
+    fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited::BitVector)
+
+Fills empty voxels. 
+- Case A (Interior): Inserts a particle at the exact MIDPOINT of the bounding neighbors
+  with the AVERAGE density.
+- Case B/C (Boundary): Un-visits the neighbor to delegate the split (no extrapolation).
+"""
+function fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited::BitVector)
+    center_offset = lv.half_bins + 1
+    
+    for bin_idx in 1:lv.num_bins
+        if !lv.occupation[bin_idx]
+            rel_idx = bin_idx - center_offset
+            rel_pos = rel_idx * lv.voxel_size
+            
+            # Note: We calculate 'abs_pos' here only for the domain check.
+            # The actual insertion position in Case A will be the physical midpoint.
+            abs_pos = pg.positions[i] + rel_pos
+            
+            # Domain Check
+            if pg.bc == :periodic
+                L = pg.xmax - pg.xmin
+                if abs_pos > pg.xmax; abs_pos -= L; end
+                if abs_pos < pg.xmin; abs_pos += L; end
+            elseif abs_pos < pg.xmin || abs_pos > pg.xmax
+                continue
+            end
+            
+            closest_L_dist = -Inf; closest_L_idx = -1
+            closest_R_dist = Inf;  closest_R_idx = -1
+            
+            start_ptr = pg.neighbor_pointers[i]
+            for n in 0:(pg.num_neighbors[i]-1)
+                flat_idx = start_ptr + n
+                d_from_i = pg.neighbor_xdistance[flat_idx]
+                nb_idx   = pg.neighbor_indices[flat_idx]
+                d_new = d_from_i - rel_pos
+                if d_new < 0 && d_new > closest_L_dist
+                    closest_L_dist = d_new; closest_L_idx = nb_idx
+                elseif d_new > 0 && d_new < closest_R_dist
+                    closest_R_dist = d_new; closest_R_idx = nb_idx
+                end
+            end
+            
+            d_new_i = 0.0 - rel_pos
+            if d_new_i < 0 && d_new_i > closest_L_dist
+                closest_L_dist = d_new_i; closest_L_idx = i
+            elseif d_new_i > 0 && d_new_i < closest_R_dist
+                closest_R_dist = d_new_i; closest_R_idx = i
+            end
+
+            # --- LOGIC UPDATE ---
+            
+            if closest_L_idx != -1 && closest_R_idx != -1
+                # Case A: Interior Voxel
+                # INSERTION STRATEGY: Physical Midpoint + Simple Average
+                
+                idx_L = closest_L_idx
+                idx_R = closest_R_idx
+                
+                # 1. Calculate Physical Midpoint
+                # We use getDistance to handle periodic wrapping automatically.
+                # dist_LR = pos_R - pos_L (shortest path)
+                dist_LR = getDistance(pg, idx_L, idx_R)
+                
+                new_abs_pos = pg.positions[idx_L] + 0.5 * dist_LR
+                
+                # Wrap the new position if necessary (standard periodic safety)
+                if pg.bc == :periodic
+                    L_domain = pg.xmax - pg.xmin
+                    if new_abs_pos > pg.xmax; new_abs_pos -= L_domain; end
+                    if new_abs_pos < pg.xmin; new_abs_pos += L_domain; end
+                end
+                
+                # 2. Calculate Simple Average Rho
+                new_rho = 0.5 * (pg.rhos[idx_L] + pg.rhos[idx_R])
+                
+                if abs(new_rho-pg.rhos[idx_L]) < 1.e-4; println("identical rho detected for x_L = ",pg.positions[idx_L], " and x_R = ",pg.positions[idx_R], "x_p = ", pg.positions[i]) end
+                push!(pg.split_buffer_pos, new_abs_pos)
+                push!(pg.split_buffer_rho, new_rho)
+                
+            elseif closest_L_idx == -1 && closest_R_idx != -1
+                # Case B: Outer Voxel (Left Void) -> Un-visit Right Neighbor
+                visited[closest_R_idx] = false
+                
+            elseif closest_L_idx != -1 && closest_R_idx == -1
+                # Case C: Outer Voxel (Right Void) -> Un-visit Left Neighbor
+                visited[closest_L_idx] = false
+                
+            else
+                # Case D: Isolated. 
+                # Fallback: create at voxel center with current rho
+                # (This is rare if initial distribution is sane)
+                error("should not happen!")
+                push!(pg.split_buffer_pos, abs_pos)
+                push!(pg.split_buffer_rho, pg.rhos[i])
+            end
+        end
+    end
 end
 
 """
@@ -259,107 +364,107 @@ function check_occupation!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited:
     end
 end
 
-"""
-    fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int)
-"""
-function fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int)
-    center_offset = lv.half_bins + 1
+# """
+#     fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int)
+# """
+# function fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int)
+#     center_offset = lv.half_bins + 1
     
-    for bin_idx in 1:lv.num_bins
-        if !lv.occupation[bin_idx]
-            rel_idx = bin_idx - center_offset
-            rel_pos = rel_idx * lv.voxel_size
-            abs_pos = pg.positions[i] + rel_pos
+#     for bin_idx in 1:lv.num_bins
+#         if !lv.occupation[bin_idx]
+#             rel_idx = bin_idx - center_offset
+#             rel_pos = rel_idx * lv.voxel_size
+#             abs_pos = pg.positions[i] + rel_pos
             
-            # Domain Check: We only strictly forbid creating particles 
-            # outside the OUTER limits (pg.xmin/xmax).
-            # We ALLOW creating particles in the ghost regions.
-            if pg.bc == :periodic
-                L = pg.xmax - pg.xmin
-                if abs_pos > pg.xmax; abs_pos -= L; end
-                if abs_pos < pg.xmin; abs_pos += L; end
-            elseif abs_pos < pg.xmin || abs_pos > pg.xmax
-                continue
-            end
+#             # Domain Check: We only strictly forbid creating particles 
+#             # outside the OUTER limits (pg.xmin/xmax).
+#             # We ALLOW creating particles in the ghost regions.
+#             if pg.bc == :periodic
+#                 L = pg.xmax - pg.xmin
+#                 if abs_pos > pg.xmax; abs_pos -= L; end
+#                 if abs_pos < pg.xmin; abs_pos += L; end
+#             elseif abs_pos < pg.xmin || abs_pos > pg.xmax
+#                 continue
+#             end
             
-            closest_L_dist = -Inf; closest_L_idx = -1
-            closest_R_dist = Inf;  closest_R_idx = -1
+#             closest_L_dist = -Inf; closest_L_idx = -1
+#             closest_R_dist = Inf;  closest_R_idx = -1
             
-            start_ptr = pg.neighbor_pointers[i]
-            for n in 0:(pg.num_neighbors[i]-1)
-                flat_idx = start_ptr + n
-                d_from_i = pg.neighbor_xdistance[flat_idx]
-                nb_idx   = pg.neighbor_indices[flat_idx]
-                d_new = d_from_i - rel_pos
-                if d_new < 0 && d_new > closest_L_dist
-                    closest_L_dist = d_new; closest_L_idx = nb_idx
-                elseif d_new > 0 && d_new < closest_R_dist
-                    closest_R_dist = d_new; closest_R_idx = nb_idx
-                end
-            end
+#             start_ptr = pg.neighbor_pointers[i]
+#             for n in 0:(pg.num_neighbors[i]-1)
+#                 flat_idx = start_ptr + n
+#                 d_from_i = pg.neighbor_xdistance[flat_idx]
+#                 nb_idx   = pg.neighbor_indices[flat_idx]
+#                 d_new = d_from_i - rel_pos
+#                 if d_new < 0 && d_new > closest_L_dist
+#                     closest_L_dist = d_new; closest_L_idx = nb_idx
+#                 elseif d_new > 0 && d_new < closest_R_dist
+#                     closest_R_dist = d_new; closest_R_idx = nb_idx
+#                 end
+#             end
             
-            d_new_i = 0.0 - rel_pos
-            if d_new_i < 0 && d_new_i > closest_L_dist
-                closest_L_dist = d_new_i; closest_L_idx = i
-            elseif d_new_i > 0 && d_new_i < closest_R_dist
-                closest_R_dist = d_new_i; closest_R_idx = i
-            end
+#             d_new_i = 0.0 - rel_pos
+#             if d_new_i < 0 && d_new_i > closest_L_dist
+#                 closest_L_dist = d_new_i; closest_L_idx = i
+#             elseif d_new_i > 0 && d_new_i < closest_R_dist
+#                 closest_R_dist = d_new_i; closest_R_idx = i
+#             end
 
-            new_rho = 0.0
+#             new_rho = 0.0
             
-            if closest_L_idx != -1 && closest_R_idx != -1
-                rho_L = pg.rhos[closest_L_idx]
-                rho_R = pg.rhos[closest_R_idx]
-                t = (0.0 - closest_L_dist) / (closest_R_dist - closest_L_dist)
-                new_rho = rho_L * (1.0 - t) + rho_R * t
-            elseif closest_L_idx == -1 && closest_R_idx != -1
-                j = closest_R_idx
-                avg_slope = _get_average_slope(pg, j)
-                new_rho = pg.rhos[j] + avg_slope * (-closest_R_dist)
-            elseif closest_L_idx != -1 && closest_R_idx == -1
-                j = closest_L_idx
-                avg_slope = _get_average_slope(pg, j)
-                new_rho = pg.rhos[j] + avg_slope * (-closest_L_dist)
-            else
-                new_rho = pg.rhos[i]
-            end
+#             if closest_L_idx != -1 && closest_R_idx != -1
+#                 rho_L = pg.rhos[closest_L_idx]
+#                 rho_R = pg.rhos[closest_R_idx]
+#                 t = (0.0 - closest_L_dist) / (closest_R_dist - closest_L_dist)
+#                 new_rho = rho_L * (1.0 - t) + rho_R * t
+#             elseif closest_L_idx == -1 && closest_R_idx != -1
+#                 j = closest_R_idx
+#                 avg_slope = _get_average_slope(pg, j)
+#                 new_rho = pg.rhos[j] + avg_slope * (-closest_R_dist)
+#             elseif closest_L_idx != -1 && closest_R_idx == -1
+#                 j = closest_L_idx
+#                 avg_slope = _get_average_slope(pg, j)
+#                 new_rho = pg.rhos[j] + avg_slope * (-closest_L_dist)
+#             else
+#                 new_rho = pg.rhos[i]
+#             end
             
-            push!(pg.split_buffer_pos, abs_pos)
-            push!(pg.split_buffer_rho, new_rho)
-        end
-    end
-end
+#             push!(pg.split_buffer_pos, abs_pos)
+#             push!(pg.split_buffer_rho, new_rho)
+#         end
+#     end
+# end
 
-"""
-    _get_average_slope(pg, i)
-"""
-function _get_average_slope(pg, i::Int)
-    start_ptr = pg.neighbor_pointers[i]
-    num_nbs   = pg.num_neighbors[i]
+# """
+#     _get_average_slope(pg, i)
+# """
+# function _get_average_slope(pg, i::Int)
+#     start_ptr = pg.neighbor_pointers[i]
+#     num_nbs   = pg.num_neighbors[i]
     
-    if num_nbs == 0; return 0.0; end
+#     if num_nbs == 0; return 0.0; end
     
-    sum_weighted_slope = 0.0
-    sum_weights = 0.0
-    rho_i = pg.rhos[i]
+#     sum_weighted_slope = 0.0
+#     sum_weights = 0.0
+#     rho_i = pg.rhos[i]
     
-    for k in 0:(num_nbs-1)
-        flat_idx = start_ptr + k
-        dx = pg.neighbor_xdistance[flat_idx]
-        nb_idx = pg.neighbor_indices[flat_idx]
-        w  = pg.neighbor_weights[flat_idx]
-        rho_nb = pg.rhos[nb_idx]
+#     for k in 0:(num_nbs-1)
+#         flat_idx = start_ptr + k
+#         dx = pg.neighbor_xdistance[flat_idx]
+#         nb_idx = pg.neighbor_indices[flat_idx]
+#         w  = pg.neighbor_weights[flat_idx]
+#         rho_nb = pg.rhos[nb_idx]
         
-        if abs(dx) > 1e-12
-            slope = (rho_nb - rho_i) / dx
-            sum_weighted_slope += w * slope
-            sum_weights += w
-        end
-    end
+#         if abs(dx) > 1e-12
+#             slope = (rho_nb - rho_i) / dx
+#             sum_weighted_slope += w * slope
+#             sum_weights += w
+#         end
+#     end
     
-    if sum_weights < 1e-14; return 0.0; end
-    return sum_weighted_slope / sum_weights
-end
+#     if sum_weights < 1e-14; return 0.0; end
+#     return sum_weighted_slope / sum_weights
+# end
 # Enums for clarity (or just use Ints)
 # 0: Neighbor
 # 1: Self
