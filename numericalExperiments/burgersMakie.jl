@@ -9,17 +9,17 @@ end
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 10., "N" => 50, "xmin" => -8.0, "xmax" => 8.0,
-        "CFL" => .1, "snapshots" => 500, "interp_alpha" => 1.0,
+        "tmax" => 10., "N" => 400, "xmin" => -8.0, "xmax" => 8.0,
+        "CFL" => .1, "snapshots" => 30, "interp_alpha" => 1.0,
         "interp_range" => 4.5, "remove_ghosts" => false,
         "init_func" => "riemann",
         #"init_params" => (1., 0., 1.),
         #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "init_params" => (1., 0., -2.),
-        "randomness_factor" => 0.,
+        "randomness_factor" => 0.2,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
-        "bc" => :outflow, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "burgers", "PDE_params" => 1., 
+        "bc" => :fixed_dirichlet, "weight_function" => "exponential",
+        "order" => 1, "PDE" => "burgers", "PDE_params" => .75, 
         "grid_mover" => "physical", # "grid_mover_func" => grid_velocity, "grid_mover_params" => Tuple([]),
     ),
 
@@ -559,7 +559,7 @@ sim_config_burgers = SimulationConfig(
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
     #["RK2MUSCL2MOOD(U2)", "Analytical Solution"]
-    ["RK2Upwind","Analytical Solution"]
+    ["RK2Upwind","Analytical Solution","RK2MUSCL2(minmod)","RK2MUSCL2MOOD","RK2MUSCL2"]
     #["Analytical Solution", "ARS233MUSCL2","ARS233MUSCL2MOOD", "ARS233MUSCL2(VK)", "ARS233Upwind"]
     #"ARS233Upwind"
     #"RK2WENO"

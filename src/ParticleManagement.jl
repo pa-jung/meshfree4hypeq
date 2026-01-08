@@ -241,23 +241,30 @@ function fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited
                 # 2. Calculate Simple Average Rho
                 new_rho = 0.5 * (pg.rhos[idx_L] + pg.rhos[idx_R])
                 
-                if abs(new_rho-pg.rhos[idx_L]) < 1.e-4; println("identical rho detected for x_L = ",pg.positions[idx_L], " and x_R = ",pg.positions[idx_R], "x_p = ", pg.positions[i]) end
                 push!(pg.split_buffer_pos, new_abs_pos)
                 push!(pg.split_buffer_rho, new_rho)
                 
             elseif closest_L_idx == -1 && closest_R_idx != -1
                 # Case B: Outer Voxel (Left Void) -> Un-visit Right Neighbor
-                visited[closest_R_idx] = false
-                
+                if pg.is_boundary[closest_R_idx]
+                    push!(pg.split_buffer_pos, abs_pos)
+                    push!(pg.split_buffer_rho, pg.rhos[i])
+                else
+                    visited[closest_R_idx] = false
+                end
             elseif closest_L_idx != -1 && closest_R_idx == -1
                 # Case C: Outer Voxel (Right Void) -> Un-visit Left Neighbor
-                visited[closest_L_idx] = false
+                if pg.is_boundary[closest_L_idx]
+                    push!(pg.split_buffer_pos, abs_pos)
+                    push!(pg.split_buffer_rho, pg.rhos[i])
+                else
+                    visited[closest_L_idx] = false
+                end
                 
             else
                 # Case D: Isolated. 
                 # Fallback: create at voxel center with current rho
                 # (This is rare if initial distribution is sane)
-                error("should not happen!")
                 push!(pg.split_buffer_pos, abs_pos)
                 push!(pg.split_buffer_rho, pg.rhos[i])
             end
@@ -359,7 +366,7 @@ function check_occupation!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited:
             
             # Mark Global Visited
             nb_idx = pg.neighbor_indices[flat_idx]
-            visited[nb_idx] = true 
+            #visited[nb_idx] = true 
         end
     end
 end
