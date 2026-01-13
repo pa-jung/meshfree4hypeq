@@ -49,6 +49,17 @@ function (gm::PhysicalGridMover{BurgersEquation{a}})(pg::ParticleGrid1D, dt::Rea
     return    
 end
 
+function (gm::PhysicalGridMover{LinearAdvection{1}})(pg::ParticleGrid1D, dt::Real)
+    positions = pg.positions
+    for p_idx = 1:pg.N
+        positions[p_idx] += 1. * dt
+    end
+    sort_1d_particles!(pg)
+    updateNeighbors!(pg)
+    manage_particles!(pg)  
+    return    
+end
+
 function moveGrid!(::BurgersEquation{a}, pg::ParticleGrid1D, dt::Float64) where {a}
     positions = pg.positions
     rhos = pg.rhos

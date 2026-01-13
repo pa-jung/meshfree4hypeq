@@ -217,7 +217,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         local xs, us, ts, elapsed_time, save_relax
         if isnothing(relax_velocities_config)
             method = if timestepper_name == "RalstonRK2"; RalstonRK2(MainGrad, FallbackGrad, mood_fun, grid_mover)
-            elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad) # Assumes EulerUpwind ignores fallback/mood args if passed
+            elseif timestepper_name == "EulerUpwind"; method = EulerUpwind(MainGrad, grid_mover) # Assumes EulerUpwind ignores fallback/mood args if passed
             elseif timestepper_name == "RK3"; method = RK3(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "RK4"; method = RK4(MainGrad, FallbackGrad, mood_fun)
             elseif timestepper_name == "LF"; method = LaxFriedrich()

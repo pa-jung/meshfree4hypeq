@@ -143,21 +143,21 @@ function manage_particles!(pg::ParticleGrid1D)
     
     
     
-    if pg.bc == :periodic
-         pg.interior_indices = 1:pg.N
-    else
-         # Count actual ghost particles (Left)
-         ghost_count = 0
-         for i in 1:pg.N
-             if pg.positions[i] < pg.inner_xmin
-                 ghost_count += 1
-             else
-                 break
-             end
-         end
-         pg.N_ghost = ghost_count
-         pg.interior_indices = (pg.N_ghost + 1):(pg.N - pg.N_ghost)
-    end
+    # if pg.bc == :periodic
+    #      pg.interior_indices = 1:pg.N
+    # else
+    #      # Count actual ghost particles (Left)
+    #      ghost_count = 0
+    #      for i in 1:pg.N
+    #          if pg.positions[i] < pg.inner_xmin
+    #              ghost_count += 1
+    #          else
+    #              break
+    #          end
+    #      end
+    #      pg.N_ghost = ghost_count
+    #      pg.interior_indices = (pg.N_ghost + 1):(pg.N - pg.N_ghost)
+    # end
     sort_1d_particles!(pg)
     updateNeighbors!(pg)
     determineVolumes!(pg)
@@ -366,7 +366,7 @@ function check_occupation!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited:
             
             # Mark Global Visited
             nb_idx = pg.neighbor_indices[flat_idx]
-            #visited[nb_idx] = true 
+            visited[nb_idx] = true 
         end
     end
 end
