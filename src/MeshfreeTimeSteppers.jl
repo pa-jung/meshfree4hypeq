@@ -75,6 +75,7 @@ function (eu::EulerUpwind)(
     #initTS!(eu.particleGrid)
     moveGrid = eu.moveGrid
     moveGrid(particleGrid, dt)
+
     # --- 1. Preparation ---
     # Ensure buffers are correctly sized (only resizes if needed)
     initGIBuffers!(eu.gradientInterpolator, particleGrid)
@@ -138,7 +139,6 @@ function (eu::EulerUpwind)(
             particleGrid.rhos[p_idx] = rho_candidate
         end
     end
-
     # --- 4. Final Boundary Conditions ---
     apply_boundary_conditions!(particleGrid, particleGrid.rhos)
 end
@@ -197,27 +197,27 @@ function initTimeStepper(ralston::RalstonRK2, particleGrid::ParticleGrid)
     updateNeighbors!(particleGrid)
 end
 
-"""
-    zero_vector_fields!(s)
+# """
+#     zero_vector_fields!(s)
 
-Iterates over all fields of a struct `s`. If a field is an `AbstractVector`,
-it fills that vector with zeros. This is useful for clearing workspace
-arrays for debugging.
-"""
-function zero_vector_fields!(s)
-    for name in fieldnames(typeof(s))
-        field = getfield(s, name)
+# Iterates over all fields of a struct `s`. If a field is an `AbstractVector`,
+# it fills that vector with zeros. This is useful for clearing workspace
+# arrays for debugging.
+# """
+# function zero_vector_fields!(s)
+#     for name in fieldnames(typeof(s))
+#         field = getfield(s, name)
         
-        # Check if the field is a subtype of AbstractVector
-        if field isa AbstractVector
-            # Get the element type of the vector (e.g., Float64)
-            # and fill with the zero() of that type (e.g., 0.0)
-            fill_value = zero(eltype(field))
-            fill!(field, fill_value)
-        end
-    end
-    return s # Return the modified struct
-end
+#         # Check if the field is a subtype of AbstractVector
+#         if field isa AbstractVector
+#             # Get the element type of the vector (e.g., Float64)
+#             # and fill with the zero() of that type (e.g., 0.0)
+#             fill_value = zero(eltype(field))
+#             fill!(field, fill_value)
+#         end
+#     end
+#     return s # Return the modified struct
+# end
 
 function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGrid, settings::SimSetting, time::Real, dt::Real)
     
@@ -228,8 +228,6 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
     initGIBuffers!(ralston.fallbackInterpolator, particleGrid)
     initTSBuffer!(ralston, particleGrid)
-    #zero_vector_fields!(ralston.gradientInterpolator)
-    #zero_vector_fields!(ralston.gradientInterpolator.workspace)
 
     N = particleGrid.N
     # --- First RK Stage ---
@@ -274,8 +272,6 @@ function (ralston::RalstonRK2)(eq::ScalarHyperbolicPDE, particleGrid::ParticleGr
     initGIBuffers!(ralston.gradientInterpolator, particleGrid)
     initGIBuffers!(ralston.fallbackInterpolator, particleGrid)
     initTSBuffer!(ralston, particleGrid)
-    #zero_vector_fields!(ralston.gradientInterpolator)
-    #zero_vector_fields!(ralston.gradientInterpolator.workspace)
     # Partition 1:N into chunks of 100, and schedule *those* dynamically
     Threads.@threads for p_idx in 1:N
             fi = ralston.rhos[p_idx]

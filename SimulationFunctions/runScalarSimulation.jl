@@ -71,7 +71,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
 
             if dimension == 1
                 Nx = run_params["N"]
-                grid_analytic = ParticleGrid1D(xmin, xmax, Nx , bc, 0.)
+                grid_analytic = ParticleGrid1D(xmin, xmax, Nx , bc, 0.; rng = MersenneTwister(1))
                 xs = grid_analytic.positions
                 us = [[IC(x, t, eq, grid_analytic) for x in xs] for t in ts]
             else # dimension == 2
@@ -107,7 +107,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         fallback_grad_name = get(run_params, "fallback_gradient", nothing)
         main_flux_name = get(run_params, "main_flux", nothing)
         fallback_flux_name = get(run_params, "fallback_flux", nothing)
-        seed_val = get(run_params, "SEED_value", nothing)
+        seed_val = get(run_params, "SEED", nothing)
         relax_velocities_config = get(run_params, "relax_velocities", nothing)
         weight_func_name = get(run_params, "weight_function", nothing)
         lim = get(run_params, "limiter", nothing)

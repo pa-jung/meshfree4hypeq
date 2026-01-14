@@ -18,10 +18,6 @@ function __init__()
 end
 # ---------------------------------------------------------
 
-# Project wide random generator object
-global const SEED = 10
-global const rng = MersenneTwister(SEED)
-
 # Include submodules
 include("HyperbolicPDEs.jl")
 using .HyperbolicPDEs

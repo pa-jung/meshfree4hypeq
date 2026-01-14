@@ -42,8 +42,8 @@ function main()
 
     params = ParamDict(
         # --- Shared Parameters ---
-        "tmax" => 5.,
-        "N" => 100,
+        "tmax" => 10.,
+        "N" => 50,
         "xmin" => -5.0,
         "xmax" => 5.0,
         "CFL" => .1,
@@ -52,14 +52,14 @@ function main()
         "interp_alpha" => 1.0,
         "interp_range" => 3.5,
         "init_func" => "riemann", # Using the unified struct
-        "init_params" => (0.,1.,-2.),
+        "init_params" => (1.,0.,-2.),
         #"init_params" => (1.0, 0., 1.5), # (amplitude, (centerX, centerY), width)
         #"init_params" => (0.,1.,-2.,2.),
         "randomness_factor" => 0.0, # (x_rand_factor, y_rand_factor)
         "SEED_value" => 42,
         "PDE" => "burgers",
         "weight_function" => "exponential",
-        "PDE_params" => 0.5, # 2D velocity vector (vx, vy)
+        "PDE_params" => 1., # 2D velocity vector (vx, vy)
         "bc" => :outflow,
         "sim_function" => "runScalarSimulation",
 

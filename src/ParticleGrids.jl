@@ -7,6 +7,7 @@ export ParticleGrid, ParticleGrid1D, ParticleGrid2D, getPeriodicDistance, saveGr
        manage_particles!
 
 using Plots
+using Random
 using Printf
 using LaTeXStrings
 using Statistics
@@ -59,12 +60,12 @@ mutable struct LocalVoxels
     voxel_size::Float64
     occupation::Vector{Bool}
 
-    function LocalVoxels(min_nb::Real, R::Float64)
+    function LocalVoxels(min_nb::Int, R::Float64)
         # Formula: 2 * k + 1 ensures symmetry around 0.
         # k = ceil(Int, min_nb) usually ensures we have 'min_nb' slots per side.
-        k = max(ceil(Int, min_nb), 2) # Ensure at least 2 neighbors per side support
+        #k = max(ceil(Int, min_nb), 2) # Ensure at least 2 neighbors per side support
         
-        num_bins = 2 * k + 1
+        num_bins = 2 * min_nb + 1
         
         # Total coverage is [-R, R], length 2*R
         # voxel_size = (2 * R) / num_bins
@@ -72,7 +73,7 @@ mutable struct LocalVoxels
         
         occupation = zeros(Bool, num_bins)
         
-        new(num_bins, k, voxel_size, occupation)
+        new(num_bins, min_nb, voxel_size, occupation)
     end
 end
 
@@ -128,11 +129,11 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     function ParticleGrid1D(
         xmin::Real, xmax::Real, N_interior::Integer, bc::Symbol,
         interp_range_factor::Real; 
-        randomness::Real = 0.0, rng = Meshfree4ScalarEq.rng,
+        randomness::Real = 0.0, rng = nothing,
         # --- MODIFIED: Added default value ---
         weight_func::MLSWeightFunction = exponentialWeightFunction(1.,1.)
     )
-
+        #rng = MersenneTwister(10)
         # --- (Existing constructor logic for N, interior_indices, dx) ---
         N_ghost::Int = bc == :periodic ? 0 : ceil(Int, interp_range_factor)
         local dx
@@ -175,7 +176,8 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
         
         min_dist = dx * 0.2
         max_dist = dx * interp_range_factor
-        voxels = LocalVoxels(3, max_dist)
+        voxels = LocalVoxels(floor(Int,interp_range_factor), max_dist)
+        #error("Test")
         # --- (Initialize other state fields) ---
         rhos = zeros(Float64, N)
         curvatures = zeros(Float64, N)

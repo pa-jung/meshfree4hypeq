@@ -210,7 +210,6 @@ function mainTimeIntegrator!(
         
         t += actual_dt
         k_step += 1
-
         # Check for and save snapshots
         # Use a while-loop in case dt spans multiple snapshot times
         while snap_counter <= snapshots && t >= t_snap[snap_counter]

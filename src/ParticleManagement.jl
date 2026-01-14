@@ -7,7 +7,7 @@ Main management routine.
 3. Update Boundaries - Enforces domain limits, removes outliers, and sets flags.
 4. Finalize - Rebuilds graph and sorts.
 """
-function manage_particles!(pg::ParticleGrid1D)
+function manage_particles!(pg::ParticleGrid)
     # =========================================================================
     # PHASE 1: VOXEL FILL (Splitting)
     # =========================================================================
@@ -70,6 +70,25 @@ function manage_particles!(pg::ParticleGrid1D)
         updateNeighbors!(pg)
     end
 
+    _merge_particles!(pg)
+
+    # =========================================================================
+    # PHASE 3: BOUNDARY UPDATE (Cleanup)
+    # =========================================================================
+    
+    update_boundaries!(pg)
+
+    # =========================================================================
+    # PHASE 4: FINALIZE
+    # =========================================================================
+    
+    safe_resize!(pg.num_neighbors, pg.N)
+    safe_resize!(pg.neighbor_pointers, pg.N + 1)
+    if pg isa ParticleGrid1D; sort_1d_particles!(pg) end
+    updateNeighbors!(pg)
+    if pg isa ParticleGrid1D; determineVolumes!(pg) end
+end
+function _merge_particles!(pg::ParticleGrid1D)
     # =========================================================================
     # PHASE 2: MERGE (Coarsen)
     # =========================================================================
@@ -83,6 +102,11 @@ function manage_particles!(pg::ParticleGrid1D)
     pos    = pg.positions
     rhos   = pg.rhos
     
+    # Pre-allocate a queue to track the cluster chain
+    # (Size hint assumes clusters rarely exceed 16 particles)
+    queue = Int[]
+    sizehint!(queue, 16)
+
     for i in 1:pg.N
         if merged[i]; continue; end
 
@@ -93,22 +117,41 @@ function manage_particles!(pg::ParticleGrid1D)
         sum_rho = rhos[i]
         count = 1.0
         
-        start_ptr = pg.neighbor_pointers[i]
-        n_count   = pg.num_neighbors[i]
+        # Initialize BFS for this cluster
+        empty!(queue)
+        push!(queue, i)
         
-        if n_count > 0
-            end_ptr = start_ptr + n_count - 1
-            for k in start_ptr:end_ptr
-                j = pg.neighbor_indices[k]
-                
-                if j > i && !merged[j]
-                    dist = abs(pg.neighbor_xdistance[k]) 
+        # BFS: Process every particle added to the cluster to find ITS neighbors
+        q_head = 1
+        while q_head <= length(queue)
+            u = queue[q_head]
+            q_head += 1
+            
+            # Iterate neighbors of 'u' (the current link in the chain)
+            start_ptr = pg.neighbor_pointers[u]
+            n_count   = pg.num_neighbors[u]
+            
+            if n_count > 0
+                end_ptr = start_ptr + n_count - 1
+                for k in start_ptr:end_ptr
+                    j = pg.neighbor_indices[k]
                     
-                    if dist < pg.min_dist
-                        sum_x += pos[j]
-                        sum_rho += rhos[j]
-                        count += 1.0
-                        merged[j] = true
+                    # 1. Forward check (j > i) ensures we don't merge backwards into finished data
+                    # 2. !merged[j] ensures we don't double-process
+                    if j > i && !merged[j]
+                        # Distance between 'u' and 'j'
+                        dist = abs(pg.neighbor_xdistance[k]) 
+                        
+                        if dist < pg.min_dist
+                            # --- MERGE ---
+                            sum_x += pos[j]
+                            sum_rho += rhos[j]
+                            count += 1.0
+                            merged[j] = true
+                            
+                            # Add j to queue to check *its* neighbors next
+                            push!(queue, j)
+                        end
                     end
                 end
             end
@@ -127,40 +170,142 @@ function manage_particles!(pg::ParticleGrid1D)
     end
     
     pg.N = write_idx
+    return nothing
+end
+# function _merge_particles!(pg::ParticleGrid1D)
+#     # =========================================================================
+#     # PHASE 2: MERGE (Coarsen)
+#     # =========================================================================
+    
+#     safe_resize!(pg.merged_buffer, pg.N)
+#     fill!(view(pg.merged_buffer, 1:pg.N), false)
+#     merged = pg.merged_buffer
 
-    # =========================================================================
-    # PHASE 3: BOUNDARY UPDATE (Cleanup)
-    # =========================================================================
+#     write_idx = 0 
     
-    update_boundaries!(pg)
+#     pos    = pg.positions
+#     rhos   = pg.rhos
+    
+#     for i in 1:pg.N
+#         if merged[i]; continue; end
 
-    # =========================================================================
-    # PHASE 4: FINALIZE
-    # =========================================================================
+#         write_idx += 1
+        
+#         # Accumulators
+#         sum_x = pos[i]
+#         sum_rho = rhos[i]
+#         count = 1.0
+        
+#         start_ptr = pg.neighbor_pointers[i]
+#         n_count   = pg.num_neighbors[i]
+        
+#         if n_count > 0
+#             end_ptr = start_ptr + n_count - 1
+#             for k in start_ptr:end_ptr
+#                 j = pg.neighbor_indices[k]
+                
+#                 if j > i && !merged[j]
+#                     dist = abs(pg.neighbor_xdistance[k]) 
+                    
+#                     if dist < pg.min_dist
+#                         sum_x += pos[j]
+#                         sum_rho += rhos[j]
+#                         println("sum = ", sum_rho,"; rho_j = ",rhos[j],"; j = ", j )
+#                         count += 1.0
+#                         merged[j] = true
+#                     end
+#                 end
+#             end
+#         end
+        
+#         # Write compacted result
+#         if count > 1.0
+#             pos[write_idx]   = sum_x / count
+#             rhos[write_idx]  = sum_rho / count
+#         else
+#             if i != write_idx
+#                 pos[write_idx]  = pos[i]
+#                 rhos[write_idx] = rhos[i]
+#             end
+#         end
+#     end
+#     pg.N = write_idx
+#     return nothing
+# end
+
+"""
+    _merge_particles_pairwise!(pg::ParticleGrid1D)
+
+Simplified merging strategy:
+Iterates through particles and merges `i` with its *single closest* forward neighbor `j`
+if `dist(i,j) < min_dist`. Uses a simple arithmetic mean for position and density.
+"""
+function _merge_particles_pairwise!(pg::ParticleGrid1D)
+    # Ensure buffer size
+    safe_resize!(pg.merged_buffer, pg.N)
+    # Reset buffer (false = not yet processed/merged)
+    fill!(view(pg.merged_buffer, 1:pg.N), false)
+    merged = pg.merged_buffer
+
+    write_idx = 0 
     
-    safe_resize!(pg.num_neighbors, pg.N)
-    safe_resize!(pg.neighbor_pointers, pg.N + 1)
+    pos  = pg.positions
+    rhos = pg.rhos
     
+    for i in 1:pg.N
+        # If 'i' was already merged into a previous particle, skip it
+        if merged[i]; continue; end
+
+        write_idx += 1
+        
+        # Search for the best merge candidate
+        best_j = -1
+        min_found_dist = pg.min_dist # Initialize with threshold
+        
+        start_ptr = pg.neighbor_pointers[i]
+        n_count   = pg.num_neighbors[i]
+        
+        if n_count > 0
+            end_ptr = start_ptr + n_count - 1
+            for k in start_ptr:end_ptr
+                j = pg.neighbor_indices[k]
+                
+                # Candidate criteria:
+                # 1. Forward neighbor (j > i) to prevent double counting
+                # 2. Not already merged (merged[j] == false)
+                if j > i && !merged[j]
+                    dist = abs(pg.neighbor_xdistance[k]) 
+                    
+                    # Find the STRICTLY CLOSEST candidate within min_dist
+                    if dist < min_found_dist
+                        min_found_dist = dist
+                        best_j = j
+                    end
+                end
+            end
+        end
+        
+        if best_j != -1
+            # --- MERGE FOUND: i and best_j ---
+            # Simple arithmetic average (Center of Mass for equal masses)
+            pos[write_idx]  = 0.5 * (pos[i] + pos[best_j])
+            rhos[write_idx] = 0.5 * (rhos[i] + rhos[best_j])
+            
+            # Mark 'j' as merged so it isn't processed as a primary particle later
+            merged[best_j] = true
+        else
+            # --- NO MERGE: Keep i ---
+            # Compaction: only copy if we have holes from previous merges
+            if i != write_idx
+                pos[write_idx]  = pos[i]
+                rhos[write_idx] = rhos[i]
+            end
+        end
+    end
     
-    
-    # if pg.bc == :periodic
-    #      pg.interior_indices = 1:pg.N
-    # else
-    #      # Count actual ghost particles (Left)
-    #      ghost_count = 0
-    #      for i in 1:pg.N
-    #          if pg.positions[i] < pg.inner_xmin
-    #              ghost_count += 1
-    #          else
-    #              break
-    #          end
-    #      end
-    #      pg.N_ghost = ghost_count
-    #      pg.interior_indices = (pg.N_ghost + 1):(pg.N - pg.N_ghost)
-    # end
-    sort_1d_particles!(pg)
-    updateNeighbors!(pg)
-    determineVolumes!(pg)
+    # Update new particle count
+    pg.N = write_idx
+    return nothing
 end
 
 """
@@ -220,7 +365,6 @@ function fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited
             if closest_L_idx != -1 && closest_R_idx != -1
                 # Case A: Interior Voxel
                 # INSERTION STRATEGY: Physical Midpoint + Simple Average
-                
                 idx_L = closest_L_idx
                 idx_R = closest_R_idx
                 
