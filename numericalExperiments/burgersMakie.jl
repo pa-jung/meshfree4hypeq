@@ -9,8 +9,8 @@ end
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 5., "N" => 100, "xmin" => -5.0, "xmax" => 5.0,
-        "dt" => .01, "snapshots" => 1000, "interp_alpha" => 1.0,
+        "tmax" => 5., "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
+        "CFL" => .2, "snapshots" => 100, "interp_alpha" => 1.0,
         "interp_range" => 3.5, "remove_ghosts" => false,
         "init_func" => "riemann",
         #"init_params" => (1., 0., 1.),
@@ -18,8 +18,8 @@ sim_config_burgers = SimulationConfig(
         "init_params" => (3., -1., -2.),
         "randomness_factor" => 0.,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
-        "bc" => :outflow, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "burgers", "PDE_params" => 1., 
+        "bc" => :fixed_dirichlet, "weight_function" => "exponential",
+        "order" => 1, "PDE" => "burgers", "PDE_params" => .5, "merge_factor" => .5,
         "grid_mover" => "physical", # "grid_mover_func" => grid_velocity, "grid_mover_params" => Tuple([]),
     ),
 

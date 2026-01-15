@@ -133,7 +133,7 @@ function (eu::EulerUpwind)(
             rho_candidate = rho_initial - dt * div
             if !(eu.fallbackInterpolator isa NoFallbackGrad) && eu.mood(eu.gradientInterpolator, p_idx, rho_initial, nb_slice, rho_candidate, particleGrid, eu.neighbor_fs)
                 div = eu.fallbackInterpolator(eq, p_idx, rho_initial, nb_slice, particleGrid, eu.neighbor_fs, eu.neighbor_dfs)
-                rho_candidate = rho_initial -dt * div
+                rho_candidate = rho_initial - dt * div
             end           
             # Update particle state directly in the grid
             particleGrid.rhos[p_idx] = rho_candidate

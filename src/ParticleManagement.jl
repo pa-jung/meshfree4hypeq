@@ -232,18 +232,14 @@ end
 #     pg.N = write_idx
 #     return nothing
 # end
+using Random # Ensure Random is available for rand(Bool)
 
-"""
-    _merge_particles_pairwise!(pg::ParticleGrid1D)
-
-Simplified merging strategy:
-Iterates through particles and merges `i` with its *single closest* forward neighbor `j`
-if `dist(i,j) < min_dist`. Uses a simple arithmetic mean for position and density.
-"""
 function _merge_particles_pairwise!(pg::ParticleGrid1D)
-    # Ensure buffer size
+    # =========================================================================
+    # PHASE 2: PAIRWISE MERGE (Simple Average + Random Tie Break)
+    # =========================================================================
+    
     safe_resize!(pg.merged_buffer, pg.N)
-    # Reset buffer (false = not yet processed/merged)
     fill!(view(pg.merged_buffer, 1:pg.N), false)
     merged = pg.merged_buffer
 
@@ -251,16 +247,17 @@ function _merge_particles_pairwise!(pg::ParticleGrid1D)
     
     pos  = pg.positions
     rhos = pg.rhos
+    # vols = pg.volumes # Not used for simple average
     
     for i in 1:pg.N
-        # If 'i' was already merged into a previous particle, skip it
+        # If 'i' was already consumed by a previous merge, skip it.
         if merged[i]; continue; end
 
         write_idx += 1
         
-        # Search for the best merge candidate
+        # --- 1. Find the SINGLE closest mergeable neighbor ---
         best_j = -1
-        min_found_dist = pg.min_dist # Initialize with threshold
+        min_dist_found = pg.min_dist # Initialize with threshold
         
         start_ptr = pg.neighbor_pointers[i]
         n_count   = pg.num_neighbors[i]
@@ -270,32 +267,45 @@ function _merge_particles_pairwise!(pg::ParticleGrid1D)
             for k in start_ptr:end_ptr
                 j = pg.neighbor_indices[k]
                 
-                # Candidate criteria:
-                # 1. Forward neighbor (j > i) to prevent double counting
-                # 2. Not already merged (merged[j] == false)
+                # Criteria:
+                # 1. Forward neighbor (j > i) to prevent double processing
+                # 2. Not already merged
                 if j > i && !merged[j]
                     dist = abs(pg.neighbor_xdistance[k]) 
                     
-                    # Find the STRICTLY CLOSEST candidate within min_dist
-                    if dist < min_found_dist
-                        min_found_dist = dist
+                    if dist < min_dist_found
+                        # Found a strictly closer neighbor
+                        min_dist_found = dist
                         best_j = j
+                    elseif abs(dist - min_dist_found) < 1e-14
+                        # TIE DETECTED: Use Random coin flip
+                        # If true, switch to this new candidate.
+                        if rand(Bool)
+                            best_j = j
+                        end
                     end
                 end
             end
         end
         
         if best_j != -1
-            # --- MERGE FOUND: i and best_j ---
-            # Simple arithmetic average (Center of Mass for equal masses)
-            pos[write_idx]  = 0.5 * (pos[i] + pos[best_j])
+            # --- MERGE PERFORMED (i + best_j) ---
+            
+            # 1. New Position: Geometric Average 
+            pos[write_idx] = 0.5 * (pos[i] + pos[best_j])
+            
+            # 2. New Density: Simple Arithmetic Mean (No Volume Weighting)
             rhos[write_idx] = 0.5 * (rhos[i] + rhos[best_j])
             
-            # Mark 'j' as merged so it isn't processed as a primary particle later
+            # 3. Mark 'best_j' as merged so it is skipped by the main loop
             merged[best_j] = true
+            
+            # Note: Other close neighbors (not best_j) are effectively "copied"
+            # because they are not marked 'merged' here. They will be processed
+            # as the primary particle 'i' in a subsequent iteration of the loop.
+            
         else
-            # --- NO MERGE: Keep i ---
-            # Compaction: only copy if we have holes from previous merges
+            # --- NO MERGE (Copy i) ---
             if i != write_idx
                 pos[write_idx]  = pos[i]
                 rhos[write_idx] = rhos[i]
@@ -303,10 +313,83 @@ function _merge_particles_pairwise!(pg::ParticleGrid1D)
         end
     end
     
-    # Update new particle count
     pg.N = write_idx
     return nothing
 end
+# """
+#     _merge_particles_pairwise!(pg::ParticleGrid1D)
+
+# Simplified merging strategy:
+# Iterates through particles and merges `i` with its *single closest* forward neighbor `j`
+# if `dist(i,j) < min_dist`. Uses a simple arithmetic mean for position and density.
+# """
+# function _merge_particles_pairwise!(pg::ParticleGrid1D)
+#     # Ensure buffer size
+#     safe_resize!(pg.merged_buffer, pg.N)
+#     # Reset buffer (false = not yet processed/merged)
+#     fill!(view(pg.merged_buffer, 1:pg.N), false)
+#     merged = pg.merged_buffer
+
+#     write_idx = 0 
+    
+#     pos  = pg.positions
+#     rhos = pg.rhos
+    
+#     for i in 1:pg.N
+#         # If 'i' was already merged into a previous particle, skip it
+#         if merged[i]; continue; end
+
+#         write_idx += 1
+        
+#         # Search for the best merge candidate
+#         best_j = -1
+#         min_found_dist = pg.min_dist # Initialize with threshold
+        
+#         start_ptr = pg.neighbor_pointers[i]
+#         n_count   = pg.num_neighbors[i]
+        
+#         if n_count > 0
+#             end_ptr = start_ptr + n_count - 1
+#             for k in start_ptr:end_ptr
+#                 j = pg.neighbor_indices[k]
+                
+#                 # Candidate criteria:
+#                 # 1. Forward neighbor (j > i) to prevent double counting
+#                 # 2. Not already merged (merged[j] == false)
+#                 if j > i && !merged[j]
+#                     dist = abs(pg.neighbor_xdistance[k]) 
+                    
+#                     # Find the STRICTLY CLOSEST candidate within min_dist
+#                     if dist < min_found_dist
+#                         min_found_dist = dist
+#                         best_j = j
+#                     end
+#                 end
+#             end
+#         end
+        
+#         if best_j != -1
+#             # --- MERGE FOUND: i and best_j ---
+#             # Simple arithmetic average (Center of Mass for equal masses)
+#             pos[write_idx]  = 0.5 * (pos[i] + pos[best_j])
+#             rhos[write_idx] = 0.5 * (rhos[i] + rhos[best_j])
+            
+#             # Mark 'j' as merged so it isn't processed as a primary particle later
+#             merged[best_j] = true
+#         else
+#             # --- NO MERGE: Keep i ---
+#             # Compaction: only copy if we have holes from previous merges
+#             if i != write_idx
+#                 pos[write_idx]  = pos[i]
+#                 rhos[write_idx] = rhos[i]
+#             end
+#         end
+#     end
+    
+#     # Update new particle count
+#     pg.N = write_idx
+#     return nothing
+# end
 
 """
     fill_empty_voxels!(lv::LocalVoxels, pg::ParticleGrid1D, i::Int, visited::BitVector)

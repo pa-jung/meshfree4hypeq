@@ -112,6 +112,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
         weight_func_name = get(run_params, "weight_function", nothing)
         lim = get(run_params, "limiter", nothing)
         remove_ghosts = get(run_params, "remove_ghosts", true)
+        merge_factor = get(run_params, "merge_factor", 0.)
         
 
         #@assert (isnothing(lim) || order == 2 || lim == "none") "Only 2nd order supported with limiter!"
@@ -146,7 +147,7 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                       elseif !isnothing(weight_func_name) error("Weight function not implemented yet!") end
         local particleGrid
         if dimension == 1
-            particleGrid = ParticleGrid1D(xmin, xmax, Nx, bc, interp_range_factor; rng=rng, randomness=randomness, weight_func = weight_func)
+            particleGrid = ParticleGrid1D(xmin, xmax, Nx, bc, interp_range_factor; rng=rng, randomness=randomness, merge_factor = merge_factor, weight_func = weight_func)
         else
             particleGrid = ParticleGrid2D(xmin, xmax, ymin, ymax, Nx, Ny, bc, interp_range_factor; weight_func = weight_func, rng=rng, randomness=randomness)
         end

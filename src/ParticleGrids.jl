@@ -129,7 +129,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
     function ParticleGrid1D(
         xmin::Real, xmax::Real, N_interior::Integer, bc::Symbol,
         interp_range_factor::Real; 
-        randomness::Real = 0.0, rng = nothing,
+        randomness::Real = 0.0, rng = nothing, merge_factor = .2,
         # --- MODIFIED: Added default value ---
         weight_func::MLSWeightFunction = exponentialWeightFunction(1.,1.)
     )
@@ -174,7 +174,7 @@ mutable struct ParticleGrid1D{WF} <: ParticleGrid{1}
             end
         end
         
-        min_dist = dx * 0.2
+        min_dist = dx * merge_factor
         max_dist = dx * interp_range_factor
         voxels = LocalVoxels(floor(Int,interp_range_factor), max_dist)
         #error("Test")
