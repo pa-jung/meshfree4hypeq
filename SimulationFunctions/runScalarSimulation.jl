@@ -280,14 +280,14 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                     pgs_vec[k].rhos[p_idx] = M_funcs_vec[k]((macro_ic_at_p,))
                 end
             end
-            pgs = Tuple(pgs_vec)
+            pgs = ParticleGridSystem(Tuple(pgs_vec),collect(1:N_total_kinetic))
             kinetic_eqs = Tuple(kinetic_eqs_vec)
 
             implicit_solver = LinearizedRelaxationImplicitSolver()
-            system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
-                            elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
-                            elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
-                            elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term)
+            system_method = if timestepper_name == "ARS233"; ARS233(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, grid_mover)
+                            elseif timestepper_name == "PRSSP3"; PareschiRussoIMEXSSP3(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, grid_mover)
+                            elseif timestepper_name == "ARS222"; ARS222(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, grid_mover)
+                            elseif timestepper_name == "ARS232"; ARS232(MainGrad, FallbackGrad, mood_fun, implicit_solver, source_term, grid_mover)
                             elseif timestepper_name == "SimpleSplitting"; SimpleSplitting(EulerUpwind(MainGrad; fallbackInterpolator=FallbackGrad, mood=mood_fun), source_term)
                             else error("Unknown TimeStepper name for system: '$timestepper_name'") 
                             end
@@ -300,19 +300,27 @@ function runScalarSimulation(params::ParamDictType)::Union{AbstractSimData, Noth
                 us_final = sys_us
             else
                 m = length(ts)
-                # Pre-allocate the final macroscopic solution array
-                us_final = Vector{Vector{Float64}}(undef, m)
+                # Final storage: Vector of Matrices. 
+                # Structure: [TimeStep] -> [ParticleIndex, MacroVarIndex]
+                us_final = Vector{Matrix{Float64}}(undef, m)
                 
-                # Use an efficient loop instead of `map`
                 for t_idx in eachindex(ts)
                     kinetic_data_at_t = sys_us[t_idx]
-                    # Pre-allocate the matrix for this time step
-                    macro_data_at_t = Vector{Float64}(undef, size(sys_us[1])[1])
+                    
+                    # 1. FIX: Get N from the *current* snapshot, not the first one
+                    N_curr = size(kinetic_data_at_t, 1)
+                    
+                    # 2. FIX: Allocate a Matrix (N_curr x N_macro_vars)
+                    macro_data_at_t = Matrix{Float64}(undef, N_curr, N_macro_vars)
                     
                     for i_macro in 1:N_macro_vars
                         indices = kinetic_to_macro_map[i_macro]
-                        # Sum the relevant columns directly into the output matrix without intermediate allocations
-                        macro_data_at_t .= sum(kinetic_data_at_t,dims = 2)
+                        
+                        # 3. FIX: Sum only the columns corresponding to 'indices'
+                        # view(...) creates a zero-cost slice of the specific columns
+                        # sum(..., dims=2) sums across those columns
+                        # vec(...) converts the resulting Nx1 matrix to a vector for assignment
+                        macro_data_at_t[:, i_macro] .= vec(sum(view(kinetic_data_at_t, :, indices), dims=2))
                     end
                     us_final[t_idx] = macro_data_at_t
                 end

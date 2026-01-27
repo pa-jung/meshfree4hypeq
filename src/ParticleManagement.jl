@@ -70,7 +70,7 @@ function manage_particles!(pg::ParticleGrid)
         updateNeighbors!(pg)
     end
 
-    _merge_particles!(pg)
+    _merge_particles_pairwise!(pg)
 
     # =========================================================================
     # PHASE 3: BOUNDARY UPDATE (Cleanup)
@@ -247,6 +247,7 @@ function _merge_particles_pairwise!(pg::ParticleGrid1D)
     
     pos  = pg.positions
     rhos = pg.rhos
+    vols = pg.volumes
     # vols = pg.volumes # Not used for simple average
     
     for i in 1:pg.N
@@ -290,15 +291,30 @@ function _merge_particles_pairwise!(pg::ParticleGrid1D)
         
         if best_j != -1
             # --- MERGE PERFORMED (i + best_j) ---
+            # 1. Mass Conservation (CRITICAL for Shock Speed)
+            # Mass = Density * Volume
+            mass_i = rhos[i] * vols[i]
+            mass_j = rhos[best_j] * vols[best_j]
+            total_mass = mass_i + mass_j
+            total_vol  = vols[i] + vols[best_j]
             
-            # 1. New Position: Geometric Average 
+            # 2. New Position: Geometric Average 
+            # (Keeps grid smooth; Center of Mass can be used but geometric is std for regridding)
             pos[write_idx] = 0.5 * (pos[i] + pos[best_j])
             
-            # 2. New Density: Simple Arithmetic Mean (No Volume Weighting)
-            rhos[write_idx] = 0.5 * (rhos[i] + rhos[best_j])
+            # 3. New Density: Total Mass / Total Volume
+            rhos[write_idx] = total_vol > 1e-15 ? (total_mass / total_vol) : 0.0
             
-            # 3. Mark 'best_j' as merged so it is skipped by the main loop
+            # 4. Mark 'best_j' as merged so it is skipped by the main loop
             merged[best_j] = true
+            # # 1. New Position: Geometric Average 
+            # pos[write_idx] = 0.5 * (pos[i] + pos[best_j])
+            
+            # # 2. New Density: Simple Arithmetic Mean (No Volume Weighting)
+            # rhos[write_idx] = 0.5 * (rhos[i] + rhos[best_j])
+            
+            # # 3. Mark 'best_j' as merged so it is skipped by the main loop
+            # merged[best_j] = true
             
             # Note: Other close neighbors (not best_j) are effectively "copied"
             # because they are not marked 'merged' here. They will be processed

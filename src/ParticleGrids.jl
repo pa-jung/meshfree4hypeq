@@ -29,7 +29,40 @@ import Meshfree4ScalarEq
 
 # --- Core Abstract Type and System Alias ---
 abstract type ParticleGrid{D} end # Now parameterized by dimension
-const ParticleGridSystem{N, D} = NTuple{N, <:ParticleGrid{D}}
+#const ParticleGridSystem{N, D} = NTuple{N, <:ParticleGrid{D}}
+
+# In ParticleGrids.jl
+
+"""
+    ParticleGridSystem{D, N_grids}
+
+A container for a coupled system of particle grids. 
+- `grids`: The tuple of individual particle grids.
+- `velocity_indices`: Indices of the species (grids) that contribute to the grid velocity.
+- `grid_velocities`: A buffer storing the calculated grid velocity for every particle.
+"""
+struct ParticleGridSystem{N_grids, D}
+    grids::NTuple{N_grids, ParticleGrid{D}}
+    velocity_indices::Vector{Int} 
+    grid_velocities::Vector{Float64} # For 1D (use Vector{SVector{2,Float64}} for 2D)
+
+    function ParticleGridSystem(grids::NTuple{N_grids, ParticleGrid{D}}, velocity_indices::Vector{Int}) where {N_grids,D}
+        N_particles = grids[1].N # Assuming all grids have same N (coupled)
+        
+        # Pre-allocate buffer for grid velocities
+        grid_vels = zeros(Float64, N_particles)
+        
+        new{N_grids, D}(grids, velocity_indices, grid_vels)
+    end
+end
+
+
+
+# Helper to support iteration/indexing like a Tuple (backward compatibility)
+Base.getindex(pgs::ParticleGridSystem, i::Int) = pgs.grids[i]
+Base.length(pgs::ParticleGridSystem) = length(pgs.grids)
+Base.iterate(pgs::ParticleGridSystem, state=1) = iterate(pgs.grids, state)
+Base.eachindex(pgs::ParticleGridSystem) = eachindex(pgs.grids)
 
 """
     safe_resize!(v::Vector, n::Integer)
@@ -1027,10 +1060,10 @@ function determineVolumes!(particleGrid::ParticleGrid1D)
             volumes[i] = (deltaPosL + deltaPosR) / 2.0
         end
     else
-        # # For non-periodic, only calculate for interior points
-        # for i in particleGrid.interior_indices
-        #     volumes[i] = (positions[i+1] - positions[i-1]) / 2.0
-        # end
+        # For non-periodic, only calculate for interior points
+        for i in particleGrid.interior_indices
+            volumes[i] = (positions[i+1] - positions[i-1]) / 2.0
+        end
     end
     return
 end

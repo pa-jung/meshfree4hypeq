@@ -4,7 +4,7 @@ export GeneralIMEXTimeStepper, ARS233, PareschiRussoIMEXSSP3, ARS222, SSP2332, S
 
 include("ButcherTableaus.jl")
 
-function initFs!(ts::MeshfreeSystemTimeStepper, i, f_is, fVecs, pgs::Tuple)
+function initFs!(ts::MeshfreeSystemTimeStepper, i, f_is, fVecs, pgs::ParticleGridSystem)
     for l in eachindex(pgs)
         # --- 4. Parallel Pre-Gather Loop ---
         pg = pgs[l]
@@ -140,7 +140,7 @@ function (ss::SimpleSplitting)(
 end
 # --- In your TimeIntegration.jl file ---
 # --- REFACTORED GeneralIMEXTimeStepper Struct and Constructor ---
-mutable struct GeneralIMEXTimeStepper{N, G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeSystemTimeStepper
+mutable struct GeneralIMEXTimeStepper{N, G1, G2, M, IS, ST_OBJ, BT, GM} <: MeshfreeSystemTimeStepper
     # User's modular components
     gradientInterpolator::NTuple{N,G1}
     fallbackInterpolator::NTuple{N,G2}
@@ -148,6 +148,7 @@ mutable struct GeneralIMEXTimeStepper{N, G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeS
     implicit_solver::IS
     source_term_object::ST_OBJ
     butcher_tableau::BT
+    grid_mover::GM  # <-- NEW: Grid Mover
     
     # --- Reusable Buffers (Workspace) ---
     U_n_sys::Matrix{Float64}
@@ -170,16 +171,16 @@ mutable struct GeneralIMEXTimeStepper{N, G1, G2, M, IS, ST_OBJ, BT} <: MeshfreeS
 
     function GeneralIMEXTimeStepper(
             gradientInterpolator::G1, fallbackInterpolator::G2, mood::M,
-            implicit_solver::IS, source_term_object::ST_OBJ, butcher_tableau::BT
-        ) where {G1, G2, M, IS, ST_OBJ, BT}
+            implicit_solver::IS, source_term_object::ST_OBJ, butcher_tableau::BT, grid_mover::GM
+        ) where {G1, G2, M, IS, ST_OBJ, BT, GM}
         
         s = size(butcher_tableau.A, 1) # Number of stages
         n_threads = Threads.nthreads()
         N = source_term_object.num_total_kinetic_components
         # Initialize with empty buffers; they will be resized on the first call
-        new{N, G1, G2, M, IS, ST_OBJ, BT}(
+        new{N, G1, G2, M, IS, ST_OBJ, BT, GM}(
             ntuple(_ -> deepcopy(gradientInterpolator),N), ntuple(_ -> deepcopy(fallbackInterpolator),N), mood, implicit_solver, 
-            source_term_object, butcher_tableau,
+            source_term_object, butcher_tableau, grid_mover,
             Matrix{Float64}(undef,0,0), [Matrix{Float64}(undef,0,0) for _ in 1:s],
             [Matrix{Float64}(undef,0,0) for _ in 1:s], [Matrix{Float64}(undef,0,0) for _ in 1:s], 
             Vector{Float64}(undef, 0), falses(0, N, s),
@@ -195,7 +196,7 @@ end
 
 # --- NEW: initAddTSBuffer! for the IMEX stepper ---
 # This resizes the buffers that are per-particle, but not system-wide
-function initAddTSBuffer!(imex_ts::GeneralIMEXTimeStepper, pgs::Tuple)
+function initAddTSBuffer!(imex_ts::GeneralIMEXTimeStepper, pgs::ParticleGridSystem)
     N_particles = pgs[1].N
     N_components = length(pgs)
     # --- Ensure buffers are correctly sized for the current grid ---
@@ -234,11 +235,20 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
         dt::Real
     ) where {G1, G2, M, IS, ST_OBJ, BT, N, D}
 
-    N_particles = system_pg[1].N
+    
     N_components = N
     s = imex_ts.num_stages
     bt = imex_ts.butcher_tableau
+    grid_mover = imex_ts.grid_mover
+    N_start = -1
+    for pg in system_pg
+        grid_mover(pg, dt) # different movements for each grid!
+        N_start = N_start == -1 ? pg.N : @assert N_start == pg.N "Particle numbers differ!"
+    end
+
+    N_particles = system_pg[1].N
     
+
     # Define chunks for parallel loops
     chunk_size = 50 
     chunks = collect(Iterators.partition(1:N_particles, chunk_size))
@@ -345,27 +355,42 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
                 initGI!(imex_ts.fallbackInterpolator[k], p_idx, fi, grid_k, neighbor_fs, neighbor_dfs)
             end
         end
-
+        update_grid_velocities!(system_pg, grid_mover)
         # 3. Threaded loop to calculate divergence
         Threads.@threads for p_idx in 1:N_particles
+            u_grid = system_pg.grid_velocities[p_idx]
             for k in 1:N
                 grid_k = system_pg[k]
                 if grid_k.is_boundary[p_idx]; continue; end
                 
-                eq_k = scalar_equations[k]
+        # --- ALE MAGIC HERE ---
+                # Create a LOCAL equation instance on the stack.
+                # This is essentially free (no allocation) and thread-safe.
+                
+                # 1. Get the global equation type to extract constant A
+                # (Assuming your scalar_equations uses the new LinearAdvectionALE{A} type)
+                global_eq = scalar_equations[k] 
+                
+                # 2. Compute effective velocity: a - u_grid
+                v_eff = get_effective_vel(global_eq,u_grid)
+                
+                # 3. Instantiate local equation
+                eq_local = LinearAdvection(v_eff)
+
+                #eq_k = scalar_equations[k]
                 fi = current_Y_i_sys[p_idx,k]
                 nb_slice = getNBSlice(grid_k, p_idx)
                 neighbor_fs = @view imex_ts.all_neighbor_fs[:,k]
                 neighbor_dfs = @view imex_ts.all_neighbor_dfs[:,k]
 
                 interp = imex_ts.gradientInterpolator[k]
-                div_high = interp(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
+                div_high = interp(eq_local, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
                 
                 rho_candidate = fi - dt * div_high # Candidate for MOOD
                 
                 if !(imex_ts.fallbackInterpolator isa NoFallbackGrad) && imex_ts.mood(imex_ts.gradientInterpolator[k], p_idx, fi, nb_slice, rho_candidate, grid_k, neighbor_fs)
                     fallback = imex_ts.fallbackInterpolator[k]
-                    div_fallback = fallback(eq_k, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
+                    div_fallback = fallback(eq_local, p_idx, fi, nb_slice, grid_k, neighbor_fs, neighbor_dfs)
                     imex_ts.K_E_stages_sys[i][p_idx, k] = -div_fallback
                     imex_ts.mood_triggered[p_idx,k,i] = true
                 else
@@ -432,13 +457,15 @@ function ARS233( # Changed name to avoid conflict with potential struct name if 
     mood_criterion::M,
     implicit_solver::IS,
     source_term_object::ST_OBJ,
+    grid_mover::GM,
     gamma_coefficient::Float64 = (3.0 + sqrt(3.0))/6.0 # Allow custom gamma for this specific scheme
 ) where {
     G1 <: Interpolations.GradientInterpolator, # Example: Qualify with your module name
     G2 <: Union{Interpolations.GradientInterpolator, Nothing},
     M <: MOODCriterion, # Assuming MOODCriterion is defined
     IS <: ImplicitSolvers.AbstractImplicitSolver,
-    ST_OBJ <: SourceTerms.AbstractSourceTerm
+    ST_OBJ <: SourceTerms.AbstractSourceTerm,
+    GM <: GridMover,
 }
     
     # Get the specific Butcher tableau for IMEXARS233
@@ -452,6 +479,7 @@ function ARS233( # Changed name to avoid conflict with potential struct name if 
         implicit_solver,
         source_term_object,
         tableau, # The specific Butcher tableau
+        grid_mover,
     )
 end
 # In a file like IMEXTableaus.jl or alongside GeneralIMEXTimeStepper definition
@@ -489,12 +517,14 @@ function PareschiRussoIMEXSSP3(
     mood_criterion::M,
     implicit_solver::IS,
     source_term_object::ST_OBJ,
+    grid_mover::GM
 ) where {
     G1 <: Interpolations.GradientInterpolator,
     G2 <: Union{Interpolations.GradientInterpolator, Nothing},
     M <: MOODCriterion, # Assuming MOODCriterion is defined
     IS <: ImplicitSolvers.AbstractImplicitSolver,
-    ST_OBJ <: SourceTerms.AbstractSourceTerm
+    ST_OBJ <: SourceTerms.AbstractSourceTerm,
+    GM <: GridMover,
 }
     
     tableau = PR_IMEX_SSP3_ButcherTableau() 
@@ -506,6 +536,7 @@ function PareschiRussoIMEXSSP3(
         implicit_solver,
         source_term_object,
         tableau, # The specific Butcher tableau
+        grid_mover,
     )
 end
 
@@ -527,13 +558,15 @@ function ARS222(
     mood_criterion::M,
     implicit_solver::IS,
     source_term_object::ST_OBJ,
+    grid_mover::GM,
     gamma_coefficient::Union{Float64,Nothing}=nothing # Allows override of default gamma
 ) where {
     G1 <: Interpolations.GradientInterpolator,
     G2 <: Union{Interpolations.GradientInterpolator, Nothing},
     M <: MOODCriterion, # Assuming MOODCriterion is defined
     IS <: ImplicitSolvers.AbstractImplicitSolver,
-    ST_OBJ <: SourceTerms.AbstractSourceTerm
+    ST_OBJ <: SourceTerms.AbstractSourceTerm,
+    GM <: GridMover,
 }
     
     tableau = ARS222_ButcherTableau(gamma_coefficient) 
@@ -545,6 +578,7 @@ function ARS222(
         implicit_solver,
         source_term_object,
         tableau, # The specific ARS(2,2,2) Butcher tableau
+        grid_mover,
     )
 end
 
@@ -555,12 +589,14 @@ function SSP2332(
     mood_criterion::M,
     implicit_solver::IS,
     source_term_object::ST_OBJ,
+    grid_mover::GM
 ) where {
     G1 <: Interpolations.GradientInterpolator,
     G2 <: Union{Interpolations.GradientInterpolator, Nothing},
     M <: MOODCriterion, # Assuming MOODCriterion is defined
     IS <: ImplicitSolvers.AbstractImplicitSolver,
-    ST_OBJ <: SourceTerms.AbstractSourceTerm
+    ST_OBJ <: SourceTerms.AbstractSourceTerm,
+    GM <: GridMover,
 }
     
     tableau = SSP2332ButcherTableau() 
@@ -572,6 +608,7 @@ function SSP2332(
         implicit_solver,
         source_term_object,
         tableau, # The specific ARS(2,2,2) Butcher tableau
+        grid_mover,
     )
 end
 
@@ -581,12 +618,14 @@ function RalstonRK2(
     mood_criterion::M,
     implicit_solver::IS,
     source_term_object::ST_OBJ,
+    grid_mover::GM
 ) where {
     G1 <: Interpolations.GradientInterpolator,
     G2 <: Union{Interpolations.GradientInterpolator, Nothing},
     M <: MOODCriterion, # Assuming MOODCriterion is defined
     IS <: ImplicitSolvers.AbstractImplicitSolver,
-    ST_OBJ <: SourceTerms.AbstractSourceTerm
+    ST_OBJ <: SourceTerms.AbstractSourceTerm,
+    GM <: GridMover,
 }
     
     tableau = RalstonRK2ButcherTableau() 
@@ -598,5 +637,6 @@ function RalstonRK2(
         implicit_solver,
         source_term_object,
         tableau, # The specific ARS(2,2,2) Butcher tableau
+        grid_mover,
     )
 end

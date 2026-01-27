@@ -10,12 +10,12 @@ sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
         "tmax" => 5., "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
-        "CFL" => .2, "snapshots" => 100, "interp_alpha" => 1.0,
+        "dt" => .001, "snapshots" => 100, "interp_alpha" => 1.0,
         "interp_range" => 3.5, "remove_ghosts" => false,
         "init_func" => "riemann",
         #"init_params" => (1., 0., 1.),
         #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
-        "init_params" => (3., -1., -2.),
+        "init_params" => (2., 0., -2.),
         "randomness_factor" => 0.,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :fixed_dirichlet, "weight_function" => "exponential",
@@ -564,10 +564,10 @@ sim_config_burgers = SimulationConfig(
     #["EulerUpwind","Analytical Solution","RK2MUSCL2(VKLimiter)","RK2MUSCL2(superbee)","RK2MUSCL2", "RK2MUSCL2MOOD", "ARS233MUSCL2MOOD"]
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
-    #["EulerUpwind", "Analytical Solution"]
-    ["EulerUpwind", "RK2Upwind","Analytical Solution","RK2MUSCL2(minmod)","RK2MUSCL2MOOD","RK2MUSCL2"]
+    #["RK2MUSCL2(VK)", "Analytical Solution"]
+    #["EulerUpwind", "RK2Upwind","Analytical Solution","RK2MUSCL2(VK)","RK2MUSCL2MOOD","RK2MUSCL2"]
     #["Analytical Solution", "ARS233MUSCL2","ARS233MUSCL2MOOD", "ARS233MUSCL2(VK)", "ARS233Upwind"]
-    #"ARS233Upwind"
+    "ARS233Upwind"
     #"RK2WENO"
     #["RK2MUSCL2", "RK2Upwind", "RK2MUSCL2MOOD", "RK2MUSCL2(minmod)", "RK2MUSCL2(VK)"]
 );

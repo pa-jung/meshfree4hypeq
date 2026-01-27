@@ -14,9 +14,39 @@ abstract type ScalarHyperbolicPDE{D} <: HyperbolicPDE{D, 1} end
 abstract type HyperbolicPDESystem{D, N} <: HyperbolicPDE{D, N} end
 
 const DiagonalHyperbolicSystem{N, D} = NTuple{N, <:ScalarHyperbolicPDE{D}}
+# # --- REPLACED ALIAS WITH STRUCT ---
+# """
+#     DiagonalHyperbolicSystem{N, D, E, T}
 
-# --- Trait function to get the number of dimensions from any PDE type ---
-n_dimensions(::HyperbolicPDE{D, N}) where {D, N} = D
+# A wrapper struct that holds the original coupled system `eq_orig` (for physics dispatch)
+# and the tuple of decoupled scalar `equations` (for the solver loop).
+# """
+# struct DiagonalHyperbolicSystem{N, D, E, T} <: HyperbolicPDESystem{D, N}
+#     eq_orig::E         # The original coupled PDE (e.g. Euler1D)
+#     equations::T       # The NTuple of scalar equations (e.g. (LinearAdvection, LinearAdvection...))
+
+#     # Inner constructor to infer N and D automatically
+#     function DiagonalHyperbolicSystem(eq_orig::E, equations::T) where {E, T <: Tuple}
+#         N = length(equations)
+#         # Infer dimension D from the first equation in the tuple
+#         D = n_dimensions(equations[1]) 
+#         new{N, D, E, T}(eq_orig, equations)
+#     end
+# end
+
+# # --- Interface to make it behave like a Tuple (Indexable/Iterable) ---
+# # This ensures scalar_equations[k] works in your loops
+# Base.getindex(dhs::DiagonalHyperbolicSystem, i::Int) = dhs.equations[i]
+# Base.getindex(dhs::DiagonalHyperbolicSystem, I...) = dhs.equations[I...]
+# Base.iterate(dhs::DiagonalHyperbolicSystem, args...) = iterate(dhs.equations, args...)
+# Base.length(dhs::DiagonalHyperbolicSystem) = length(dhs.equations)
+# Base.eachindex(dhs::DiagonalHyperbolicSystem) = eachindex(dhs.equations)
+# Base.firstindex(dhs::DiagonalHyperbolicSystem) = firstindex(dhs.equations)
+# Base.lastindex(dhs::DiagonalHyperbolicSystem) = lastindex(dhs.equations)
+
+
+# # --- Trait function to get the number of dimensions from any PDE type ---
+# n_dimensions(::HyperbolicPDE{D, N}) where {D, N} = D
 
 #----------------------------------#
 # --- Scalar Equation Examples --- #
@@ -40,8 +70,6 @@ LinearAdvection(vel::Tuple{<:Real, <:Real}) = LinearAdvection{2}(Float64.(vel))
 # Use broadcasting (`.*`) to create one `flux` method for any dimension D
 @inline flux(eq::LinearAdvection{2}, u::Float64) = (eq.vel[1] * u, eq.vel[2] * u)
 @inline flux(eq::LinearAdvection{1}, u::Float64) = eq.vel[1] * u
-
-
 
 
 struct BurgersEquation2D <: ScalarHyperbolicPDE{2} end

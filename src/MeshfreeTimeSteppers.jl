@@ -73,8 +73,7 @@ function (eu::EulerUpwind)(
 )
     N = particleGrid.N
     #initTS!(eu.particleGrid)
-    moveGrid = eu.moveGrid
-    moveGrid(particleGrid, dt)
+
 
     # --- 1. Preparation ---
     # Ensure buffers are correctly sized (only resizes if needed)
@@ -141,6 +140,7 @@ function (eu::EulerUpwind)(
     end
     # --- 4. Final Boundary Conditions ---
     apply_boundary_conditions!(particleGrid, particleGrid.rhos)
+    
 end
 
 # """

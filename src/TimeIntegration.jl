@@ -44,7 +44,7 @@ function initTSBuffer!(ts::MeshfreeTimeStepper, pg::ParticleGrid)
     initAddTSBuffer!(ts, pg)
     return nothing
 end
-function initTSBuffer!(ts::MeshfreeSystemTimeStepper, pgs::Tuple)
+function initTSBuffer!(ts::MeshfreeSystemTimeStepper, pgs::ParticleGridSystem{D,N}) where {D,N}
     # `num_interactions` is the total length of the flat neighbor lists (M)
     num_interactions = length(pgs[1].neighbor_indices)
     num_eqs = length(pgs)
@@ -99,7 +99,7 @@ end
 Saves data from a SCALAR particle grid into pre-allocated storage slots.
 """
 function saveData!(xs_storage::AbstractVector{X}, us_storage::AbstractVector{U}, ts_storage, snap_idx::Int, 
-                   pg, current_t, remove_ghosts::Bool) where {X,U}
+                   pg::ParticleGrid, current_t, remove_ghosts::Bool) where {X,U}
     
     # Save the current time
     ts_storage[snap_idx] = current_t
@@ -129,37 +129,59 @@ function saveData!(xs_storage::AbstractVector{X}, us_storage::AbstractVector{U},
     end
 end
 
-"""
-Saves data from a SYSTEM of particle grids into pre-allocated storage.
-"""
-function saveData!(xs_storage, us_storage, ts_storage, snap_idx::Int, 
-                   system_pgs::Tuple, current_t, remove_ghosts::Bool)
+# In TimeIntegration.jl
+
+# In TimeIntegration.jl
+
+# In TimeIntegration.jl
+
+function saveData!(
+    xs_storage::AbstractVector, 
+    us_storage::AbstractVector, 
+    ts_storage::AbstractVector, 
+    snap_idx::Int, 
+    system_pgs::ParticleGridSystem{N_grids, D_dim}, 
+    current_t::Real, 
+    remove_ghosts::Bool
+) where {N_grids, D_dim}
     
-    # Save the current time
     ts_storage[snap_idx] = current_t
-    
     first_pg = system_pgs[1]
-    dest_pos = xs_storage[snap_idx]
-    dest_rho_matrix = us_storage[snap_idx] # This is a Matrix
+    N_active = first_pg.N # <--- Valid particles are only 1:N
     
     if remove_ghosts
-        # Get logical indices of non-ghost particles from the first grid
-        indices = .!first_pg.is_boundary
+        # Only look for boundaries within the ACTIVE range (1:N)
+        # Otherwise we might pick up garbage 'false' flags from the buffer zone
+        active_boundary_view = @view first_pg.is_boundary[1:N_active]
+        indices = findall(.!active_boundary_view)
         
-        # Copy positions from the first grid
-        _copy_positions!(dest_pos, view(first_pg.positions, indices))
+        N_save = length(indices)
+        pos_type = D_dim == 1 ? Float64 : Tuple{Float64,Float64}
         
-        # Copy rhos from each grid as a column in the destination matrix
+        xs_storage[snap_idx] = Vector{pos_type}(undef, N_save)
+        us_storage[snap_idx] = Matrix{Float64}(undef, N_save, N_grids)
+        
+        # Copy positions using the safe indices
+        _copy_positions!(xs_storage[snap_idx], view(first_pg.positions, indices))
+        
+        # Copy rhos
+        dest_matrix = us_storage[snap_idx]
         for (k, pg) in enumerate(system_pgs)
-            copyto!(view(dest_rho_matrix, :, k), view(pg.rhos, indices))
+            copyto!(view(dest_matrix, :, k), view(pg.rhos, indices))
         end
     else
-        # Copy all positions
-        _copy_positions!(dest_pos, first_pg.positions)
+        N_save = N_active
+        pos_type = D_dim == 1 ? Float64 : Tuple{Float64,Float64}
         
-        # Copy all rhos
+        xs_storage[snap_idx] = Vector{pos_type}(undef, N_save)
+        us_storage[snap_idx] = Matrix{Float64}(undef, N_save, N_grids)
+        
+        # Copy strictly 1:N_active (Ignore the buffer tail!)
+        _copy_positions!(xs_storage[snap_idx], view(first_pg.positions, 1:N_save))
+        
+        dest_matrix = us_storage[snap_idx]
         for (k, pg) in enumerate(system_pgs)
-            copyto!(view(dest_rho_matrix, :, k), pg.rhos)
+            copyto!(view(dest_matrix, :, k), view(pg.rhos, 1:N_save))
         end
     end
 end
@@ -227,63 +249,69 @@ end
 
 
 """
-Optimized main time integrator for a SYSTEM of equations, using Tuples for performance.
+    mainTimeIntegrator!(system_timestepper, system_eqs, system_pgs, settings; ...)
+
+The main time integration loop for a **system** of equations.
+Adapted to handle dynamic particle numbers (AMR/ALE) by resizing storage for each snapshot.
 """
 function mainTimeIntegrator!(
-    system_timestepper::TimeStepper, 
-    system_eqs::DiagonalHyperbolicSystem{N,D},
-    system_pgs::ParticleGridSystem{N},
+    system_timestepper::MeshfreeSystemTimeStepper, 
+    system_eqs::DiagonalHyperbolicSystem{N,D}, 
+    system_pgs::ParticleGridSystem{N, D}, 
     settings::SimSetting;
-    snapshots::Integer,
+    snapshots::Integer = 10,
     remove_ghosts::Bool = false
 ) where {N,D}
-    # --- Initialization ---
-    # --- Pre-allocate Storage ---
-    first_pg = system_pgs[1]
-    #N_save = remove_ghosts ? (first_pg.N - first_pg.N_ghost) : first_pg.N
-    N_vars = N # Number of variables in the system
+
+    # --- 1. Pre-allocate Storage Containers ---
+    # We use Vector of Vectors/Matrices to allow N to change between snapshots.
+    # The inner elements are 'undef' until saveData! allocates them.
     
     pos_type = D == 1 ? Float64 : Tuple{Float64,Float64}
     
-    # Pre-allocate storage
-    xs = Vector{Vector{pos_type}}(undef, snapshots+1)
-    us_sys = [Matrix{Float64}(undef, N_save, N_vars) for _ in 1:snapshots+1]
-    ts = Vector{Float64}(undef, snapshots+1)
+    xs = Vector{Vector{pos_type}}(undef, snapshots + 1)
+    us_sys = Vector{Matrix{Float64}}(undef, snapshots + 1)
+    ts = Vector{Float64}(undef, snapshots + 1)
 
-    # --- Snapshot Time Points ---
-    t_snap = range(0.0, settings.tmax, length=snapshots)
+    # --- 2. Snapshot Time Points ---
+    t_snap = range(0.0, settings.tmax, length=snapshots+1)
     snap_counter = 1
     t = 0.0
     k_step = 0
-    # Save initial state (t=0)
+
+    # --- 3. Save Initial State (t=0) ---
     saveData!(xs, us_sys, ts, snap_counter, system_pgs, t, remove_ghosts)
-    snap_counter += 1 # We are now looking for the 2nd snapshot
+    snap_counter += 1 
 
-    # --- Main Time Loop ---
+    # --- 4. Main Time Loop ---
+    p = Progress(convert(Int, ceil(settings.tmax / settings.dt)), desc="Running System Simulation...")
 
-    p = Progress(convert(Int, ceil(settings.tmax / settings.dt)), "Running System Simulation...")
-
-    elapsed_time = @elapsed while t < settings.tmax && snap_counter <= snapshots
-        actual_dt = min(settings.dt, settings.tmax - t)
-        if actual_dt <= 1e-12; break; end
-        system_timestepper(system_eqs, system_pgs, settings, t, actual_dt)
+    elapsed_time = @elapsed while t < settings.tmax && snap_counter <= (snapshots + 1)
         
-        t += actual_dt
+        dt = min(settings.dt, settings.tmax - t)
+        if dt <= 1e-12; break; end
+
+        # Step
+        system_timestepper(system_eqs, system_pgs, settings, t, dt)
+        
+        t += dt
         k_step += 1
 
-        # Check for and save snapshots
-        # Use a while-loop in case dt spans multiple snapshot times
-        while snap_counter <= snapshots && t >= t_snap[snap_counter]
-            # Save data at the *exact* snapshot time
+        # Save Snapshot(s)
+        while snap_counter <= (snapshots + 1) && t >= t_snap[snap_counter]
             saveData!(xs, us_sys, ts, snap_counter, system_pgs, t, remove_ghosts)
             snap_counter += 1
         end
         
-        ProgressMeter.next!(p)
+        next!(p)
     end
-    saveData!(xs, us_sys, ts, snap_counter, system_pgs, t, remove_ghosts)
-    num_saved_snapshots = snap_counter
-    return elapsed_time, xs[1:num_saved_snapshots], us_sys[1:num_saved_snapshots], ts[1:num_saved_snapshots]
+
+    # Force final save if missed (numerical epsilon issues)
+    if snap_counter <= (snapshots + 1)
+        saveData!(xs, us_sys, ts, snap_counter, system_pgs, t, remove_ghosts)
+    end
+
+    return elapsed_time, xs, us_sys, ts
 end
 
 end  # module TimeIntegration

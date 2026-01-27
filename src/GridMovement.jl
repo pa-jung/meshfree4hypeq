@@ -3,7 +3,7 @@ module GridMovement
 using ..ParticleGrids
 using ..HyperbolicPDEs
 
-export GridMover, NoGridMover, CustomGridMover, PhysicalGridMover
+export GridMover, NoGridMover, CustomGridMover, PhysicalGridMover, get_effective_vel, update_grid_velocities!
 
 abstract type GridMover end
 
@@ -86,6 +86,80 @@ end
 
 function moveGrid!(::BurgersEquation{0.0}, pg::ParticleGrid1D, dt::Float64)
     return
+end
+
+# In GridMovement.jl or MeshfreeSystemTimeSteppers.jl
+
+"""
+    update_grid_velocities!(pgs::ParticleGridSystem, system_eqs)
+
+Calculates the grid velocity for every particle based on the densities of the 
+species specified in `pgs.velocity_indices`.
+"""
+function update_grid_velocities!(pgs::ParticleGridSystem{1, N_grids}, system_eqs) where {N_grids}
+    # 1. Access the buffer and grids
+    grid_vels = pgs.grid_velocities
+    N = pgs.grids[1].N
+    if length(grid_vels) < N
+        resize!(grid_vels, Int(ceil(N * 1.2)))
+    end
+    # 2. Loop over particles (Thread-safe here)
+    Threads.@threads for i in 1:N
+        # A. Calculate total rho for the "driving" species
+        rho_sum = 0.0
+        for k in pgs.velocity_indices
+            rho_sum += pgs.grids[k].rhos[i]
+        end
+        
+        # B. Calculate u_grid based on your physics (e.g., Burgers-like)
+        # Note: You can customize this logic or dispatch based on system_eqs
+        # For this example, we assume u_grid = rho_sum (like Burgers)
+        u_grid = rho_sum 
+        
+        # C. Store in buffer
+        grid_vels[i] = u_grid
+    end
+end
+"""
+    update_grid_velocities!(pgs::ParticleGridSystem, system_eqs)
+
+Calculates the grid velocity for every particle based on the densities of the 
+species specified in `pgs.velocity_indices`.
+"""
+function update_grid_velocities!(pgs::ParticleGridSystem{N_grids,1},::PhysicalGridMover{BurgersEquation{a}}) where {N_grids,a}
+    # 1. Access the buffer and grids
+    grid_vels = pgs.grid_velocities
+    N = pgs.grids[1].N
+    if length(grid_vels) < N
+        resize!(grid_vels, Int(ceil(N * 1.2)))
+    end    
+    # 2. Loop over particles (Thread-safe here)
+    Threads.@threads for i in 1:N
+        # A. Calculate total rho for the "driving" species
+        rho_sum = 0.0
+        for k in pgs.velocity_indices
+            rho_sum += pgs.grids[k].rhos[i]
+        end
+        
+        # B. Calculate u_grid based on your physics (e.g., Burgers-like)
+        # Note: You can customize this logic or dispatch based on system_eqs
+        # For this example, we assume u_grid = rho_sum (like Burgers)
+        u_grid = a * rho_sum 
+        
+        # C. Store in buffer
+        grid_vels[i] = u_grid
+    end
+end
+
+@inline function get_effective_vel(eq::ScalarHyperbolicPDE{1},vel::Real)
+    v = eq.vel[1]
+    return v - sign(v) * vel
+end
+
+@inline function get_effective_vel(eq::ScalarHyperbolicPDE{2},vel::NTuple{2,Float64})
+    vx = eq.vel[1]
+    vy = eq.vel[2]
+    return vx - sign(vx) *vel[1], vy - sign(vy) * vel[2]
 end
 
 end
