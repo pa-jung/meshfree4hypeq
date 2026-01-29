@@ -9,17 +9,18 @@ end
 sim_config_burgers = SimulationConfig(
     runScalarSimulation,
     ParamDict(
-        "tmax" => 5., "N" => 200, "xmin" => -5.0, "xmax" => 5.0,
-        "dt" => .001, "snapshots" => 100, "interp_alpha" => 1.0,
+        "tmax" => 5., "N" => 500, "xmin" => -5.0, "xmax" => 5.0,
+        "dt" => .001, "snapshots" => 20, "interp_alpha" => 1.0,
         "interp_range" => 3.5, "remove_ghosts" => false,
         "init_func" => "riemann",
         #"init_params" => (1., 0., 1.),
         #"init_params" => (0.0, 1.0, -2., 2.),#(0., 1., -2.,2.),#(0., 1., -4., -2.), #(0.,1.,-2,2.),
         "init_params" => (2., 0., -2.),
+        #"init_params" => (2., 0., -2., .1),
         "randomness_factor" => 0.,
         "SEED" => 10, "sim_function" => (:const, "runScalarSimulation"),
         "bc" => :fixed_dirichlet, "weight_function" => "exponential",
-        "order" => 1, "PDE" => "burgers", "PDE_params" => .5, "merge_factor" => .5,
+        "order" => 1, "PDE" => "burgers", "PDE_params" => .5, "merge_factor" => .7,
         "grid_mover" => "physical", # "grid_mover_func" => grid_velocity, "grid_mover_params" => Tuple([]),
     ),
 
@@ -398,7 +399,7 @@ sim_config_burgers = SimulationConfig(
             "main_flux" => "Upwind",
             "order" => 1,
             "save_relax" => false,
-            "relax_velocities" => [[1.,-1.]],
+            "relax_velocities" => [[2.,-2.]],
             "relax_epsilon" => 10. ^ -8,
             "MOOD" => "none",
         ),
@@ -564,18 +565,21 @@ sim_config_burgers = SimulationConfig(
     #["EulerUpwind","Analytical Solution","RK2MUSCL2(VKLimiter)","RK2MUSCL2(superbee)","RK2MUSCL2", "RK2MUSCL2MOOD", "ARS233MUSCL2MOOD"]
     #["LW(uniform grid)", "ARS233MUSCL2", "ARS233MUSCL5", "EulerUpwind", "LLF(uniform grid)", "RK2MUSCL2", "RK4MUSCL5"]
     #["RK2MUSCL2Smooth", "Analytical Solution"]
-    #["RK2MUSCL2(VK)", "Analytical Solution"]
-    #["EulerUpwind", "RK2Upwind","Analytical Solution","RK2MUSCL2(VK)","RK2MUSCL2MOOD","RK2MUSCL2"]
+    ["EulerUpwind", "Analytical Solution"]
+    #["EulerUpwind","Analytical Solution","RK2MUSCL2(VK)","RK2MUSCL2"]
     #["Analytical Solution", "ARS233MUSCL2","ARS233MUSCL2MOOD", "ARS233MUSCL2(VK)", "ARS233Upwind"]
-    "ARS233Upwind"
+    #"ARS233Upwind"
     #"RK2WENO"
     #["RK2MUSCL2", "RK2Upwind", "RK2MUSCL2MOOD", "RK2MUSCL2(minmod)", "RK2MUSCL2(VK)"]
 );
 scene_options = Dict{String, Any}()
 scene_options = Dict{String, Any}("t" => 10.,"component" => 1, "x_key" => "SEED", "y_key" => "l2error")
 # Pass this config to your IPlotPDESols functions
-show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :default, scene_options = scene_options);
+#show1DSolutionFig(sim_config_burgers; calc_stats = false, ui_options = :default, scene_options = scene_options);
 #showDynamicDependence(sim_config_burgers; ui_options = :publication, scene_options = scene_options)
+#showConvergencePlot(sim_config_burgers, "merge_factor", .1:.05:.9 ; calc_stats = false, force_int_param = false)
+#showConvergencePlot(sim_config_burgers, "PDE_params", .1:.05:1. ; calc_stats = false, force_int_param = false)
+show2DConvergencePlot(sim_config_burgers, "PDE_params", .1:.05:1. ,"merge_factor", .1:.05:.9; calc_stats = false)
 #calculateConvergenceData(sim_config_burgers, "N", 10. .^(1:.25:2); calc_stats = false, force_int_param = true)
 #showConvergencePlot(sim_config_burgers, "N", 10. .^(1.5:.125:4.); calc_stats = false, force_int_param = true, initial_calc = true, ui_options = :publication, scene_options = scene_options)
 #showConvergencePlot(sim_config_burgers, "delta_relax", (0.:10^-51:10^-50); force_int_param = false, initial_calc = true, ui_options = :publication)

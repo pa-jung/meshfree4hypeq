@@ -70,7 +70,7 @@ function manage_particles!(pg::ParticleGrid)
         updateNeighbors!(pg)
     end
 
-    _merge_particles_pairwise!(pg)
+    _merge_particles!(pg)
 
     # =========================================================================
     # PHASE 3: BOUNDARY UPDATE (Cleanup)
@@ -303,7 +303,7 @@ function _merge_particles_pairwise!(pg::ParticleGrid1D)
             pos[write_idx] = 0.5 * (pos[i] + pos[best_j])
             
             # 3. New Density: Total Mass / Total Volume
-            rhos[write_idx] = total_vol > 1e-15 ? (total_mass / total_vol) : 0.0
+            rhos[write_idx] = total_vol > 1e-15 ? (total_mass / (total_vol)) : 0.0
             
             # 4. Mark 'best_j' as merged so it is skipped by the main loop
             merged[best_j] = true

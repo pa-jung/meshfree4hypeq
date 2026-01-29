@@ -49,6 +49,22 @@ function (gm::PhysicalGridMover{BurgersEquation{a}})(pg::ParticleGrid1D, dt::Rea
     return    
 end
 
+# General grid movement based on predetermined velocities
+function (gm::GridMover)(pgs::ParticleGridSystem{N_grids,1}, dt::Real) where {N_grids}
+    N_test = pgs[1].N
+    for pg in pgs
+        positions = pg.positions
+        for p_idx in 1:pg.N
+            @assert pg.N == N_test "Different grid sizes found!"
+            positions[p_idx] += pgs.grid_velocities[p_idx] * dt
+        end
+        sort_1d_particles!(pg)
+        updateNeighbors!(pg)
+        manage_particles!(pg) 
+        updateNeighbors!(pg)
+    end
+end
+
 function (gm::PhysicalGridMover{LinearAdvection{1}})(pg::ParticleGrid1D, dt::Real)
     positions = pg.positions
     for p_idx = 1:pg.N

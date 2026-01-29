@@ -240,11 +240,8 @@ function (imex_ts::GeneralIMEXTimeStepper{G1, G2, M, IS, ST_OBJ, BT})(
     s = imex_ts.num_stages
     bt = imex_ts.butcher_tableau
     grid_mover = imex_ts.grid_mover
-    N_start = -1
-    for pg in system_pg
-        grid_mover(pg, dt) # different movements for each grid!
-        N_start = N_start == -1 ? pg.N : @assert N_start == pg.N "Particle numbers differ!"
-    end
+    update_grid_velocities!(system_pg, grid_mover)
+    grid_mover(system_pg, dt)
 
     N_particles = system_pg[1].N
     

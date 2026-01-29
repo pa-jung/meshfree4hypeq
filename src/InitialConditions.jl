@@ -7,7 +7,7 @@ using LinearAlgebra
 using StaticArrays
 
 export InitialCondition, SmoothInitialCondition, ShockInitialCondition, setInitialConditions!,
-       Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,
+       Gauss, Box, Sine, Riemann, EulerSmooth, EulerShockTube,SRiemann,
        getInitialCondition, get_discontinuity_points, euler1D_physical_fluxes, GAS_GAMMA_EULER
 
 
@@ -123,6 +123,22 @@ struct Riemann{T, S} <: ShockInitialCondition
 end
 (ic::Riemann{Float64, S})(x::Real) where S = x < ic.p0 ? ic.uL : ic.uR
 (ic::Riemann{NTuple{2, Float64}, S})(x::Real, y::Real) where S = dot((x - ic.p0[1], y - ic.p0[2]), ic.n) < 0 ? ic.uL : ic.uR
+
+"Smoothed Riemann problem (arctan) for scalar or system states."
+struct SRiemann{T, S} <: SmoothInitialCondition
+    uL::S
+    uR::S
+    x0::T      # Center of the transition
+    width::T   # Smoothing width (steepness)
+end
+
+# Functor for t=0
+# Uses broadcasting (.*, .+, .-) to handle both scalar (Burgers) and vector (Euler) states
+function (ic::SRiemann)(x::Real)
+    # Formula: u(x) = Avg - Diff/pi * atan((x-x0)/w)
+    # Limits: x->-inf => uL; x->+inf => uR
+    return @. 0.5 * (ic.uL + ic.uR) - (ic.uL - ic.uR) / pi * atan((x - ic.x0) / ic.width)
+end
 
 # --- NEW: Generalized Quadrant-based Riemann Problem ---
 struct QuadrantRiemann{D, M, T} <: ShockInitialCondition
@@ -373,6 +389,20 @@ function (ic::Riemann)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D
     end
 end
 
+# --- Analytical Solution for SRiemann (delegates to sharp Riemann) ---
+function (ic::SRiemann)(x::Real, t::Real, eq::BurgersEquation, pg::ParticleGrid1D)
+    # Construct an equivalent sharp Riemann problem to get the "Real" solution
+    sharp_ic = Riemann(ic.uL, ic.uR, ic.x0)
+    return sharp_ic(x, t, eq, pg)
+end
+
+# --- Discontinuity Tracking for SRiemann ---
+# Essential for QuadGK to know where the shock/fans are expected to be
+function get_discontinuity_points(ic::SRiemann, eq::BurgersEquation, t::Real, pg::ParticleGrid1D)
+    sharp_ic = Riemann(ic.uL, ic.uR, ic.x0)
+    return get_discontinuity_points(sharp_ic, eq, t, pg)
+end
+
 # --- NEW: Analytical Solution for 2D Burgers with Planar Riemann IC ---
 function (ic::Riemann{NTuple{2, Float64}})(pos::Union{NTuple{2,Float64},SVector{2,Float64}}, t::Real, eq::BurgersEquation2D, pg::ParticleGrid2D)
     x = pos[1]
@@ -550,6 +580,7 @@ function getInitialCondition(name::String, params::Tuple)
     elseif name == "box"; return Box(params...);
     elseif name == "sine"; return Sine(params...);
     elseif name == "riemann"; return Riemann(params...);
+    elseif name == "s_riemann"; return SRiemann(params...);
     elseif name == "q_riemann"; return QuadrantRiemann(params...);
     elseif name == "eulerSmooth"; return EulerSmooth(params...);
     elseif name == "eulerShockTube"; return EulerShockTube(params...);

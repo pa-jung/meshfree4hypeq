@@ -74,7 +74,8 @@ function (eu::EulerUpwind)(
     N = particleGrid.N
     #initTS!(eu.particleGrid)
 
-
+    moveGrid = eu.moveGrid
+    moveGrid(particleGrid, dt)
     # --- 1. Preparation ---
     # Ensure buffers are correctly sized (only resizes if needed)
     initGIBuffers!(eu.gradientInterpolator, particleGrid)
